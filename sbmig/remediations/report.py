@@ -1,23 +1,20 @@
-"""취약점 조치 결과를 도구용 ``report.json``과 담당자용 한국어 ``report.md``로 만드는 모듈.
-그래프의 마지막 노드 ``report``가 작업이 끝난 상태(SUCCEEDED / INCOMPLETE / FAILED)일 때만
-``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
-- 비밀 값, 토큰, 서버 절대 경로를 넣지 않는다. 경로는 실행 폴더 기준 상대 경로만 쓴다
-- 입력이 같으면 내용도 같아야 하므로 현재 시각을 넣지 않고 정렬 순서를 고정한다
-- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 사내 라이브러리, 직접 확인, 제외 항목, 프로젝트 파일,
-  변경하지 않은 것, 처리 기록. 빈 절은 쓰지 않는다
-- 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다.
-  report.json에는 영어 문장과 코드를 그대로 쓴다
-- ``inhouse_artifact`` 항목은 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
-- 사내 라이브러리와 직접 확인 표 아래에 모듈마다 라이브러리가 들어온 경로를 쓴다
-- ``remediation.ignore_actions``에 해당하는 항목은 제외 항목 절에만 쓰고 취약점 개수에 넣지 않는다
-- ``remediation.file_components: report``면 파일 컴포넌트는 프로젝트 파일 절에만 쓰고 취약점 개수에 넣지 않는다
+"""취약점 조치 결과를 ``report.json``과 담당자용 한국어 ``report.md``로 만드는 모듈.
+그래프의 ``report`` 노드가 끝 상태에서 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
+- 비밀 값, 토큰, 서버 절대 경로는 넣지 않는다. 경로는 실행 폴더 기준 상대 경로로 쓴다
+- 입력이 같으면 결과도 같도록 현재 시각을 넣지 않고 정렬 순서를 고정한다
+- 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다
+- ``ignore_actions`` 항목과 report 모드의 파일 컴포넌트는 따로 싣고 취약점 개수에 넣지 않는다
 
-Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
-the project owners: a result line, a summary and the actions first; English sentences shown translated, residuals grouped by
-explanation, in-house residuals grouped per in-house artifact, codes only in the folded record). Deterministic for the same
-input; no secret, no absolute server path. File components under `remediation.file_components: report` have a
-section of their own after the library sections and are counted nowhere else.
-"""
+Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries; English sentences
+and codes as stored) and `report.md` (Korean, for the project owners). Deterministic for the same input; no
+secret, no absolute server path.
+
+report.md order, empty sections left out: result block, summary, next steps, fixed, build fix, in-house
+libraries, manual review (grouped by explanation), excluded items (`remediation.ignore_actions`), project
+files (file components under `remediation.file_components: report`, counted nowhere else), unchanged, the
+folded processing record (the only place with status / reason codes). `inhouse_artifact` residuals are grouped
+per in-house artifact under `remediation.inhouse_message`; the in-house and manual-review tables print the
+path each module got the library by."""
 from __future__ import annotations
 
 import logging
@@ -199,7 +196,7 @@ def _load_scan(paths: RunPaths, rel: str, mode: str = "report") -> ScanResult | 
     if not isinstance(data, dict):
         return None
     from .ivas import count_view
-    # count 모드는 파일 부분을 다 읽지 못한 report 검사를 미완료로 본다. 그래프와 같은 규칙이다
+    # count 모드면 파일 목록을 다 읽지 못한 검사를 미완료로 본다. 그래프와 같은 규칙이다
     return count_view(ScanResult.from_dict(data), mode)
 
 
@@ -214,7 +211,7 @@ def _ignore(ignore_actions: Iterable[str] | None) -> frozenset[str]:
 
 
 def _mode(file_components: str | None) -> str:
-    """``remediation.file_components`` 값을 정한다. None이면 기본값 report다."""
+    """``remediation.file_components`` 값을 report나 count로 정한다. None이면 report다."""
     from .ivas import files_reported
     return "report" if files_reported(file_components) else "count"
 
@@ -228,7 +225,7 @@ def _split(scan: ScanResult | None, ignore: frozenset[str], mode: str = "report"
 
 
 def _files(scan: ScanResult | None, mode: str) -> list[Any]:
-    """report 모드에서 따로 싣는 파일 컴포넌트 발견 항목을 반환한다. count 모드면 빈 목록이다."""
+    """report 모드에서 따로 싣는 파일 컴포넌트 항목을 반환한다. count 모드면 빈 목록을 반환한다."""
     if scan is None:
         return []
     from .ivas import split_files
@@ -246,15 +243,14 @@ def _scan_summary(scan: ScanResult | None, rel: str, ignore: frozenset[str] = fr
            "unknown_actions": unknown_actions(list(scan.findings)), "counts": dict(sorted(scan.counts.items())),
            "incomplete_reasons": list(scan.incomplete_reasons), "status_code": scan.status_code}
     if mode == "report":
-        # count 모드의 출력은 이 설정이 생기기 전과 같게 둔다
+        # count 모드에서는 파일 컴포넌트 필드를 넣지 않는다
         out["file_findings"] = len(_files(scan, mode))
         out["file_complete"] = bool(scan.file_complete)
     return out
 
 
 def _ignored_rows(scan: ScanResult | None, ignore: frozenset[str], mode: str = "report") -> list[dict[str, Any]]:
-    """조치 대상에서 뺀 항목을 표의 행 목록(취약점, 종류, 대상, 버전, 코드, 뜻)으로 만든다.
-    정렬 순서는 고정한다."""
+    """조치 대상에서 뺀 항목을 표의 행 목록(취약점, 종류, 대상, 버전, 코드, 뜻)으로 만든다. 정렬 순서는 고정한다."""
     from .ivas import action_meaning
     _act, ign = _split(scan, ignore, mode)
     return [{"id": f.id, "kind": f.kind, "identifier": f.identifier, "version": f.version, "action": f.action,
@@ -295,12 +291,10 @@ def _nothing_changed(state: RemediationState) -> bool:
 
 
 def build_unconfirmed(summary: Mapping[str, Any] | None) -> bool:
-    """조치 요약(``chain.summary``)이 고칠 것은 다 고쳤고 빌드 확인만 남은 실행인지 확인한다.
+    """조치 요약(``chain.summary``)을 보고 고칠 것은 다 고쳤고 빌드 확인만 남은 실행인지 확인한다.
     조치 전 빌드 실패를 받아들인 실행이면서 INCOMPLETE이고 사유가 ``baseline_build_failed`` 하나뿐일 때만 True다.
 
-    True only for a tolerated run (`baseline_tolerated: true`) whose status is INCOMPLETE and whose `reasons` list is
-    exactly `[baseline_build_failed]`: changes were applied and rescanned, nothing else is left, only no build
-    confirmed them. Another reason present, or no `reasons` list, is the ordinary "partly" case."""
+    Another reason present, or no `reasons` list, is the ordinary "partly" case."""
     if not isinstance(summary, Mapping):
         return False
     reasons = summary.get("reasons")
@@ -352,16 +346,15 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
                       severity: tuple[float, float, float] | None = None,
                       inhouse: Mapping[str, str] | None = None,
                       file_components: str | None = None) -> dict[str, Any]:
-    """``report.json``에 쓸 내용을 만든다. 상태 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP 일치 여부,
-    ``ignored_findings``, 사내 아티팩트별 항목(``inhouse``)을 담는다.
-    도구가 읽는 형식이므로 한국어 번역은 넣지 않는다.
+    """``report.json``에 쓸 내용을 만든다. 도구가 읽는 형식이므로 한국어 번역은 넣지 않는다.
+    state 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP 일치 여부, 제외 항목, 사내 아티팩트별 항목을 담는다.
     ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다.
-    ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음에 ``group``을 적는다.
+    ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음에 ``group``을 넣는다.
 
     The content of `report.json`; `ignore_actions` None = the default codes. With `inhouse` an in-house artifact group
     of the `framework` group carries `"group": "framework"` (other groups unchanged). `file_components` None = `report`:
     then `file_findings` lists the file-component rows of the scan the report shows and `file_findings_complete` says
-    whether its file part was read; under `count` neither key is written (the output before the setting existed)."""
+    whether its file part was read; under `count` neither key is written."""
     ignore = _ignore(ignore_actions)
     mode = _mode(file_components)
     base = _load_scan(paths, state.baseline_scan, mode)
@@ -373,7 +366,7 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
                "verify": list(rs.verify_problems), "committed": rs.committed, "scan_label": rs.scan_label}
         fix = _fix_of(rs)
         if fix is not None:
-            # 빌드 오류 수정 루프를 실행한 라운드에만 넣는다. 이전 보고서와 같은 모양을 유지한다
+            # 빌드 오류 수정 루프를 실행한 라운드에만 넣는다
             row["fix"] = fix.to_dict() if hasattr(fix, "to_dict") else dict(fix)
         dropped = _discarded_of(rs)
         if dropped:
@@ -423,8 +416,8 @@ def _sev_counts(findings: Iterable[Any], th: tuple[float, float, float]) -> dict
 
 def _severity_json(base: ScanResult | None, final: ScanResult | None, ignore: frozenset[str],
                    th: tuple[float, float, float], mode: str = "report") -> dict[str, Any]:
-    """report.json의 ``severity``를 만든다.
-    위험도 경계값과, 조치 전 검사와 완료된 조치 후 검사의 위험도별 개수를 담는다."""
+    """report.json의 ``severity``를 만든다. 위험도 경계값과 조치 전, 조치 후 검사의 위험도별 개수를 담는다.
+    조치 후 검사가 끝나지 않았으면 ``final``은 None이다."""
     return {"thresholds": {"red": th[0], "orange": th[1], "yellow": th[2]},
             "baseline": _sev_counts(_split(base, ignore, mode)[0], th) if base is not None else None,
             "final": (_sev_counts(_split(final, ignore, mode)[0], th) if final is not None and final.complete
@@ -544,9 +537,9 @@ FIX_PATCH_NAME = "fix.patch"
 
 
 def fix_patch_path(paths: RunPaths) -> Path:
-    """결과에 들어간 모든 자동 수정을 모은 ``fix.patch``의 경로를 반환한다. ``report.md`` 옆에 둔다.
+    """결과에 들어간 자동 수정을 모두 모은 ``fix.patch``의 경로를 반환한다. ``report.md`` 옆에 둔다.
 
-    The combined patch next to the remediation's `report.md`; the files route serves it as `fix.patch`."""
+    The files route serves it as `fix.patch`."""
     return paths.root / FIX_PATCH_NAME
 
 
@@ -555,10 +548,8 @@ def write_fix_patch(state: RemediationState, paths: RunPaths) -> Path | None:
     라운드마다 ``# round <r>`` 줄을 앞에 붙이고, 없는 파일은 경고를 남기고 ``# round <r>: patch file missing`` 줄만 쓴다.
     그런 라운드가 없으면 이전에 쓴 파일을 지우고 None을 반환한다.
 
-    The one patch a reader downloads: the per-round patches of every round in `_fixed_rounds`, in round order, each
-    under a line `# round <r>`; a per-round file that is missing (or unreadable) is skipped with a WARNING and the line
-    `# round <r>: patch file missing`. No such round -> an existing combined file is removed. Bytes are copied as
-    they are (the per-round patches are UTF-8 since INTERFACES "v2.1z-bk")."""
+    The rounds are those of `_fixed_rounds`. Bytes are copied as they are (the per-round patches are UTF-8,
+    INTERFACES "v2.1z-bk")."""
     target = fix_patch_path(paths)
     rounds = _fixed_rounds(state)
     if not rounds:
@@ -621,18 +612,16 @@ def _with_count(step: str, count: int | None, unit: str = "건") -> str:
 
 
 def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str]:
-    """현재 상태에서 담당자가 할 일 목록을 만든다. ``fx``가 있으면 개수를 붙인다.
-    순서: 결과 ZIP 받기 -> 자동으로 적용한 변경 확인 -> 사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유 코드.
-
-    The actions for this state, in a fixed order; counts when the report facts are given."""
+    """현재 상태에서 담당자가 할 일 목록을 만든다. ``fx``가 있으면 할 일에 개수를 붙인다.
+    순서는 자동으로 고친 소스 확인 -> 결과 ZIP 받기 -> 실패 원인 해결 -> 자동으로 적용한 변경 확인 ->
+    사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유다."""
     inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
     manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
     codes = [c for c in _codes(state) if c in _REASON_KO]
     out: list[str] = []
     fixed_files = _fixed_files(state)
     if fixed_files:
-        # 도구가 소스를 고친 것이므로 다른 할 일보다 먼저 확인을 요청한다
-        # 내려받는 파일은 모든 라운드를 모은 fix.patch 하나다. 라운드별 경로는 처리 기록에만 쓴다
+        # 도구가 소스를 고쳤으므로 다른 할 일보다 먼저 확인을 요청한다. 내려받는 파일은 라운드를 모은 fix.patch 하나다
         out.append(f"**자동으로 고친 소스 확인하기** — 자동으로 고친 소스 {_num(len(fixed_files))}개를 확인해 주세요. "
                    f"바꾼 내용은 「빌드 오류 수정」과 `{FIX_PATCH_NAME}` 파일에 있습니다.")
     if state.status == SUCCEEDED:
@@ -655,7 +644,7 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
         if auto:
             out.append(auto)
     if inhouse or R_INHOUSE_ARTIFACT in codes:
-        # 다른 사유 때문에 evaluate의 사유 코드에 빠져 있어도 사내 아티팩트 항목은 항상 담당자 연락이 필요하다
+        # 사유 코드에 빠져 있어도 사내 아티팩트 항목이 있으면 항상 담당자 연락이 필요하다
         out.append(_with_count(_reason_text(state, R_INHOUSE_ARTIFACT)[1],
                                fx.matching(fx.inhouse) if fx is not None else None))
     if manual or "manual_review" in codes:
@@ -697,8 +686,8 @@ def _default_inhouse_message() -> str:
 
 
 def _inhouse_of(r: Residual) -> list[str]:
-    """사내 아티팩트 항목을 묶을 g:a 목록을 반환한다. 항목의 ``inhouse``, 이전 형식의 상태 파일이면 설명
-    문장 속 g:a, 그래도 없으면 항목 자신의 g:a 순으로 찾는다."""
+    """사내 아티팩트 항목을 묶을 g:a 목록을 반환한다.
+    항목의 ``inhouse``를 먼저 쓰고, 없으면 설명 문장 속 g:a(이전 형식의 state), 그래도 없으면 항목의 g:a를 쓴다."""
     return sorted(set(r.inhouse or i18n.inhouse_gas(r.detail) or [r.ga]))
 
 
@@ -723,7 +712,7 @@ def _inhouse_json(state: RemediationState, message: str, inhouse: Mapping[str, s
     arts: list[dict[str, Any]] = []
     for ga, libs in sorted(groups.items()):
         entry: dict[str, Any] = {"ga": ga, "libraries": sorted(libs, key=lambda x: (x["ga"], x["version"]))}
-        # 다른 그룹의 출력이 바뀌지 않도록 프레임워크 묶음에만 그룹을 적는다
+        # 다른 그룹의 출력이 바뀌지 않도록 프레임워크 묶음에만 group을 넣는다
         if _framework_ga(ga, inhouse):
             entry["group"] = FRAMEWORK_GROUP
         arts.append(entry)
@@ -824,8 +813,8 @@ class _Facts:
             self._by_id.append(by_id)
 
     def matching(self, items: list[Any]) -> int:
-        """이 항목이나 제안에 해당하는, 조치 전 검사의 조치 대상 취약점 수를 센다.
-        조치 전 검사가 없으면 취약점 ID 수를 반환한다."""
+        """항목이나 제안과 같은 (g:a, 버전)인 조치 전 검사의 조치 대상 취약점 수를 센다.
+        조치 전 검사가 없으면 항목에 기록된 취약점 ID 수를 반환한다."""
         keys = self._keys(items)
         if self.base is not None:
             return sum(1 for f in self.b_act if _fold(*_key(f)) in keys)
@@ -837,9 +826,7 @@ class _Facts:
 
     def overlap(self) -> int:
         """사내 라이브러리 절과 직접 확인 절에 모두 나오는 취약점 수를 센다.
-        모듈에 따라 나뉜 항목이면 같은 취약점이 두 절에 모두 있다.
-
-        Findings that sit in both the in-house and the manual part (an item split by module)."""
+        모듈에 따라 나뉜 항목이면 같은 취약점이 두 절에 모두 있다."""
         if self.base is None or not self.inhouse or not self.manual:
             return 0
         a, b = self._keys(self.inhouse), self._keys(self.manual)
@@ -855,10 +842,7 @@ class _Facts:
 
     def resolved_ids(self, ga: str, ids: Iterable[str]) -> list[str]:
         """제안의 취약점 ID 중 완료된 조치 후 검사가 그 라이브러리에 더 이상 보고하지 않는 것만 반환한다.
-        조치 후 검사가 없거나 완료되지 않았으면 그대로 반환한다.
-
-        The ids of a committed proposal that a complete final scan no longer reports for the library (any version);
-        unchanged when there is no complete final scan."""
+        버전과 상관없이 비교한다. 조치 후 검사가 없거나 완료되지 않았으면 그대로 반환한다."""
         if not self.final_ok:
             return list(ids)
         g = ga_key(ga)
@@ -881,16 +865,14 @@ class _Facts:
         return max(got) if got else None
 
     def sev_cell(self, score: float | None) -> str:
-        """위험도 칸의 문자열을 "🔴 9.8" 형식으로 만든다.
-        표시 기준보다 낮으면 숫자만, 점수가 없으면 "-"를 쓴다."""
+        """위험도 칸의 문자열을 "🔴 9.8" 형식으로 만든다. 표시 기준보다 낮으면 숫자만, 점수가 없으면 "-"를 쓴다."""
         if score is None:
             return "-"
         mark = severity_of(score, self.th)[1]
         return f"{mark} {score:.1f}" if mark else f"{score:.1f}"
 
     def cve_cell(self, ga: str, version: str, ids: Iterable[str]) -> str:
-        """취약점 칸의 문자열을 만든다.
-        점수가 높은 순으로 "ID (점수)"를 세 개까지 쓰고 나머지는 "외 N건"으로 줄인다."""
+        """취약점 칸의 문자열을 만든다. 점수가 높은 순으로 "ID (점수)"를 세 개까지 쓰고 나머지는 "외 N건"으로 줄인다."""
         scored = [(i, self.cve_score(i, ga, version)) for i in sorted(set(ids))]
         if not scored:
             return "-"
@@ -1005,8 +987,7 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
         if _tolerated(state):
             body += _new_error_lines(state)
     from .graph import TOLERATED_HEAD  # 순환 import를 피하려고 함수 안에서 import한다
-    # 조치 전 빌드 실패를 받아들인 실행의 문장은 위에서 이미 말했으므로 상세로 다시 쓰지 않는다
-    # 읽을 수 없는 pom의 경로와 이유는 위 문장(_boundary_text)에 이미 있으므로 상세로 다시 쓰지 않는다
+    # 조치 전 빌드 실패 문장과 읽을 수 없는 pom의 이유(_boundary_text)는 위에서 이미 썼으므로 상세로 다시 쓰지 않는다
     pom_said = codes[:1] == ["execution_boundary_refused"] and any(b.code == "unparsable_pom" for b in state.boundary)
     if (state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE)) and not pom_said
             and not str(state.message).startswith(TOLERATED_HEAD)):
@@ -1068,8 +1049,7 @@ def _place(p: Proposal) -> str:
 
 
 def _note_lines(text: str) -> list[str]:
-    """제안 메모를 한국어 문장으로 바꾼다.
-    규칙 하나가 한 줄이 되고, 번역하지 못한 부분은 마지막 줄에 원문으로 둔다."""
+    """제안 메모를 한국어 문장 목록으로 바꾼다. 규칙 하나가 한 줄이고, 번역하지 못한 부분은 마지막 줄에 원문으로 둔다."""
     ko, raw = _known_and_raw(text)
     return [k for k in ko if k] + ([f"원문: `{raw.replace('`', chr(39))}`"] if raw else [])
 
@@ -1078,7 +1058,7 @@ _DONE_HEAD = ["위험도", "라이브러리", "버전 변경", "수정한 곳", 
 
 
 def _by_pom(p: Proposal) -> bool:
-    """pom마다 묶어 보여 줄 버전 지정 추가 제안인지 확인한다. 모듈별 경로가 없는 이전 형식의 최상위 제안은 아니다.
+    """pom마다 묶어 보여 줄 버전 지정 추가 제안인지 확인한다. 모듈별 경로가 없는 이전 형식의 최상위 제안은 False다.
 
     A `managed_override` proposal shown per pom under its library: one with module sources or one that edits a module
     pom. A root override of an older state (no sources) keeps the one-row-per-proposal form."""
@@ -1122,9 +1102,8 @@ def _pom_line(p: Proposal) -> str:
 def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal]) -> None:
     """적용한 제안의 표와 제안별 설명을 쓴다. 버전 지정 추가 제안은 라이브러리별로 묶고 pom마다 한 줄로 쓴다.
 
-    The proposal table and the notes under it. `managed_override` proposals with module sources or a module pom are
-    grouped per (library, from, to): one table row, then one line per pom (entry, path). Others as one row each."""
-    # 조치 완료 표는 주의 항목이 있을 때만 주의 열을 넣는다. 없으면 표가 이전과 같다
+    Grouping key of the `_by_pom` proposals: (library, from, to); one table row, then one line per pom."""
+    # 주의 항목이 있을 때만 조치 완료 표에 주의 열을 넣는다
     risky_done = any(p.risks for p in props)
     head = _DONE_HEAD
     if risky_done:
@@ -1180,7 +1159,7 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal]) -> None:
         if len(u) == 1:
             L.append(f"  - {_md_cell(_pom_line(p))}")
         else:
-            # 조치 완료에서는 이미 적용한 변경이므로 지난 일로 적는다
+            # 이미 적용한 변경이므로 과거형으로 쓴다
             L.append("  - 수정한 pom:")
             L += [f"    - {_md_cell(_pom_line(x))}" for x in u]
         notes = list(dict.fromkeys(n for x in u for n in (_note_lines(x.note) if x.note else [])))
@@ -1213,8 +1192,8 @@ def _proposal_notes(L: list[str], p: Proposal) -> None:
 
 
 def _dep_path(r: Residual, owner: str) -> str:
-    """사내 라이브러리 표의 의존 경로를 만든다.
-    artifactId를 화살표로 잇고 취약한 라이브러리로 끝내며, 버전은 버전 칸에 따로 쓴다."""
+    """사내 라이브러리 표의 의존 경로를 만든다. artifactId를 화살표로 잇고 취약한 라이브러리로 끝낸다.
+    버전은 버전 칸에 따로 쓴다."""
     if r.via:
         aids = [_aid(x) for x in r.via]
         if aids[-1] != _aid(r.ga):
@@ -1228,14 +1207,12 @@ def _dep_path(r: Residual, owner: str) -> str:
 
 
 def _is_parent_group(rows: list[Residual]) -> bool:
-    """이 묶음이 회사 부모 pom에서 온 것인지 확인한다.
-    의존 경로 없이 부모 pom이나 BOM이 버전을 정하는 행이 있으면 그렇다고 본다."""
+    """이 묶음이 회사 부모 pom에서 온 것인지 확인한다. 의존 경로 없이 부모 pom이나 BOM이 버전을 정하는 행이 있으면 True다."""
     return any(not r.via and r.origin in ("parent_managed", "bom_managed") for r in rows)
 
 
 def _common_modules(rows: list[Residual]) -> str | None:
-    """모든 행의 모듈 목록이 같으면 그 목록을, 다르면 None을 반환한다.
-    모듈이 하나도 없으면 빈 문자열을 반환한다."""
+    """모든 행의 모듈 목록이 같으면 그 목록을, 다르면 None을 반환한다. 모듈이 하나도 없으면 빈 문자열을 반환한다."""
     sets = {tuple(sorted(set(r.modules))) for r in rows}
     if len(sets) == 1:
         only = next(iter(sets))
@@ -1252,16 +1229,16 @@ def _lib_cell(r: Residual) -> str:
 
 
 def _version_cell(r: Residual) -> str:
-    """버전 칸을 만든다. IVAS 표기가 대소문자만 다르면 Maven 표기 뒤에 IVAS 표기를 한 번 붙인다.
+    """버전 칸을 만든다. IVAS 표기가 다르면 Maven 표기 뒤에 IVAS 표기를 한 번 붙인다.
 
-    Maven's version; the IVAS spelling once when it differs (`2.2.0.RELEASE (IVAS 표기: 2.2.0.release)`)."""
+    Example: `2.2.0.RELEASE (IVAS 표기: 2.2.0.release)`."""
     rv = getattr(r, "reported_version", "") or ""
     text = _md_cell(r.version)
     return f"{text} (IVAS 표기: {_md_cell(rv)})" if rv and rv != r.version else text
 
 
 def _one_variant(part: str) -> str:
-    """"<type>/<classifier>" 하나를 말로 바꾼다. 일반 jar("jar/" 또는 빈 값)는 빈 문자열이다."""
+    """"<type>/<classifier>" 하나를 말로 바꾼다. 일반 jar("jar/" 또는 빈 값)면 빈 문자열을 반환한다."""
     typ, _sep, cls = part.strip().partition("/")
     words = ([f"형식 `{_md_cell(typ)}`"] if typ and typ != "jar" else []) + \
         ([f"classifier `{_md_cell(cls)}`"] if cls else [])
@@ -1322,9 +1299,7 @@ def _source_text(s: Any) -> str:
 
 
 def _row_sources(r: Residual) -> list[tuple[list[str], str]]:
-    """행의 모듈들을 들어온 경로가 같은 것끼리 묶어 (모듈 목록, 경로 문장) 목록으로 반환한다.
-
-    The row's modules grouped by identical source text, in the order of `sources`."""
+    """행의 모듈을 들어온 경로가 같은 것끼리 묶어 (모듈 목록, 경로 문장) 목록으로 반환한다. 순서는 ``sources``를 따른다."""
     groups: dict[str, list[str]] = {}
     for s in getattr(r, "sources", None) or []:
         text = _source_text(s)
@@ -1343,7 +1318,7 @@ def _source_adds(s: Any) -> bool:
 
 
 def _mixed_origin(r: Residual) -> bool:
-    """모듈별 경로의 출처 코드가 행의 출처와 다른 모듈이 있는지 확인한다. 경로가 없으면 False다.
+    """모듈별 경로의 출처 코드가 행의 출처와 다른 모듈이 있는지 확인한다. 경로가 없으면 False를 반환한다.
 
     True when a module source names another origin than the row's (an also-module declaring the library itself)."""
     hows = {str(getattr(s, "how", "") or "") for s in getattr(r, "sources", None) or []} - {""}
@@ -1352,10 +1327,7 @@ def _mixed_origin(r: Residual) -> bool:
 
 def _sources_block(L: list[str], rows: list[Residual], *, beside_path: bool = False) -> None:
     """표 아래에 행마다 "들어온 경로" 목록을 쓴다. 모든 모듈이 같으면 한 줄, 다르면 모듈별로 쓴다.
-    들어온 경로가 있는 행이 없으면 아무것도 쓰지 않는다(이전 상태 파일).
-
-    Under a table, how each row's library arrives: once for the row when every module shares the source, else one
-    sub-item per group of modules. Nothing at all for rows without sources (states written before `sources`)."""
+    들어온 경로가 있는 행이 없으면(이전 형식의 state) 아무것도 쓰지 않는다."""
     items = [(r, _row_sources(r)) for r in rows]
     items = [(r, g) for r, g in items if g]
     if beside_path:
@@ -1539,7 +1511,7 @@ FILES_UNREAD = "파일 위치를 읽지 못했습니다"
 
 
 def _files_section(L: list[str], fx: _Facts) -> None:
-    """report 모드에서 파일 컴포넌트 발견 항목을 컴포넌트별 표로 쓴다. 쓸 것이 없으면 아무것도 쓰지 않는다.
+    """report 모드에서 파일 컴포넌트 항목을 컴포넌트별 표로 쓴다. 쓸 것이 없으면 아무것도 쓰지 않는다.
 
     The file components of `remediation.file_components: report`: one row per (component, version) with the patched
     version IVAS names, the findings and the files (cut with 외 N개; 「파일 위치를 읽지 못했습니다」 when the matched
@@ -1854,7 +1826,7 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
 
 
 def _fix_record_line(L: list[str], rs: RoundState) -> None:
-    """처리 기록의 라운드에 빌드 오류 자동 수정의 결과를 한 줄씩 쓴다. 버린 수정은 하나에 한 줄이고, 실행하지 않은 라운드는 쓰지 않는다."""
+    """처리 기록의 라운드에 빌드 오류 자동 수정의 결과를 쓴다. 버린 수정은 하나에 한 줄이고, 루프가 없던 라운드는 쓰지 않는다."""
     for old in _discarded_of(rs):
         _discarded_line(L, old)
     fix = _fix_of(rs)
@@ -1935,7 +1907,7 @@ def _calls_ko(fix: Any) -> str:
 
 
 def _fix_outcome_ko(fix: Any) -> str:
-    """사용량을 모르는 수정 루프 결과의 처리 결과를 짧게 쓴다."""
+    """사용량을 모르는 수정 루프 결과를 "고침", "시작하지 않음", "고치지 못함(사유)" 가운데 하나로 반환한다."""
     if getattr(fix, "fixed", False):
         return "고침"
     if not getattr(fix, "attempted", False):
@@ -1959,11 +1931,12 @@ _NOT_WRITTEN_ROUND = re.compile(r"the result ZIP of round (\d+) could not be wri
 
 
 def _no_delivery_why(state: RemediationState) -> str:
-    """결과 ZIP 없이 FAILED로 끝난 실행에서 「결과 파일」의 「없음」 뒤에 붙일 이유 문장을 만든다. 끝 상태가 아니면 빈 문자열이다.
+    """결과 ZIP 없이 FAILED로 끝난 실행에서 「결과 파일」의 「없음」 뒤에 붙일 이유 문장을 만든다.
+    FAILED가 아니면 빈 문자열을 반환한다.
 
-    The reason sentence after 「결과 파일 — 없음」 of a FAILED run without a delivery, true for its state: a candidate
-    that could not be put back after a (possibly passing) build, a result ZIP that could not be written, then by
-    reason code (`_NO_DELIVERY_KO`); a code without its own sentence says only that no result ZIP was made."""
+    Order: a candidate that could not be put back after a (possibly passing) build, a result ZIP that could
+    not be written, then by reason code (`_NO_DELIVERY_KO`); a code without its own sentence says only that no
+    result ZIP was made."""
     if state.status != FAILED:
         return ""
     keys = i18n.rule_keys(state.message)
@@ -2079,7 +2052,7 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     elif state.delivery is not None:
         override = any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
         if n_fixed:
-            # 조사가 앞 낱말의 받침을 따르므로 덧붙일 것이 있을 때는 쉼표로 잇는다
+            # 조사가 앞 단어의 받침에 따라 바뀌므로 덧붙일 것이 있을 때는 쉼표로 잇는다
             extra = (", dependencyManagement에 추가한 버전 지정과" if override else "와") + f" 고친 소스 {_num(n_fixed)}개"
         else:
             extra = "와 dependencyManagement에 추가한 버전 지정" if override else ""
@@ -2096,15 +2069,14 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                     inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
                     inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> str:
-    """한국어 ``report.md`` 본문을 만든다. 절 순서는 모듈 docstring과 같고 빈 절은 쓰지 않는다.
+    """한국어 ``report.md`` 본문을 만든다. 절은 아래 번호 주석 순서로 쓰고 빈 절은 쓰지 않는다.
     - 영어 문장은 ``i18n.ko_display``로 바꿔 보여 주고, 같은 설명은 묶음마다 한 번만 쓴다
     - ``severity``가 None이면 설정 기본값으로 🔴 / 🟠 / 🟡를 붙이고 점수가 높은 행부터 놓는다
     - ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다
     - ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음 제목에 "사내 프레임워크"를 붙인다
 
-    The Korean `report.md` text: the result, a summary and the actions first; codes only in the folded record. With
-    `inhouse` the in-house groups of the `framework` group are labelled 사내 프레임워크. `file_components` None =
-    `report`: file findings get their own section after the library sections and a line under the summary."""
+    `file_components` None = `report`: file findings get their own section after the library sections and a
+    line under the summary."""
     ignore = _ignore(ignore_actions)
     roots = _roots(paths)
     message = inhouse_message if inhouse_message else _default_inhouse_message()
@@ -2179,9 +2151,7 @@ def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: It
                  inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
                  inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> None:
     """``report.json``, ``report.md``와 모든 자동 수정을 모은 ``fix.patch``를 실행 폴더에 원자적으로 쓴다.
-    ``ignore_actions``가 None이면 기본값(빈 목록)을 쓴다.
-
-    Write `report.json`, `report.md` and the combined `fix.patch` (`write_fix_patch`) into the run directory."""
+    ``ignore_actions``가 None이면 기본값(빈 목록)을 쓴다."""
     write_fix_patch(state, paths)
     write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions,
                                                            inhouse_message=inhouse_message, severity=severity,
@@ -2194,9 +2164,7 @@ def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: It
 
 
 def summary(state: RemediationState) -> dict[str, Any]:
-    """API 목록에 보여 줄 요약 dict를 만든다.
-
-    A small dict for the API list."""
+    """API 목록에 보여 줄 요약 dict를 만든다."""
     d = state.delivery
     return {"id": state.id, "name": state.name, "status": state.status, "reason": state.reason,
             "reasons": list(state.reasons), "node": state.node, "next_node": state.next_node, "round": state.round,
@@ -2207,7 +2175,7 @@ def summary(state: RemediationState) -> dict[str, Any]:
 
 
 def fix_summary(state: RemediationState) -> dict[str, Any] | None:
-    """화면에 보여 줄 빌드 오류 자동 수정의 요약을 만든다. 수정 루프를 실행한 라운드가 없으면 None이다.
+    """화면에 보여 줄 빌드 오류 자동 수정의 요약을 만든다. 수정 루프를 실행한 라운드가 없으면 None을 반환한다.
     ``changed``는 확정한 라운드에서 고친 소스 파일 수, ``llm_calls``는 모든 라운드의 수정 루프가 호출한 LLM 횟수다.
 
     The page's digest of the build fix loop: None when no round ran it; `fixed` / `changed` count only rounds committed
