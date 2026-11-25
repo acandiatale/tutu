@@ -1,12 +1,12 @@
-"""빌드 오류 수정을 LLM에 요청하는 패키지. 케이스 하나의 원인, 해결, 편집 내용, 재사용할 스크립트를 LLM에서
-받아 오는 LLMFixer와, 회사 게이트웨이를 포함한 LLM 클라이언트를 제공한다.
-수정 루프는 재사용, 보강, 신규 단계에서 LLM이 필요할 때 `LLMFixer.propose_script`를 호출한다.
-구조 검토도 같은 클라이언트와 답변 파서를 쓴다.
-- fixer는 작업 트리를 직접 고치지 않는다.
-  적용, 커밋, 재빌드로 하는 시도 결과 평가, 되돌리기는 수정 루프가 하고 성공 여부는 모두 빌드로 판단한다
+"""빌드 오류 수정을 LLM에 요청하는 패키지.
+케이스 하나의 원인, 해결 방법, 편집, 재사용할 스크립트를 LLM에서 받아 오는 LLMFixer와
+회사 게이트웨이를 포함한 LLM 클라이언트를 제공한다.
+수정 루프는 보강이나 신규 시도에서 `LLMFixer.propose_script`를 호출한다. 구조 검토도 같은 클라이언트와 답변 파서를 쓴다.
+- fixer는 작업 트리를 직접 고치지 않는다. 적용, 커밋, 시도 결과 평가, 되돌리기는 수정 루프가 하고
+  성공 여부는 모두 빌드로 판단한다
 - API 키는 환경 변수 `LLM_API_KEY`에서만 읽고 로그나 기록에 남기지 않는다
 
-sbmig.fix — LLM fix module (see docs/INTERFACES.md for the public entry points).
+Public entry points (docs/INTERFACES.md):
 
     make_llm_client(cfg) -> LLMClientLike             provider switch: company | openai_compatible | anthropic | fake
                                                       | plugin / entry-point name (→ sbmig.llm, docs/ADAPTERS.md)
@@ -15,7 +15,7 @@ sbmig.fix — LLM fix module (see docs/INTERFACES.md for the public entry points
                                                          해결 방법, edits (apply: sbmig.script.apply_edits; each
                                                          with its desc), changes (EditNote: <changes> + the edits'
                                                          desc), code (the script), no_script_reason,
-                                                         blocked_reason (v2.1y <blocked>), error, …
+                                                         blocked_reason (<blocked>), error, …
     ContextPacker(cfg).pack_script(ws, cluster, ctx, ctx.profile_summary)
                                                       -> PackedContext; fixer plugins can reuse it for the same
                                                          errors/files/hints our LLM gets (.render() → markdown)
@@ -25,8 +25,6 @@ sbmig.fix — LLM fix module (see docs/INTERFACES.md for the public entry points
                                                          need_grep, problem, …)
     parse_edits(text)                                 -> (list[Edit], problem) of one <edits> block (lenient JSON)
     ReplayResponder(load_replay_entries(dir))         FakeLLMClient answers picked by `match` / `replay_role`
-
-
 """
 from .company import CompanyClient
 from .client import (
