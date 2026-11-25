@@ -436,6 +436,9 @@ class OpenRewriteConfig(BaseModel):
     # rewrite once more; the fix loop's `sbmig-parent` pre-try), continue (no recipes, go on), abort (the old behaviour)
     unresolvable_asis_parent: Literal["align", "continue", "abort"] = "align"
     plugin_goal: str = "run"                            # run | dryRun
+    # OpenRewrite는 settings의 미러를 Maven과 다르게 고르므로, Maven이 쓰지 않는 미러를 더한 사본을 OpenRewrite 호출에만 준다
+    # contract "v2.1z-ci": `sbmig/rewrite/settings_translate.py`; other Maven calls keep `build.settings_file`
+    translate_settings: bool = True
 
 
 class BuildConfig(BaseModel):

@@ -1,0 +1,53 @@
+[INFO] --- rewrite:6.46.1:run (default-cli) @ app ---
+[INFO] Using active recipe(s) [com.company.migrate.Run]
+[INFO] Using active styles(s) []
+[INFO] Validating active recipes...
+[INFO] Project [app] Resolving Poms...
+[WARNING] Failed to download com.example.rs:rs-jaronly:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-jaronly/1.0/rs-jaronly-1.0.pom
+[WARNING] Failed to access maven repository http://nexus.example.invalid:18803/ due to: Connection refused
+[WARNING] Failed to download com.example.rs:rs-lib-cls:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-lib-cls/1.0/rs-lib-cls-1.0.pom
+  - http://public.example.invalid:18804/com/example/rs/rs-lib-cls/1.0/rs-lib-cls-1.0.pom
+[WARNING] Failed to download com.example.rs:rs-lib-cls:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-lib-cls/1.0/rs-lib-cls-1.0.pom
+[WARNING] Failed to download com.example.rs:rs-lib-cls:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-lib-cls/1.0/rs-lib-cls-1.0.pom
+[WARNING] Failed to download com.example.rs:rs-lib-cls:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-lib-cls/1.0/rs-lib-cls-1.0.pom
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  6.124 s
+[INFO] Finished at: 2026-11-25T17:57:11+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.openrewrite.maven:rewrite-maven-plugin:6.46.1:run (default-cli) on project app: Failed to parse or resolve the Maven POM file or one of its dependencies; We can not reliably continue without this information. Failed to parse or resolve the Maven POM file or one of its dependencies; We can not reliably continue without this information. 
+[ERROR] <!--~~(Unable to download POM: com.example.rs:rs-lib-cls:1.0. Tried repositories:
+[ERROR] http://public.example.invalid:18804/: HTTP 404)~~>--><?xml version="1.0" encoding="UTF-8"?>
+[ERROR] <project xmlns="http://maven.apache.org/POM/4.0.0">
+[ERROR]   <modelVersion>4.0.0</modelVersion>
+[ERROR]   <parent><groupId>com.example.rs</groupId><artifactId>rs-parent</artifactId><version>1.0</version><relativePath/></parent>
+[ERROR]   <artifactId>app</artifactId>
+[ERROR]   <version>1.0</version>
+[ERROR]   <properties><maven.compiler.source>1.8</maven.compiler.source><maven.compiler.target>1.8</maven.compiler.target><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+[ERROR]   <dependencyManagement><dependencies><dependency><groupId>com.example.rs</groupId><artifactId>rs-bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
+[ERROR]   <dependencies>
+[ERROR]     <dependency><groupId>com.example.rs</groupId><artifactId>rs-lib-a</artifactId></dependency>
+[ERROR]     <dependency><groupId>com.example.rs</groupId><artifactId>rs-jaronly</artifactId><version>1.0</version></dependency>
+[ERROR]     <dependency><groupId>javax.servlet</groupId><artifactId>javax.servlet-api</artifactId><version>4.0.1</version><scope>provided</scope></dependency>
+[ERROR]     <dependency><groupId>com.example.rs</groupId><artifactId>rs-lib-cls</artifactId><version>1.0</version><classifier>jdk15</classifier></dependency>
+[ERROR]   </dependencies>
+[ERROR] </project>
+[ERROR] org.openrewrite.maven.MavenDownloadingException: Unable to download POM: com.example.rs:rs-lib-cls:1.0. Tried repositories:
+[ERROR] http://public.example.invalid:18804/: HTTP 404
+[ERROR]   org.openrewrite.maven.internal.MavenPomDownloader.download(MavenPomDownloader.java:750)
+[ERROR]   org.openrewrite.maven.tree.ResolvedPom.doResolveDependencies(ResolvedPom.java:1104)
+[ERROR]   org.openrewrite.maven.tree.ResolvedPom.resolveDependencies(ResolvedPom.java:999)
+[ERROR]   org.openrewrite.maven.tree.MavenResolutionResult.resolveDependencies(MavenResolutionResult.java:193)
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException

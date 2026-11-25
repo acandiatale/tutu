@@ -1,0 +1,18 @@
+[INFO] --- rewrite:6.46.1:run (default-cli) @ app ---
+[INFO] Using active recipe(s) [com.company.migrate.Run]
+[INFO] Using active styles(s) []
+[INFO] Validating active recipes...
+[INFO] Project [app] Resolving Poms...
+[WARNING] Failed to download com.example.rs:rs-jaronly:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-jaronly/1.0/rs-jaronly-1.0.pom
+[WARNING] Failed to download com.example.rs:rs-jaronly:1.0 from com.example.rs:app:1.0. Attempted URIs:
+  - file:///work/m2/com/example/rs/rs-jaronly/1.0/rs-jaronly-1.0.pom
+  - http://mirror.example.invalid:18801/com/example/rs/rs-jaronly/1.0/rs-jaronly-1.0.pom
+[INFO] Project [app] Parsing source files
+[INFO] Running recipe(s)...
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  6.471 s
+[INFO] Finished at: 2026-11-25T17:42:09+09:00
+[INFO] ------------------------------------------------------------------------

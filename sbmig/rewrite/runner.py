@@ -25,6 +25,7 @@ from sbmig.core.models import RecipeRef, RewriteResult
 from sbmig.core.workspace import GitError, Workspace
 
 from .compose import COMPOSITE_RECIPE_ID, compose_rewrite_yaml, recipe_documents, recipe_list_ids
+from .settings_translate import PreparedSettings, define_names, openrewrite_settings
 from .versions import RecipeArtifactError, resolve_recipe_artifact_versions
 
 log = logging.getLogger("sbmig.rewrite")
@@ -73,6 +74,112 @@ _VALIDATION_RE = re.compile(r"Recipe validation error in (?P<recipe>\S+) for pro
 _PARSE_PROBLEM_RE = re.compile(r"There were problems parsing (?P<rest>.*)$")
 PARSE_PROBLEMS_UNKNOWN = "(unknown files — see the rewrite log)"
 _DOES_NOT_EXIST_RE = re.compile(r"recipe '(?P<id>[^']+)' does not exist")
+# 플러그인이 pom을 받지 못했을 때의 출력이다. 예외 줄과 pom 안 주석 두 형태로 나온다
+_POM_FAIL_RE = re.compile(r"Unable to download POM: (?P<gav>\S+?)\.? Tried repositories:[ \t]*$")
+_TRIED_RE = re.compile(r"^(?:\[ERROR\] ?)?(?P<url>[A-Za-z][A-Za-z0-9+.-]*://\S+?): (?P<answer>.+?)(?:\)~~>-->.*)?\s*$")
+_ACCESS_RE = re.compile(r"Failed to access maven repository (?P<url>\S+) due to: (?P<reason>.*?)\s*$")
+# OpenRewrite가 성공한 실행에도 남기는 경고다. 재시도 판단에서 뺀다
+_OR_WARNINGS_RE = re.compile(r"^\[WARNING\] Failed to download .*(?:\n  - .*)*|^\[WARNING\] Failed to access maven "
+                             r"repository .*$", re.MULTILINE)
+# 오류 문장 뒤에 붙인 pom 부분의 시작이다. 재시도 판단에서 이 부분을 뺀다
+_POM_PART_RE = re.compile(r"(?:not reachable: |Unable to download POM: )")
+# 연결하지 못한 저장소의 이유 중 기다리면 풀릴 수 있는 것이다. 이름만 남은 이유는 DNS 실패다
+_ACCESS_PROBLEM_RE = re.compile(r"timed out|timeout|reset|UnknownHost|unknown host|nodename nor servname|"
+                                r"Name or service not known|name resolution|^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$",
+                                re.IGNORECASE)
+_HTTP_4XX_RE = re.compile(r"HTTP 4\d\d")
+# 플러그인이 pom을 받지 못했을 때 남기는 문장이다. pom 부분이 같은 내용을 더 자세히 말하므로 뺀다
+_PARSE_FAIL_RE = re.compile(r"plugin_execution: (?:Failed to parse or resolve the Maven POM file or one of its "
+                            r"dependencies; We can not reliably continue without this information\.\s*)+(?:; |$)")
+# 연결 실패 이유를 짧은 말로 줄인다
+_SHORT_REASONS = ((re.compile(r"refused", re.I), "refused"), (re.compile(r"timed out|timeout", re.I), "timed out"),
+                  (re.compile(r"reset", re.I), "reset"),
+                  (re.compile(r"UnknownHost|unknown host|nodename|name resolution|not known|^[A-Za-z0-9-]+"
+                              r"(?:\.[A-Za-z0-9-]+)+$", re.I), "unknown host"))
+# 실행 폴더마다 마지막으로 기록한 settings 번역 결과다. 같은 결과를 두 번 기록하지 않는다
+_SETTINGS_RECORDS: dict[str, dict] = {}
+MAX_POMS_NAMED = 3
+
+
+def pom_download_problems(text: str) -> tuple[list[tuple[str, list[tuple[str, str]]]], list[tuple[str, str]]]:
+    """플러그인 출력에서 받지 못한 pom과 연결하지 못한 저장소를 찾는다.
+    (좌표, [(물어본 저장소 url, 응답)]) 목록과 (저장소 url, 이유) 목록을 반환한다. 없으면 빈 목록이다.
+
+    Both forms of `Unable to download POM: G:A:V. Tried repositories:` (the `MavenDownloadingException` line and the
+    `<!--~~(…)~~>-->` marker inside the printed pom) followed by one `<url>: <answer>` line per tried repository
+    (`[ERROR] ` prefix optional); a coordinate seen twice is merged. `[WARNING] Failed to access maven repository
+    <url> due to: <reason>` names a repository OpenRewrite could not reach (it is never in "Tried repositories").
+    Urls are returned as printed: callers strip userinfo."""
+    poms: dict[str, list[tuple[str, str]]] = {}
+    unreachable: dict[str, str] = {}
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines):
+        m = _POM_FAIL_RE.search(line.rstrip())
+        if m:
+            tried = poms.setdefault(m.group("gav"), [])
+            for nxt in lines[i + 1:]:
+                t = _TRIED_RE.match(nxt)
+                if not t:
+                    break
+                entry = (t.group("url"), t.group("answer").strip())
+                if entry not in tried:
+                    tried.append(entry)
+                if ")~~>" in nxt:
+                    break
+            continue
+        a = _ACCESS_RE.search(line)
+        # 0.0.0.0은 차단 미러의 주소라 연결하지 못한 저장소가 아니다
+        if a and a.group("url") not in unreachable and "://0.0.0.0" not in a.group("url"):
+            unreachable[a.group("url")] = a.group("reason")
+    return list(poms.items()), list(unreachable.items())
+
+
+def _host_path(url: str) -> str:
+    from sbmig.build.env_errors import strip_userinfo
+    return re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", strip_userinfo(url))
+
+
+def pom_failure_text(text: str) -> str:
+    """받지 못한 pom을 오류 문장 뒤에 붙일 한 줄로 만든다. pom 실패가 없으면 빈 문자열을 반환한다.
+    연결하지 못한 저장소, pom 좌표, 물어본 저장소 순서로 쓴다.
+
+    Order (rule 5: the `sbmig.log` line is cut at 300 characters, so what an operator needs first comes first):
+    `not reachable: <host and path> (<reason>), …` (the `Failed to access maven repository` warnings, if any, the
+    reason shortened to refused / timed out / reset / unknown host when it is one of those),
+    then `; Unable to download POM: <g:a:v>, …` (at most `MAX_POMS_NAMED`, then `and N more`), then `; tried
+    <host and path>: <answer>, …` (every distinct tried repository once, its distinct answers joined by `/`).
+    Userinfo is stripped from every url. Contract "v2.1z-ci" rule 5."""
+    poms, unreachable = pom_download_problems(text)
+    if not poms:
+        return ""
+    parts = []
+    if unreachable:
+        parts.append("not reachable: " + ", ".join(f"{_host_path(u)} ({_short_reason(r)})" for u, r in unreachable))
+    coords = ", ".join(gav for gav, _ in poms[:MAX_POMS_NAMED])
+    if len(poms) > MAX_POMS_NAMED:
+        coords += f" and {len(poms) - MAX_POMS_NAMED} more"
+    parts.append("Unable to download POM: " + coords)
+    tried: dict[str, list[str]] = {}
+    for _gav, entries in poms:
+        for url, answer in entries:
+            answers = tried.setdefault(_host_path(url), [])
+            if answer[:60] not in answers:
+                answers.append(answer[:60])
+    parts.append("tried " + (", ".join(f"{h}: {'/'.join(a)}" for h, a in tried.items()) or "no repository"))
+    return "; ".join(parts)
+
+
+def _short_reason(reason: str) -> str:
+    r = reason.strip()
+    return next((word for rx, word in _SHORT_REASONS if rx.search(r)), r[:30])
+
+
+def _split(value: str) -> list[str]:
+    import shlex
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
 
 
 def _is_windows_abs(p: str) -> bool:
@@ -335,7 +442,14 @@ class OpenRewriteRunner:
 
     def _error_text(self, text: str) -> str:
         """실패 이유를 한 줄로 만든다.
-        레시피 검증 문제가 있으면 그것을, 없으면 Maven 로그 파서가 찾은 오류 앞 10개를 쓴다."""
+        레시피 검증 문제가 있으면 그것을, 없으면 Maven 로그 파서가 찾은 오류 앞 10개를 쓴다.
+        플러그인이 pom을 받지 못했으면 연결하지 못한 저장소, pom 좌표, 물어본 저장소를 맨 앞에 쓴다.
+
+        With a pom failure the text starts with the pom part (`pom_failure_text`) and the parser's other messages follow
+        after ` | `; the plugin's own sentence (`plugin_execution: Failed to parse or resolve the Maven POM file …`,
+        printed twice) is left out, because the `transform.rewrite: the automatic conversion failed …` line
+        (`failure.clean_reason`) is cut at 300 characters and the pom part says the same in detail. Without a pom
+        failure the text is what it always was."""
         unknown, other = self.validation_problems(text)
         parts = []
         if unknown:
@@ -347,7 +461,13 @@ class OpenRewriteRunner:
         from sbmig.build.log_parser import reactor_artifact_ids_from_poms
         errors = parse_maven_log(text, self.ws.root, known_modules=reactor_artifact_ids_from_poms(self.ws.root))
         msgs = list(dict.fromkeys(f"{e.kind.value}: {e.message}" for e in errors))
-        return "; ".join(msgs[:10]) if msgs else "rewrite run failed (see log)"
+        head = "; ".join(msgs[:10]) if msgs else "rewrite run failed (see log)"
+        poms = pom_failure_text(text)
+        if not poms:
+            return head
+        # 한 줄 요약이 300자에서 잘리므로 pom 부분이 같은 말을 하는 플러그인 문장은 빼고 앞에 둔다
+        head = _PARSE_FAIL_RE.sub("", head).strip().rstrip(";")
+        return poms + (f" | {head}" if head else "")
 
     def _head(self) -> str | None:
         try:
@@ -433,10 +553,11 @@ class OpenRewriteRunner:
     # 실제로 없는 아티팩트는 기다려도 생기지 않으므로 전송 문제만 재시도한다
     # transfer problems only: a genuinely missing artifact ("Could not find artifact" / "was not found in") is not
     # retried — the orchestrator's parent check and the build loop's resolution triage handle that
+    # OpenRewrite의 "Failed to download" 경고는 성공한 실행에도 나오므로 재시도 조건이 아니다
     _DOWNLOAD_RE = re.compile(
-        r"Failed to download|Could not transfer artifact|Transfer failed|status code: 429|Too Many Requests|"
+        r"Could not transfer artifact|Transfer failed|status code: (?:429|5\d\d)|Too Many Requests|"
         r"Connection reset|Read timed out|Connection timed out|SocketTimeoutException|UnknownHostException|"
-        r"status code: 50[23]|Service Unavailable|Bad Gateway", re.IGNORECASE)
+        r"Service Unavailable|Bad Gateway|Gateway Time-?out", re.IGNORECASE)
 
     def _may_force_update(self) -> bool:
         """-U 재시도를 할 수 있는지 반환한다.
@@ -473,8 +594,32 @@ class OpenRewriteRunner:
         return res
 
     def _download_failure(self, res: RewriteResult) -> str | None:
-        """The matched transfer-failure wording (journalled as `reason`), or None."""
-        m = self._DOWNLOAD_RE.search(self._failure_text(res))
+        """전송 문제로 실패했으면 그 문구를 반환하고, 아니면 None을 반환한다. 반환값은 저널의 ``reason``이 된다.
+        경고 줄로는 재시도하지 않는다. pom을 받지 못한 실패는 응답과 연결 실패 이유로만 판단한다.
+
+        Rule 6 of "v2.1z-ci". With an `Unable to download POM` in the output it alone decides: a tried repository
+        whose answer is not `HTTP 4xx` (429 counts as a problem; a bare host name is a DNS failure), or a
+        `Failed to access maven repository` reason that is a timeout, a reset or an unknown host (the pom may be on
+        that repository); all 404 and only refused connections: None. Otherwise `_DOWNLOAD_RE` on the error text
+        (without the pom part `_error_text` appended) and the log without its `[WARNING]` lines (OpenRewrite's
+        `Failed to download … Attempted URIs:` blocks included): a warning never starts the retry."""
+        text = self._failure_text(res)
+        poms, unreachable = pom_download_problems(text)
+        if poms:
+            for _gav, tried in poms:
+                for _url, answer in tried:
+                    if not _HTTP_4XX_RE.fullmatch(answer) or answer == "HTTP 429":
+                        return f"Unable to download POM ({answer[:40]})"
+            for _url, reason in unreachable:
+                if _ACCESS_PROBLEM_RE.search(reason.strip()):
+                    return f"Unable to download POM (not reachable: {reason[:40]})"
+            return None
+        error = res.error or ""
+        if _POM_PART_RE.match(error.removeprefix("download-retry: ").removeprefix("force-update-retry: ")):
+            error = error.split(" | ", 1)[1] if " | " in error else ""
+        rest = text[len(res.error or ""):] if text.startswith(res.error or "") else text
+        rest = "\n".join(x for x in _OR_WARNINGS_RE.sub("", rest).splitlines() if not x.startswith("[WARNING]"))
+        m = self._DOWNLOAD_RE.search(error + "\n" + rest)
         return m.group(0) if m else None
 
     def _download_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
@@ -559,10 +704,15 @@ class OpenRewriteRunner:
         forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()
         log.info("rewrite %s (%s)", ", ".join(ids), goal)
-        # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 같은 명령을 다시 실행한다
-        pr, log_path = run_logged_with_stubs(self.cfg, cmd, cwd=cwd, env=env, log_path=log_path, timeout_s=self.timeout_s,
-                                             journal=self.ws.journal, memo=memo_for(self.ws), project_root=self.ws.root,
-                                             runner=run_logged)
+        # OpenRewrite가 Maven과 같은 미러를 고르도록 번역한 settings 사본을 이 호출 동안만 쓴다
+        # Maven은 MAVEN_ARGS를 명령 인자처럼 읽으므로 그 -D도 pom 값보다 우선한다
+        defines = define_names([*cmd, *_split(env.get("MAVEN_OPTS", "")), *_split(env.get("MAVEN_ARGS", ""))])
+        with openrewrite_settings(self.cfg, self.ws.root, defines) as prepared:
+            cmd = self._with_settings_copy(cmd, prepared)
+            # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 같은 명령을 다시 실행한다
+            pr, log_path = run_logged_with_stubs(self.cfg, cmd, cwd=cwd, env=env, log_path=log_path,
+                                                 timeout_s=self.timeout_s, journal=self.ws.journal,
+                                                 memo=memo_for(self.ws), project_root=self.ws.root, runner=run_logged)
         out = pr.text
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in out
         # 이전 플러그인은 잘못된 레시피에도 성공으로 끝나므로 로그의 검증 문제로 실패 처리한다
@@ -601,6 +751,43 @@ class OpenRewriteRunner:
         self._journal(res, module, config=str(config_path), artifacts=coords)
         log.info("rewrite %s: %d changed files (%.1fs)", "OK" if ok else "FAILED", len(changed), pr.duration_s)
         return res
+
+    def _with_settings_copy(self, cmd: list[str], prepared: PreparedSettings) -> list[str]:
+        """그림자 미러를 더한 settings 사본이 있으면 명령의 ``-s`` 값을 그 사본으로 바꾸고, 결과를 실행마다 한 번 기록한다.
+
+        Journal `rewrite_settings {translated, shadows: [{repository, mirror}], skipped: [{repository, reason}],
+        reason}` and one INFO line (a WARNING when preparing the copy raised) the first time a run sees a record, and
+        again only when the record changes; nothing when the file needs no shadow. Never a url or the copy's content.
+        Without a copy the command is returned unchanged."""
+        tr = prepared.translation
+        if prepared.error is not None:
+            rec = {"translated": False, "shadows": [], "skipped": [], "reason": f"error: {prepared.error}"}
+        elif tr is not None and tr.needed:
+            rec = tr.record()
+        else:
+            return cmd
+        key = str(getattr(self.ws, "run_dir", id(self.ws)))
+        if _SETTINGS_RECORDS.get(key) != rec:
+            _SETTINGS_RECORDS[key] = rec
+            self.ws.journal({"event": "rewrite_settings", **rec})
+            name = Path(str(self.cfg.build.settings_file)).name
+            skipped = ", ".join(f"{x['repository']} ({x['reason']})" for x in rec["skipped"]) or "none"
+            if prepared.error is not None:
+                log.warning("rewrite: no settings copy for OpenRewrite could be made from %s (%s); the original is "
+                            "passed", name, prepared.error)
+            elif rec["reason"]:
+                log.info("rewrite: OpenRewrite gets the settings file %s unchanged: %s", name, rec["reason"])
+            else:
+                shadows = ", ".join(f"{x['repository']} -> {x['mirror'] or 'its own url'}" for x in rec["shadows"])
+                log.info("rewrite: OpenRewrite gets a copy of the settings file %s with %d shadow mirror(s) (%s; "
+                         "skipped: %s)", name, len(rec["shadows"]), shadows or "none", skipped)
+        if prepared.path is None:
+            return cmd
+        original = str(Path(str(self.cfg.build.settings_file)).expanduser().absolute())
+        for i in range(len(cmd) - 1):
+            if cmd[i] == "-s" and cmd[i + 1] == original:
+                return cmd[:i + 1] + [str(prepared.path)] + cmd[i + 2:]
+        return cmd
 
     def _journal(self, res: RewriteResult, module: str | None, **extra) -> None:
         self.ws.journal({"event": "rewrite", "recipes": res.recipes, "ok": res.ok, "dry_run": res.dry_run,

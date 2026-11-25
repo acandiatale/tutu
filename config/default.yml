@@ -399,6 +399,12 @@ openrewrite:
   # 메모리 부족으로 실패했을 때 한 번 더 실행하는 JVM 옵션. 실행하는 PC나 파드의 메모리보다 크게 잡지 않는다.
   oom_retry_jvm_args: ["-Xmx8g"]
   plugin_goal: run                       # run: 파일을 바꾼다 | dryRun: 바꿀 내용만 확인한다(점검용)
+  # OpenRewrite는 settings.xml의 미러를 Maven과 다르게 고른다(external:http:*를 읽지 못하고, 여러 미러가 맞으면
+  # 파일에서 먼저 나온 것을 쓴다). true면 OpenRewrite를 실행할 때만 원래 파일에 미러를 몇 개 더한 사본을 쓴다.
+  # 더한 미러는 Maven은 쓰지 않고 OpenRewrite만 읽으므로, OpenRewrite도 Maven과 같은 곳에서 pom을 받는다.
+  # 빌드는 원래 파일을 그대로 쓰고, 사본은 실행이 끝나면 지운다. 사본을 만들 수 없으면 원래 파일을 쓰고
+  # 저널(rewrite_settings)에 이유를 남긴다. false면 항상 원래 파일을 쓴다.
+  translate_settings: true
   # 프록시 오류, 연결 끊김 같은 다운로드 실패로 레시피 실행이 실패했거나 x.y.x 같은 버전을 남겼을 때
   # 기다렸다가 다시 실행하는 횟수(0이면 다시 실행하지 않음)와 기다리는 시간(초).
   download_retry: 1
