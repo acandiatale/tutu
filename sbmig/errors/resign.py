@@ -1,12 +1,12 @@
 """KB 재서명에서 파일을 건드리지 않는 계산 부분을 맡는 모듈.
-이전 규칙으로 서명된 기록의 L2를 현재 규칙으로 다시 계산하고 케이스를 어디로 옮길지 정한다.
-파일 쓰기는 :meth:`sbmig.errors.cases.CaseStore.resign`이 KB 잠금 안에서 한다.
-- 케이스 ID는 L2의 해시이므로 서명 규칙이 바뀌면 같은 오류가 다른 ID를 받는다
-- 그래서 기록마다 서명할 때의 규칙 버전 ``sig``를 남긴다
-- ``SIGNATURE_CHANGES``에서 그 버전 이후 바뀐 오류 분류만 다시 계산하고, 나머지는 버전만 갱신한다
-- 다시 계산할 때는 기록의 ``symbol`` / ``location`` / ``artifact`` / ``goal``을 쓴다. 없으면 ``raw``의 javac 줄을 읽는다
-- 결과의 분류가 달라지거나 키가 비면 저장된 L2를 그대로 둔다
-- 계산하는 동안 프로세스 전역의 reactor 모듈 이름 목록을 비워 두고 끝나면 되돌린다
+이전 규칙으로 서명된 기록의 L2를 현재 규칙으로 다시 계산하고, 케이스를 어디로 옮길지 정한다.
+
+The file writes are :meth:`sbmig.errors.cases.CaseStore.resign`'s, inside the KB lock. A case id is a hash of
+the L2, so a rule change gives the same error another id; that is why every record keeps the rule version it
+was signed with (``sig``). Only the error classes ``SIGNATURE_CHANGES`` lists after that version are
+recomputed; the other records only get the new version. The recomputation reads the record's ``symbol`` /
+``location`` / ``artifact`` / ``goal``, else the javac lines of ``raw``. When the result changes the class or
+its key comes out empty, the stored L2 is kept.
 
 * :func:`rebuild_error` — a ``BuildError`` from an entry's stored facts (``raw`` continuation lines for old entries).
 * :func:`resigned_l2` — the current L2 of an entry (only for classes the rules changed since the entry's ``sig``).
@@ -33,17 +33,17 @@ log = logging.getLogger("sbmig.errors")
 Signer = Callable[[BuildError], str]
 
 # javac의 이어지는 줄을 찾는 식이다. sbmig.build.log_parser._CONT_RE와 같아야 하지만 비공개 이름이라 따로 둔다
-# 저장된 raw의 줄 앞에는 '[ERROR]'가 붙어 있을 수 있으므로 먼저 뗀다
+# 저장된 raw의 줄 앞에는 '[ERROR]'가 붙어 있을 수 있다. 먼저 뗀다
 _CONT_RE = re.compile(r"^\s+(?P<key>symbol|location|required|found|reason)\s*:\s*(?P<val>.*)$")
 _LEVEL_RE = re.compile(r"^\s*\[(?:ERROR|FATAL|WARNING|WARN|INFO)\]")
 # JSON 파싱 없이 errors.jsonl 한 줄에서 최상위 'l2'와 'sig'만 읽는다
-# 문자열 안 따옴표는 이스케이프되고 하위 객체에는 l2 / sig 키가 없으므로 잘못 찾을 일이 없다
+# 문자열 안 따옴표는 이스케이프되고, 하위 객체에는 l2 / sig 키가 없다. 그래서 잘못 찾지 않는다
 _LINE_L2_RE = re.compile(r'"l2"\s*:\s*"([^"|\\]*)\|([^"|\\]*)')
 _LINE_SIG_RE = re.compile(r'"sig"\s*:\s*(\d+)')
 _LINE_CASE_RE = re.compile(r'"case_id"\s*:\s*"([^"\\]*)"')
 _ANY_CASE_RE = re.compile(rb'"case_id"\s*:\s*"([^"\\]*)"')
 ID_HEAD = '{"id":"'
-# 텍스트를 정리할 때 잘라 낸 값 끝에 붙는 표시이며, 잘린 값은 없는 것으로 본다
+# 텍스트를 정리할 때 잘라 낸 값 끝에 붙는 표시다. 잘린 값은 없는 것으로 본다
 _CUT_RE = re.compile(r"…\[\d+ more characters\]\s*$")
 L2_LOG_CHARS = 100
 
@@ -72,7 +72,7 @@ def l2_parts(l2: str) -> tuple[str, str, str]:
 
 
 def cut(text: str, limit: int = L2_LOG_CHARS) -> str:
-    """로그에 출력하기 위해 L2를 ``limit``자까지 자른다."""
+    """로그에 쓸 수 있게 L2를 ``limit``자까지 자른다."""
     t = " ".join((text or "").split())
     return t if len(t) <= limit else t[: limit - 1] + "…"
 
@@ -99,7 +99,7 @@ def line_case_ids(line: bytes) -> set[str]:
 
 def older_record(line: str, version: Optional[int] = None,
                  skipped: Collection[str] = ()) -> Optional[ErrorEntry]:
-    """이전 규칙으로 서명됐고 그 뒤 분류 규칙이 바뀐 레코드면 그 항목을 반환하고, 아니면 None을 반환한다.
+    """이전 규칙으로 서명됐는데 그 뒤 분류 규칙이 바뀐 레코드면 그 항목을 반환한다. 아니면 None이다.
     정규식으로 먼저 거르고 후보만 ``parse_record``로 읽는다.
     파싱되지 않는 줄과 ``skipped``에 있는 케이스도 None을 반환한다.
 
@@ -174,7 +174,7 @@ def rebuild_error(entry: ErrorEntry) -> Optional[BuildError]:
         return None
 
 
-# 분류별 규칙이 읽는 값이 없으면 다시 계산해도 이전 키가 나올 뿐이므로 저장된 L2를 유지한다
+# 분류별 규칙이 읽는 값이 없으면 다시 계산해도 이전 키가 나온다. 저장된 L2를 그대로 둔다
 _NEEDS: dict[str, Callable[[BuildError], bool]] = {
     "cannot_find_symbol": lambda err: bool((err.symbol or "").strip()),
     "no_suitable_method": lambda err: bool((err.raw or "").strip()),
@@ -183,8 +183,8 @@ _NEEDS: dict[str, Callable[[BuildError], bool]] = {
 
 @contextmanager
 def no_reactor_modules() -> Iterator[None]:
-    """재계산하는 동안 ``signature_for``가 읽는 reactor 모듈 이름을 비워 두고, 끝나면 예외가 나도 원래대로 되돌린다.
-    이관 중에 재서명해도 실행 중인 프로젝트의 모듈 이름에 기대지도, 바꾸지도 않게 하기 위해서다."""
+    """재계산하는 동안 ``signature_for``가 읽는 reactor 모듈 이름을 비워 둔다. 끝나면 예외가 나도 되돌린다.
+    그래서 이관 중에 재서명해도 실행 중인 프로젝트의 모듈 이름을 쓰지도, 바꾸지도 않는다."""
     saved = _sigs.reactor_modules()
     _sigs.set_reactor_modules(())
     try:
@@ -195,7 +195,7 @@ def no_reactor_modules() -> Iterator[None]:
 
 def default_signer(err: BuildError) -> str:
     """현재 규칙으로 L2를 계산한다.
-    트리아지와 같은 순서로 ``signature_for`` 다음에 ``refine_signature``를 적용한다."""
+    ``signature_for`` 다음에 ``refine_signature``를 적용한다. 오류 묶기(triage)와 같은 순서다."""
     from sbmig.triage.cluster import refine_signature
 
     l1, l2 = _sigs.signature_for(err)
@@ -246,7 +246,7 @@ class EntryPlan:
 def plan_entries(entries: Union[Mapping[int, Optional[ErrorEntry]], list[Optional[ErrorEntry]]],
                  signer: Optional[Signer] = None, version: Optional[int] = None) -> EntryPlan:
     """항목마다 버전을 갱신할지와 새 L2를 정한다.
-    규칙이 바뀐 분류의 이전 기록만 본다. None인 항목은 읽지 못한 줄이므로 건너뛴다.
+    규칙이 바뀐 분류의 이전 기록만 본다. None인 항목은 읽지 못한 줄이라 건너뛴다.
 
     ``entries`` = a mapping position → entry, or a list."""
     v = current_version() if version is None else version
@@ -265,8 +265,8 @@ def plan_entries(entries: Union[Mapping[int, Optional[ErrorEntry]], list[Optiona
 @dataclass
 class ResignReport:
     """재서명 결과를 담는 데이터 클래스. ``dry_run``이면 실제로 바꾸지 않고 할 일만 담는다.
-    옮긴 케이스 ``moves``, 나뉜 케이스 ``splits``, 합친 수 ``merged``, 읽지 못한 케이스 ``unreadable``과
-    ``reasons``, 실패 메시지 ``error``를 가진다."""
+    옮긴 케이스는 ``moves``, 나뉜 케이스는 ``splits``, 합친 수는 ``merged``다.
+    읽지 못한 케이스는 ``unreadable``과 ``reasons``에, 실패 메시지는 ``error``에 담는다."""
     version: int = 0
     dry_run: bool = False
     entries_stamped: int = 0

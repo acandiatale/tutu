@@ -1,10 +1,10 @@
-"""빌드 오류 수정을 LLM에 요청하는 패키지.
-케이스 하나의 원인, 해결 방법, 편집, 재사용할 스크립트를 LLM에서 받아 오는 LLMFixer와
-회사 게이트웨이를 포함한 LLM 클라이언트를 제공한다.
-수정 루프는 보강이나 신규 시도에서 `LLMFixer.propose_script`를 호출한다. 구조 검토도 같은 클라이언트와 답변 파서를 쓴다.
-- fixer는 작업 트리를 직접 고치지 않는다. 적용, 커밋, 시도 결과 평가, 되돌리기는 수정 루프가 하고
-  성공 여부는 모두 빌드로 판단한다
-- API 키는 환경 변수 `LLM_API_KEY`에서만 읽고 로그나 기록에 남기지 않는다
+"""빌드 오류 수정을 LLM에 요청하는 패키지. LLMFixer와 회사 게이트웨이를 포함한 LLM 클라이언트가 있다.
+
+``LLMFixer`` gets one case's cause, solution, edits and reusable script from the LLM. The fix loop calls
+`LLMFixer.propose_script` for augment and new tries; the structure review uses the same client and answer
+parser. A fixer never edits the work tree itself: applying, committing, scoring and rolling back are the fix
+loop's, and every success is judged by a build. The API key is read only from the environment variable
+`LLM_API_KEY` and is never written to a log or a record.
 
 Public entry points (docs/INTERFACES.md):
 

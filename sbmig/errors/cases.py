@@ -1,20 +1,12 @@
-"""KB에 오류 기록과 수정 스크립트를 저장하는 ``CaseStore``를 정의하는 모듈.
-모든 실행의 오류 목록과 케이스별 폴더를 관리한다. 바깥에서는 파사드 ``sbmig.kb.FileKnowledgeBase``로 쓴다.
-수정 루프는 ``best`` / ``latest``로 스크립트를 찾고, ``add_script``로 저장하고, ``credit``으로 결과를 기록한다.
-실행이 끝나면 ``record_run``을 호출하고, ``sbmig kb reindex``는 ``recount``를 호출한다.
-- 케이스 폴더 이름은 케이스 ID ``sha1(L2)[:10]``이고, 케이스가 같은지는 L2 문자열로 비교한다
-- 저장된 case.json의 L2가 요청한 L2와 다르면 다른 케이스로 보고 재사용도 기록도 하지 않는다(``same_case``)
-- 항목과 case.json에는 L2를 만든 서명 규칙 버전 ``sig``를 기록한다
-- 서명 규칙이 바뀌면 ``resign``이 기록과 스크립트를 새 ID로 옮기고 이전 ID는 ``was`` / ``aliases``에 남긴다
-- 재서명은 규칙이 바뀐 오류 종류의 기록만 다시 계산한다. 별칭으로 케이스를 합치지는 않는다
-- 스크립트는 저장하면 unverified, 다른 프로젝트에서 오류를 해결하면 proven, 사람이 끄면 retired 상태가 된다
-- 비밀 값이 든 스크립트는 마스킹해서 저장하고 바로 retired로 둔다
-- 버전과 실행 기록마다 이관 범위(full / jdk-jakarta)를 기록한다. 횟수와 상태는 그 버전과 같은 범위의 실행만 센다
-- 쓰기는 KB 잠금 안에서 원자적으로 하고 텍스트는 마스킹한다. 읽기는 잠그지 않고 예외를 던지지 않는다
-- 여러 파드가 같은 KB를 쓰므로 잠금 안에서 쓰기 전에 케이스를 디스크에서 다시 읽는다
-- 서버에는 있지만 읽지 못한 case.json 위에는 쓰지 않는다(``CaseUnreadable``)
-- 원본은 ``errors.jsonl``이고 나머지는 여기서 만든 파일이다. 손으로 고치지 말고 ``kb reindex``로 다시 만든다
-KB는 파일로만 관리한다(DB 사용 금지).
+"""KB에 오류 기록과 수정 스크립트를 저장하는 모듈. 모든 실행의 오류 목록과 케이스별 폴더를 관리한다.
+바깥에서는 파사드 ``sbmig.kb.FileKnowledgeBase``로 쓴다.
+
+Callers: the fix loop finds scripts with ``best`` / ``latest``, stores them with ``add_script`` and records
+results with ``credit``; a run's end calls ``record_run``; ``sbmig kb reindex`` calls ``recount``. A case
+folder is named by its case id ``sha1(L2)[:10]``; two records are the same case when their L2 strings are
+equal. A re-sign keeps the old ids in ``was`` (entries) and ``aliases`` (cases). ``errors.jsonl`` is the
+source; every other file here is derived from it: never edit them by hand, rebuild them with ``kb reindex``.
+The KB is file-based only (no database).
 
 Spec: docs/v2/PLAN-v2.1.md §3.4. Every run's error list + one folder per case.
 
@@ -108,7 +100,7 @@ SUCCESS_RESULTS = frozenset({"improved", "build_ok"})
 ROUND_TRIP = "round_trip"
 FAILURE_RESULTS = frozenset({"no_change", "regressed", "reverted", "apply_failed", "blocked", ROUND_TRIP})
 # 범위를 줄인 실행의 프레임워크 검사가 되돌린 다른 범위 버전의 실행. 그 버전의 실패로 세지 않는다
-# 같은 범위 버전이 되돌려지면 실제 실패이므로 apply_failed로 기록한다
+# 같은 범위 버전이 되돌려지면 실제 실패다. apply_failed로 기록한다
 OUT_OF_SCOPE = "out_of_scope"
 SCOPE_FULL = "full"
 SCOPE_REDUCED = "jdk-jakarta"
@@ -119,7 +111,7 @@ REASON_CHARS = 600                # ScriptRun.reason / CaseScript.reason / last_
 RUN_FILES = 50                    # ScriptRun.files에 남기는 파일 수
 SCRIPT_RUNS = 30                  # errors.script_runs 기본값. 0이면 제한하지 않는다
 RUN_SOURCES = frozenset({"kb-script", "llm-new", "llm-augment"})   # 저장된 스크립트가 실행된 시도 출처
-# 시도 note 중 실패 이유가 아니라 시도를 설명하는 부분이므로 실행 기록의 reason에서 뺀다
+# 실패 이유가 아니라 시도를 설명하는 note다. 실행 기록의 reason에서 뺀다
 NOISE_NOTES = ("reused stored v", "escalation model requested", "merge-conflict hint:")
 _NOT_RUN = ("stored (unverified), not run", "not run again")        # 스크립트가 실행되지 않은 시도
 _RAN_THEN_EDITS = "did not apply → applying the answer's edits"      # 실행은 했지만 실패해서 응답의 edits를 적용한 시도
@@ -140,9 +132,9 @@ _NO_LINK_WINERRORS = frozenset({1, 17, 50, 1142})
 
 
 class CaseUnreadable(OSError):
-    """서버에는 case.json이 있는데 이 클라이언트가 ``CONFIRM_SECONDS`` 동안 읽지 못했을 때 던지는 예외 클래스.
+    """서버에 있는 case.json을 ``CONFIRM_SECONDS`` 동안 읽지 못했을 때 던지는 예외 클래스.
     그 위에 새 case.json을 쓰지 않고 이번 KB 쓰기만 건너뛴다.
-    OSError를 상속하므로 I/O 오류를 잡는 호출부가 WARNING으로 끝낸다.
+    OSError의 하위 클래스라서 I/O 오류를 잡는 호출부가 WARNING으로 끝낸다.
 
     "The server has it" = an exclusive create answered EEXIST."""
 
@@ -150,15 +142,15 @@ class CaseUnreadable(OSError):
 class CaseKeyMismatch(OSError):
     """케이스 ID는 같은데 저장된 case.json의 L2가 요청한 L2와 다를 때 던지는 예외 클래스.
     해시 충돌이나 손으로 고친 case.json에서 생긴다. 그 케이스에는 아무것도 쓰지 않는다.
-    OSError를 상속하므로 호출부가 ``CaseUnreadable``처럼 WARNING으로 끝낸다."""
+    OSError의 하위 클래스라서 호출부가 ``CaseUnreadable``처럼 WARNING으로 끝낸다."""
 
 
-# 키 불일치 경고를 프로세스마다 한 번만 남기기 위해 (KB 디렉토리, 케이스 ID)를 기억한다
+# 키 불일치를 이미 경고한 (KB 디렉토리, 케이스 ID). 경고는 프로세스마다 한 번만 남긴다
 _MISMATCH_SAID: set[tuple[str, str]] = set()
 
 
 def scope_of(value: Any) -> str:
-    """기록된 이관 범위를 반환한다. 빈 값이나 None은 범위를 기록하기 전의 기록이므로 ``full``로 본다."""
+    """기록된 이관 범위를 반환한다. 값이 비어 있으면 범위를 기록하기 전의 기록이라 ``full``로 본다."""
     v = str(value or "").strip()
     return v or SCOPE_FULL
 
@@ -169,7 +161,7 @@ def own_run(s: CaseScript, r: ScriptRun) -> bool:
 
 
 def scope_label(scope: Any) -> str:
-    """로그와 힌트에 쓸 범위 이름 ``full migration`` / ``jdk-jakarta (reduced scope)``를 반환한다."""
+    """로그와 힌트에 쓸 범위 이름을 반환한다(``full migration`` / ``jdk-jakarta (reduced scope)``)."""
     v = scope_of(scope)
     return "full migration" if v == SCOPE_FULL else f"{v} (reduced scope)"
 
@@ -224,7 +216,7 @@ def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
 def run_reason(result: str, note: str = "", head: str = "") -> str:
     """저장된 스크립트를 실행했는데 케이스를 해결하지 못한 이유를 한 줄로 만든다.
     결과가 improved / build_ok면 빈 문자열을 반환한다.
-    ``head`` 뒤에 시도 note에서 시도 설명을 뺀 부분을 붙이고, 남는 것이 없으면 결과 이름을 쓴다.
+    ``head`` 뒤에 시도 note를 붙인다. 시도를 설명하는 부분은 뺀다. 남는 것이 없으면 결과 이름을 반환한다.
 
     Stored as ScriptRun.reason. ``head`` example from the fix loop: ``no_change: 3 of 3 targeted error(s)
     remained — …``. The parts cut from the note are ``NOISE_NOTES`` (reuse banner, escalation request,
@@ -240,7 +232,7 @@ def run_reason(result: str, note: str = "", head: str = "") -> str:
 
 def first_reason(reason: str, parent: int | None = None, limit: int = 160) -> str:
     """로그 줄에 쓸 이유의 첫 부분만 잘라서 반환한다.
-    보강본 이유 앞의 ``v<parent>: ``는 로그 줄에 이미 있으므로 뺀다."""
+    보강본 이유 앞의 ``v<parent>: ``는 로그 줄에 이미 있어서 뺀다."""
     t = " ".join((reason or "").split())
     if parent and t.startswith(f"v{parent}: "):
         t = t[len(f"v{parent}: "):]
@@ -285,7 +277,7 @@ def _ts(at: Any) -> float:
 
 def _run_key(r: ScriptRun) -> tuple[str, int, int] | None:
     """실행 기록의 중복을 판단하는 키 (run_id, round, n)를 반환한다.
-    시도 번호가 없는 기록은 None을 반환하므로 다른 기록과 합치지 않는다."""
+    시도 번호가 없는 기록은 None이다. 그런 기록은 다른 기록과 합치지 않는다."""
     return (r.run_id, int(r.round), int(r.n)) if r.n else None
 
 
@@ -298,7 +290,7 @@ def _resolved_elsewhere(s: CaseScript) -> bool:
     more distinct projects (one of them is not the maker's)."""
     if s.project:
         return any(p and p != s.project for p in s.projects)
-    # 이전 기록은 project가 비어 있어 자기 프로젝트도 다른 곳으로 보이므로 실행 ID와 프로젝트 수로만 판단한다
+    # 이전 기록은 project가 비어 있어서 자기 프로젝트도 남의 것으로 보인다. 실행 ID와 프로젝트 수로 판단한다
     if s.created_by and any(r.result in SUCCESS_RESULTS and r.run_id and r.run_id != s.created_by and own_run(s, r)
                             for r in s.runs):
         return True
@@ -324,7 +316,7 @@ def _unknown(obj: Any, fields: Any) -> dict[str, Any]:
 
 def _keep_nested_extra(case: CaseInfo, data: dict[str, Any]) -> None:
     """case.json의 스크립트 버전과 실행 기록에 있는, 모델이 모르는 키를 객체에 붙여 둔다.
-    새 버전의 코드가 쓴 필드를 이전 버전이 다시 저장할 때 잃지 않기 위해서다.
+    새 버전의 코드가 쓴 필드를 이전 버전의 코드가 다시 저장해도 잃지 않게 한다.
 
     Unknown keys of a script version / a run record (written by a newer version of the code) are attached to the
     parsed objects (`__pydantic_extra__`; the models ignore unknown keys) so that `_save` writes them back and a
@@ -466,7 +458,7 @@ class CaseStore:
 
     def _keep_alive(self) -> None:
         """긴 작업 중에 KB 잠금이 오래된 것으로 처리되지 않도록 잠금 파일의 수정 시각을 갱신한다.
-        잠금 모듈이 실제 갱신을 몇 초에 한 번으로 줄이므로 자주 호출해도 된다."""
+        잠금 모듈이 실제 갱신을 몇 초에 한 번으로 줄인다. 그래서 자주 호출해도 된다."""
         from sbmig.kb.lock import keep_alive
 
         keep_alive(self.root)
@@ -489,7 +481,7 @@ class CaseStore:
         return dict(hit[1]) if hit else {}
 
     def pin_of(self, case_id: str) -> str:
-        """사람이 차단으로 고정한 케이스면 ``block`` / ``block:<이유>``를, 아니면 빈 문자열을 반환한다.
+        """사람이 차단으로 고정한 케이스면 ``block`` 또는 ``block:<이유>``를 반환한다. 아니면 빈 문자열이다.
         ``pin``의 다른 값은 여기서 무시한다. 그런 값은 ``sbmig kb validate``가 알려 준다."""
         p = self.extra(case_id).get("pin")
         p = p.strip() if isinstance(p, str) else ""
@@ -509,8 +501,8 @@ class CaseStore:
     def same_case(self, case_id: str, l2: str, case: Optional[CaseInfo] = None) -> bool:
         """저장된 케이스가 이 L2의 케이스인지 확인한다.
         두 L2가 모두 있고 서로 다를 때만 False를 반환한다. 예외는 던지지 않는다.
-        False면 이 프로세스 동안 그 ID를 다른 서명의 것으로 기억하고,
-        ``best`` / ``latest`` / ``credit`` / ``describe``가 그 ID를 건너뛴다.
+        False면 그 ID를 이 프로세스 동안 다른 서명의 것으로 기억한다.
+        그러면 ``best`` / ``latest`` / ``credit`` / ``describe``가 그 ID를 건너뛴다.
 
         A later matching ask clears the mark. True when there is no case or either L2 is empty."""
         if not l2 or not valid_case_id(case_id):
@@ -532,8 +524,8 @@ class CaseStore:
 
     def _case_or_new(self, case_id: str, l2: str = "", name: str = "",
                      kind: Optional[ErrorKind] = None) -> tuple[CaseInfo, dict[str, Any]]:
-        """기존 케이스를 읽어 비어 있는 l2, 이름, 종류만 채우거나, 없으면 새 CaseInfo를 만들어 추가 키와
-        함께 반환한다. 잠금 안에서 호출한다.
+        """케이스를 읽어 (케이스, 추가 키)를 반환한다. 잠금 안에서 호출한다.
+        기존 케이스는 비어 있는 l2, 이름, 종류만 채운다. 없으면 새 CaseInfo를 만든다.
         없다고 읽히면 :meth:`_confirm_new`로 정말 없는지 확인한 뒤에만 새로 만든다."""
         hit = self._read(case_id)
         if hit is None:
@@ -552,10 +544,10 @@ class CaseStore:
 
     def _confirm_new(self, case_id: str) -> Optional[tuple[CaseInfo, dict[str, Any]]]:
         """잠금 안에서 케이스가 정말 없는지 확인한다.
-        NFS 캐시가 '없음'으로 잘못 답할 수 있으므로 배타적 생성으로 서버에 직접 확인한다.
-        - 폴더 ``mkdir``이 성공하면 새 케이스이므로 None을 반환한다
-        - case.json이 이미 있으면 ``CONFIRM_SECONDS`` 동안 다시 읽어 그 케이스를 반환하고,
-          ``REPAIR_SECONDS`` 동안 비었거나 깨져 있으면 None을 반환해 새로 쓰게 한다
+        NFS 캐시는 '없음'으로 잘못 답할 수 있다. 그래서 배타적 생성으로 서버에 직접 확인한다.
+        - 폴더 ``mkdir``이 성공하면 새 케이스다. None을 반환한다
+        - case.json이 이미 있으면 ``CONFIRM_SECONDS`` 동안 다시 읽어 그 케이스를 반환한다
+        - 열리지만 ``REPAIR_SECONDS`` 동안 비었거나 깨져 있으면 None을 반환한다. 그러면 새로 쓴다
         - 끝내 읽지 못하면 :class:`CaseUnreadable`을 던진다
 
         Inside the lock, confirm that a case reading as missing really is new: an NFS client may still answer "no
@@ -584,13 +576,13 @@ class CaseStore:
                 names = os.listdir(d)
             except OSError:
                 names = []
-            # 오류별 JSON만 있는 폴더는 record_run이 L2 없는 항목을 기록한 것이므로 경고 없이 새 케이스로 만든다
+            # 오류별 JSON만 있는 폴더는 record_run이 L2 없는 항목을 기록한 폴더다. 경고 없이 새 케이스로 만든다
             if any(n != ENTRIES_DIR for n in names):
                 log.warning("kb: cases/%s holds no %s (a writer stopped before saving it?) — a fresh %s is written; "
                             "the scripts already there keep their numbers", case_id, CASE_FILE, CASE_FILE)
             return None
-        # 배타적 생성이 실패해도 클라이언트 캐시가 고쳐진다는 보장이 없으므로 폴더를 열어 속성을 다시
-        # 가져오고 open()으로 반복해서 읽는다
+        # 배타적 생성이 실패해도 클라이언트 캐시가 바로 고쳐지지는 않는다.
+        # 폴더를 열어 속성을 다시 가져오고 open()으로 반복해서 읽는다
         start = time.monotonic()
         deadline = start + (CONFIRM_SECONDS if there else REPAIR_SECONDS)
         delay, bad_since, state, detail, said = 0.05, None, "missing", "", False
@@ -606,7 +598,7 @@ class CaseStore:
                 return hit
             _, state, detail = self._load(case_id)
             now = time.monotonic()
-            # 원자적 교체 중에는 열리지만 비었거나 깨진 파일이 나오지 않으므로, 잠시 뒤에도 그러면 고친다
+            # 원자적 교체 중에는 비었거나 깨진 파일이 보일 수 없다. 잠시 뒤에도 그렇게 보이면 새로 쓴다
             if state in ("empty", "damaged"):
                 bad_since = now if bad_since is None else bad_since
                 if now - bad_since >= REPAIR_SECONDS:
@@ -638,7 +630,7 @@ class CaseStore:
 
     def _case_file_on_server(self, case_id: str) -> Optional[bool]:
         """case.json이 정말 있는지 ``O_EXCL`` 생성으로 서버에 확인한다.
-        생성이 성공하면 만든 파일을 바로 지우고 False를, 알 수 없으면 None을 반환한다."""
+        생성이 성공하면 만든 파일을 바로 지우고 False를 반환한다. 이미 있으면 True, 알 수 없으면 None이다."""
         p = self.case_dir(case_id) / CASE_FILE
         try:
             fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
@@ -692,8 +684,8 @@ class CaseStore:
 
     def best(self, case_id: str, scope: str = "") -> Optional[tuple[CaseScript, str]]:
         """먼저 실행할 스크립트를 고른다.
-        묻는 실행과 범위가 같은 버전을 먼저 보고, 그 안에서 최신 proven, 최신 unverified 순으로 반환한다.
-        retired, 비멱등(``non_idempotent``), 왕복(``round_trip``), 파일이 없는 버전은 고르지 않는다.
+        묻는 실행과 범위가 같은 버전이 먼저다. 그 안에서는 최신 proven, 최신 unverified 순이다.
+        retired, 비멱등(``non_idempotent``), 왕복(``round_trip``) 버전과 파일이 없는 버전은 고르지 않는다.
         고를 것이 없으면 None을 반환한다.
 
         Rank = (same scope as ``scope``, proven, version), newest first: a version of the asking run's scope
@@ -703,9 +695,8 @@ class CaseStore:
         if case_id in self._foreign:
             return None
         want = scope_of(scope)
-        # 두 번째 실행에서 또 파일을 바꾸는 스크립트는 다음 프로젝트를 반쯤 고친
-        # 채로 망가뜨리므로 기록만 남기고 재사용하지 않는다
-        # 다른 케이스와 서로의 수정을 되돌린 버전도 LLM 없이 다시 실행하면 같은 왕복을 되풀이한다
+        # 두 번째 실행에서 또 파일을 바꾸는 버전은 다음 프로젝트를 반쯤 고친 채로 망가뜨린다. 재사용하지 않는다
+        # 다른 케이스와 서로의 수정을 되돌린 버전도 다시 실행하면 같은 왕복을 되풀이한다. 재사용하지 않는다
         ranked = sorted((s for s in self.scripts(case_id)
                          if s.status != "retired" and not s.non_idempotent and not s.round_trip),
                         key=lambda s: (scope_of(s.scope) == want, s.status == "proven", s.version), reverse=True)
@@ -734,7 +725,8 @@ class CaseStore:
         같은 코드가 이미 있으면 그 버전을 반환한다.
         비밀 값이 든 코드는 마스킹해서 저장하고 바로 retired로 둔다.
         ``scope``는 스크립트를 만든 실행의 이관 범위다.
-        보강본의 케이스 ID가 재서명으로 옮겨 갔으면 같은 L2의 새 케이스에 저장하고, 케이스에 없는 ``parent``는 버린다.
+        보강본의 케이스 ID가 재서명으로 옮겨 갔으면 같은 L2의 새 케이스에 저장한다.
+        케이스에 없는 ``parent``는 버린다.
 
         ``parent`` = the version an augment extends, ``reason`` = why this version was made (the parent's
         failure in words, ``v1: no_change: …``). ``scope`` is recorded on the version, and as
@@ -770,10 +762,9 @@ class CaseStore:
                 raise CaseKeyMismatch(errno.EEXIST, f"cases/{case_id} holds another signature — the script is not "
                                                     "stored")
             if l2 and case.l2 == l2:
-                case.sig = max(int(case.sig or 0), current_version())   # 요청한 L2는 현재 규칙으로 만든 것이다
+                case.sig = max(int(case.sig or 0), current_version())   # 요청한 L2는 현재 규칙의 서명이다
             masked = self.clean.red.redact(code) or ""
-            # 마스킹된 코드는 실제로 실행된 코드가 아니어서 재사용하면 안
-            # 되므로, 마스킹본만 저장하고 바로 retired로 둔다
+            # 마스킹된 코드는 실제로 실행된 코드가 아니다. 재사용하지 않도록 바로 retired로 둔다
             secret = masked != code
             stored = SECRET_HEADER + masked if secret else code
             for s in case.scripts:
@@ -807,20 +798,20 @@ class CaseStore:
         return s                                          # cases.md는 실행이 끝날 때 record_run이 다시 쓴다
 
     def _disk_versions(self, case_id: str) -> list[int]:
-        """case.json 목록과 관계없이 케이스 폴더에 실제로 있는 ``fix_v<N>.py``의 번호 목록을 반환한다."""
+        """케이스 폴더에 실제로 있는 ``fix_v<N>.py``의 번호 목록을 반환한다. case.json은 보지 않는다."""
         d = self.case_dir(case_id)
         return [int(m.group(1)) for p in (d.glob("fix_v*.py") if d.is_dir() else [])
                 if (m := _SCRIPT_RE.match(p.name))]
 
     def _next_version(self, case: CaseInfo) -> int:
         """다음 스크립트 번호를 정한다. case.json의 버전과 폴더의 ``fix_v*.py`` 중 가장 큰 값에 1을 더한다.
-        번호를 재사용하지 않으므로 목록에 없는 파일을 덮어쓰지 않는다. ``add_script``와 ``merge_from``이 쓴다."""
+        번호를 재사용하지 않으니 목록에 없는 파일도 덮어쓰지 않는다. ``add_script``와 ``merge_from``이 쓴다."""
         return 1 + max([s.version for s in case.scripts] + self._disk_versions(case.case_id), default=0)
 
     def _claim_script(self, case_id: str, version: int, data: bytes) -> int:
         """``fix_v<version>.py``를 다른 파일을 덮어쓰지 않게 만들고 사용한 번호를 반환한다.
         같은 폴더의 임시 파일에 쓴 뒤 하드 링크로 이름을 붙인다.
-        번호가 이미 있으면 경고 후 다음 번호를 쓰고, 하드 링크를 지원하지 않으면 ``O_EXCL`` 생성으로 대신한다.
+        번호가 이미 있으면 경고하고 다음 번호를 쓴다. 하드 링크를 지원하지 않으면 ``O_EXCL`` 생성으로 대신한다.
 
         Create ``fix_v<version>.py`` exclusively — a temp file in the folder, then a hard link to the name (fails
         when the name exists: atomic, never overwrites); a number already taken (a write outside the lock) → a
@@ -921,12 +912,13 @@ class CaseStore:
                errors_left: int | None = None, errors_new: int | None = None, files: Iterable[Any] = (),
                scope: str = "", code: str = "", reused: bool = False) -> Optional[CaseScript]:
         """버전 N을 실행한 결과를 그 버전에 기록한다.
-        - improved / build_ok: 성공 수를 1 늘리고, 그 버전을 만든 프로젝트가 아니면 proven으로 바꾼다
+        - improved / build_ok: 성공 수를 1 늘린다. 그 버전을 만든 프로젝트가 아니면 proven으로 바꾼다
         - no_change / regressed / reverted / apply_failed / blocked / round_trip: 실패 수를 1 늘린다
-        - round_trip은 실행 범위와 관계없이 버전에 표시를 남기고, 같은 시도의 성공 기록이 있으면 그 성공을 되돌린다
+        - round_trip은 실행 범위와 관계없이 버전에 표시를 남긴다
+        - round_trip인데 같은 범위의 같은 시도가 성공으로 기록돼 있으면 그 성공을 되돌린다
         - 표시된 버전이 실행 범위와 관계없이 다시 성공하면 표시를 지운다. 재사용(``reused``)의 성공은 지우지 않는다
-        - partial / inconclusive는 ``last_result``만 바꾸고, pending은 무시한다
-        - 실행 범위(``scope``)가 버전의 범위와 다르면 실행 기록에만 남기고 성공, 실패 수와 상태는 바꾸지 않는다
+        - partial / inconclusive는 ``last_result``만 바꾼다. pending은 무시한다
+        - 실행 범위(``scope``)가 버전의 범위와 다르면 실행 기록에만 남긴다. 성공, 실패 수와 상태는 그대로 둔다
         - 케이스나 버전이 없으면 재서명으로 옮겨 간 케이스에서 같은 코드(``code``)의 버전을 찾아 기록한다
 
         ``scope`` = the scope of the run (``""`` = ``full``). A run in the other scope is kept in ``runs[]``
@@ -982,7 +974,7 @@ class CaseStore:
             own = scope_of(s.scope) == run_scope
             if result == OUT_OF_SCOPE and own:
                 result = "apply_failed"                   # 같은 범위 스크립트를 검사가 되돌렸으면 실제 실패다
-            # 다른 범위의 실행은 실행 기록에만 남기고 성공, 실패 수와 상태는 그 버전 범위의 실행으로만 센다
+            # 다른 범위의 실행은 실행 기록에만 남긴다. 성공, 실패 수와 상태는 그 버전 범위의 실행으로만 센다
             if own:
                 s.last_result = result
             prev = None
@@ -1001,8 +993,8 @@ class CaseStore:
             # 왕복 표시는 재사용에 관한 것이라 다른 범위의 실행에서도 남긴다
             if result == ROUND_TRIP:
                 s.round_trip = True
-            # 같은 코드의 LLM 답은 범위가 달라도 이 버전에 기록되므로 범위와 관계없이 표시를 지운다.
-            # 재사용은 표시 전에 계획됐을 수 있으므로 재사용의 성공으로는 지우지 않는다
+            # 같은 코드의 LLM 답은 범위가 달라도 이 버전에 기록된다. 그래서 범위와 관계없이 표시를 지운다.
+            # 재사용은 표시 전에 계획됐을 수 있다. 재사용의 성공으로는 지우지 않는다
             if result in SUCCESS_RESULTS and s.round_trip and not reused:
                 s.round_trip = False
                 log.info("cases/%s/fix_v%d.py: round-trip mark cleared (a success that was not a reuse%s)", case_id,
@@ -1049,7 +1041,7 @@ class CaseStore:
         return SECRET_HEADER + masked if masked != code else code
 
     def _alias_case(self, case_id: str, l2: str = "") -> str:
-        """재서명으로 ``case_id``가 옮겨 간 케이스, 즉 ``aliases``에 그 ID를 가진 케이스 ID를 반환한다.
+        """재서명으로 ``case_id``가 옮겨 간 케이스의 ID를 반환한다. ``aliases``에 그 ID를 가진 케이스다.
         없거나 여럿이거나 L2가 다르면 빈 문자열을 반환한다.
 
         Reads every case.json: called only on a miss."""
@@ -1059,7 +1051,8 @@ class CaseStore:
 
     def _moved_version(self, case_id: str, version: int, code: str
                        ) -> Optional[tuple[str, tuple[CaseInfo, dict[str, Any]], CaseScript]]:
-        """재서명으로 옮겨 간 케이스에서 그 스크립트 버전을 찾아 (케이스 ID, (케이스, 추가 키), 버전)을 반환한다.
+        """재서명으로 옮겨 간 케이스에서 그 스크립트 버전을 찾는다.
+        (케이스 ID, (케이스, 추가 키), 버전)을 반환한다.
         ``code``가 있으면 같은 코드의 버전을, 없으면 같은 번호를 쓴다. 찾지 못하면 None을 반환한다.
 
         By code because numbers may change in a merge; by number only when exactly one case holds the
@@ -1076,9 +1069,9 @@ class CaseStore:
         return None
 
     def mark_non_idempotent(self, case_id: str, version: int, note: str = "") -> Optional[CaseScript]:
-        """버전 N을 비멱등으로 표시한다. ok로 끝난 직후 다시 실행했을 때 트리가 또 바뀐 경우다.
+        """버전 N을 비멱등으로 표시한다. ok로 끝난 직후 다시 실행했더니 파일이 또 바뀐 버전이다.
         ``best``는 다시 고르지 않지만 보강의 바탕(``latest``)으로는 남긴다.
-        버전이 없으면 None을 반환하고 예외를 던지지 않는다.
+        버전이 없으면 None을 반환한다. 예외는 던지지 않는다.
 
         Example of such a script: one that adds an argument every run (``new JobBuilder(.., jobRepository,
         jobRepository)``). ``note`` goes to ``last_failure``."""
@@ -1165,12 +1158,12 @@ class CaseStore:
 
     # ------------------------------------------------------------------ errors.jsonl + cases
     def _known_ids(self) -> set[str]:
-        """KB errors.jsonl에 이미 있는 항목 ID를 모아 반환한다. 같은 항목을 두 번 기록하지 않기 위해 쓴다."""
+        """KB errors.jsonl에 이미 있는 항목 ID를 반환한다. 같은 항목을 두 번 기록하지 않으려고 쓴다."""
         return self._scan_lines()[0]
 
     def _scan_lines(self, skipped: Iterable[str] = ()) -> tuple[set[str], int]:
         """errors.jsonl을 한 번 읽어 항목 ID 집합과, 재서명이 필요한 레코드 수를 반환한다.
-        재서명이 필요한 레코드는 이전 규칙으로 서명됐고 그 뒤 규칙이 바뀐 분류에 속하는 것이다.
+        이전 규칙으로 서명됐는데 그 뒤 규칙이 바뀐 분류의 레코드가 재서명 대상이다.
         줄마다 정규식으로 먼저 거르고 후보만 파싱한다. ``skipped`` 케이스의 줄은 세지 않는다."""
         from sbmig.kb.jsonl import line_ids
 
@@ -1207,8 +1200,8 @@ class CaseStore:
     def record_run(self, entries: Iterable[ErrorEntry]) -> int:
         """실행이 끝난 항목들을 ``<kb>/errors.jsonl``에 추가하고 추가한 줄 수를 반환한다.
         이미 있는 ID는 건너뛴다.
-        케이스마다 seen / resolved / 프로젝트 / 마지막 원인과 해결 방법을 갱신하고, 오류별 JSON과 ``cases.md``를 쓴다.
-        이전 규칙으로 서명된 줄이 남으면 ``older_lines``에 그 수를 남긴다. 파사드가 보고 재서명을 호출한다.
+        케이스마다 seen / resolved / 프로젝트 / 마지막 원인과 해결 방법을 갱신한다. 오류별 JSON과 ``cases.md``도 쓴다.
+        이전 규칙으로 서명된 줄이 남으면 그 수를 ``older_lines``에 둔다. 파사드가 이 값을 보고 재서명을 호출한다.
 
         A case folder is made only for entries with an L2 (or an existing case.json). Entries whose L2 is not
         the stored case's stay in errors.jsonl only (exact-key guard)."""
@@ -1230,7 +1223,7 @@ class CaseStore:
                                            and l2_parts(e.l2)[1] in changed_since(e.sig)
                                            and e.case_id not in skipped)
             if new_file and n:
-                self._write_marker()                      # 새로 만든 KB는 현재 규칙이므로 재서명하지 않는다
+                self._write_marker()                      # 새로 만든 KB는 현재 규칙이라 재서명하지 않는다
             by_case: dict[str, list[ErrorEntry]] = {}
             skip_files: set[str] = set()
             # note / pom-verify는 케이스 통계에서 뺀다. L2도 case.json도 없는 케이스는 폴더를 만들지 않는다
@@ -1243,8 +1236,7 @@ class CaseStore:
                 try:
                     case, extra = self._case_or_new(cid, es[0].l2, case_name(es[0].message, es[0].l2), es[0].kind)
                 except CaseUnreadable as ex:
-                    # 이 케이스만 건너뛴다.
-                    # errors.jsonl에는 이미 기록했으므로 `sbmig kb reindex`가 나중에 다시 센다
+                    # 이 케이스만 건너뛴다. errors.jsonl에는 이미 기록했으니 `sbmig kb reindex`가 나중에 다시 센다
                     log.warning("kb: case %s not updated by this run (%s) — `sbmig kb reindex` recounts it from %s",
                                 cid, ex, KB_ERRORS)
                     continue
@@ -1314,7 +1306,7 @@ class CaseStore:
             case.last_analysis = t.analysis or case.last_analysis
             if t.solution and t.solution != case.last_solution:
                 case.last_solution = t.solution
-                # 해결 문장의 범위는 그 시도가 저장한 버전, 없으면 같은 실행이 만든 버전의 범위로 정한다
+                # 해결 문장의 범위는 그 시도가 저장한 버전의 범위다. 없으면 같은 실행이 만든 버전의 범위를 쓴다
                 run_id = es[-1].run_id
                 src = next((s for s in case.scripts if t.script_version and s.version == int(t.script_version)), None) \
                     or next((s for s in reversed(case.scripts) if run_id and s.created_by == run_id), None)
@@ -1336,7 +1328,7 @@ class CaseStore:
                     entry: str = "") -> Iterator[ErrorEntry]:
         """``<kb>/errors.jsonl`` 항목을 파일 순서대로 조건에 맞게 걸러서 반환한다.
         읽을 수 없는 줄은 건너뛴다.
-        ``entry``와 ``case``는 ID 앞부분으로, ``run``과 ``project``는 정확히 일치하는 값으로 거른다."""
+        ``entry``와 ``case``는 ID 앞부분으로 거른다. ``run``과 ``project``는 값이 정확히 같아야 한다."""
         from sbmig.kb.jsonl import parse_record
 
         if not self.errors_path.is_file():
@@ -1363,7 +1355,8 @@ class CaseStore:
         """``errors.jsonl``을 바탕으로 케이스 통계를 다시 계산하고 케이스 수를 반환한다.
         ``sbmig kb reindex``가 호출한다.
         - 스크립트 성공, 실패 수와 사람이 넣은 키는 그대로 둔다
-        - 버전마다 실행 기록, 보강 계보, 마지막 실패를 다시 만들고, 이전 시도에 변경 조각과 해결한 시도를 채운다
+        - 버전마다 실행 기록, 보강 계보, 마지막 실패를 다시 만든다
+        - 이전 항목에 변경 조각과 해결한 시도를 채운다
         - ``skip``에 있는 케이스는 건드리지 않는다
 
         Cases for L2s that only errors.jsonl knows are made. ``skip`` = cases a re-sign could not read.
@@ -1380,14 +1373,14 @@ class CaseStore:
 
     @staticmethod
     def _slim(e: ErrorEntry) -> ErrorEntry:
-        # 메모리 사용이 항목 수에 비례하므로 다시 세는 데 필요 없는 큰 텍스트(raw, 시도의 diff)는 버린다
+        # 메모리는 항목 수만큼 든다. 다시 세는 데 필요 없는 큰 텍스트(raw, 시도의 diff)는 버린다
         return e.model_copy(update={"raw": "", "tries": [t.model_copy(update={"diff": ""}) for t in e.tries]})
 
     def _recount_locked(self, skip: Iterable[str] = ()) -> int:
         """:meth:`recount`의 실제 처리를 한다. 잠금은 호출하는 쪽이 잡는다.
         저장된 L2와 다른 L2의 항목은 그 케이스에 세지 않는다."""
         skip = set(skip or ())
-        # 변경 조각과 해결한 시도 채우기는 부가 기능이므로 실패해도 재집계는 계속한다.
+        # 변경 조각과 해결한 시도 채우기는 부가 기능이다. 실패해도 재집계는 계속한다.
         # 두 숫자는 recount마다 0에서 시작한다
         hunked, fixers = 0, 0
         try:
@@ -1417,7 +1410,8 @@ class CaseStore:
     def _recount_cases(self, ids: Iterable[str]) -> int:
         """자동 재서명 뒤에 일부 케이스만 다시 센다.
         errors.jsonl을 한 번 읽으면서 그 케이스의 줄만 파싱한다.
-        빠진 오류별 JSON은 읽는 김에 쓴다. 변경 조각 채우기는 하지 않는다. 전체 재집계는 ``sbmig kb reindex``가 한다."""
+        빠진 오류별 JSON은 읽는 김에 쓴다. 변경 조각은 채우지 않는다.
+        전체 재집계는 ``sbmig kb reindex``가 한다."""
         from sbmig.kb.jsonl import parse_record
 
         want = {c for c in ids if valid_case_id(c)}
@@ -1479,11 +1473,12 @@ class CaseStore:
     @staticmethod
     def _ran(t: FixTry) -> str | None:
         """그 시도에서 저장된 스크립트가 실제로 실행됐을 때 받은 결과를 반환한다.
-        저장만 하고 edits를 적용했거나, 같은 코드라 다시 실행하지 않았거나, pending이면 None을 반환한다."""
+        실행하지 않은 시도면 None이다. 저장만 하고 edits를 적용한 시도, 같은 코드라 다시 실행하지 않은 시도,
+        pending인 시도가 그렇다."""
         if not t.script_version or t.source not in RUN_SOURCES or t.result == "pending":
             return None
         note = t.note or ""
-        # 스크립트가 실패해서 답변의 수정 목록이 대신 적용된 경우이므로, 그 스크립트 실행은 apply_failed다
+        # 스크립트가 실패해서 답변의 수정 목록을 대신 적용한 경우다. 그 스크립트 실행은 apply_failed다
         if t.applied == "edits":
             return "apply_failed" if _RAN_THEN_EDITS in note else None
         if any(x in note for x in _NOT_RUN):
@@ -1495,7 +1490,7 @@ class CaseStore:
 
     def _rebuild_runs(self, case: CaseInfo, es: list[ErrorEntry]) -> int:
         """케이스의 시도들로 저장된 버전마다 실행 기록, parent / reason, last_failure를 만든다.
-        저장소에 있던 기록과 합치고, errors.jsonl에서 만든 기록 수를 반환한다."""
+        저장소에 있던 기록과 합친다. errors.jsonl에서 만든 기록 수를 반환한다."""
         derived: dict[int, dict[tuple[str, int, int], ScriptRun]] = {}
         augments: dict[int, list[tuple[str, int, int]]] = {}
         for e in es:
@@ -1507,7 +1502,7 @@ class CaseStore:
                 per = derived.setdefault(v, {})
                 if key in per:                            # 케이스의 여러 항목이 같은 시도를 공유하면 실행 하나로 센다
                     continue
-                # no_change 결과에는 이유가 따로 남지 않으므로 결과 이름을 이유 앞에 둔다
+                # no_change 결과에는 이유가 따로 남지 않는다. 결과 이름을 이유 앞에 둔다
                 head = result if result == "no_change" and result not in (t.note or "") else ""
                 per[key] = ScriptRun(run_id=e.run_id, project=e.project, round=int(t.round), n=int(t.n),
                                      result=result, reason=self._reason(run_reason(result, t.note, head)),
@@ -1524,7 +1519,7 @@ class CaseStore:
             loose = [r for r in s.runs if _run_key(r) is None]
             for key, r in mine.items():
                 have = keyed.get(key)
-                # 오류 수가 들어 있는 저장소 자체 기록이 우선이고, 재집계한 기록은 빈 칸만 채운다
+                # 오류 수가 들어 있는 저장소 자체 기록이 우선이다. 재집계한 기록으로는 빈 칸만 채운다
                 if have is None:
                     keyed[key] = self._derived_scope(s, r)
                     continue
@@ -1546,7 +1541,7 @@ class CaseStore:
     @staticmethod
     def _derived_scope(s: CaseScript, r: ScriptRun) -> ScriptRun:
         """errors.jsonl에서 다시 만든 실행 기록의 범위를 정한다.
-        항목에는 범위가 없으므로 그 버전을 만든 실행이면 버전의 범위를 쓰고, 나머지는 ``""``(full)로 둔다.
+        항목에는 범위가 없다. 그 버전을 만든 실행이면 버전의 범위를 쓰고, 나머지는 ``""``(full)로 둔다.
         같은 범위에서 검사가 되돌린 ``out_of_scope``는 :meth:`credit`처럼 apply_failed로 바꾼다."""
         if not r.scope and s.scope and r.run_id and r.run_id == s.created_by:
             r = r.model_copy(update={"scope": s.scope})
@@ -1558,7 +1553,7 @@ class CaseStore:
                  runs: dict[int, dict[tuple[str, int, int], ScriptRun]]) -> None:
         """보강본이 어느 버전을 고친 것인지 추정한다.
         그 버전을 만든 시도보다 먼저 같은 실행에서 실행된 낮은 버전 중 가장 높은 버전을 부모로 본다.
-        이유는 그 실행의 이유를 쓰므로 정확하지 않을 수 있다.
+        이유는 그 실행의 이유를 가져온다. 정확하지 않을 수 있다.
 
         The run that created the version is looked at first."""
         keys = sorted(keys, key=lambda k: (k[0] != s.created_by, k[1], k[2]))
@@ -1620,7 +1615,7 @@ class CaseStore:
         return e.model_copy(update={"resolved_by": by})
 
     def _backfill_entries(self) -> tuple[int, int]:
-        """이전에 저장된 errors.jsonl 항목에 변경 조각과 해결한 시도를 채우고, 두 개수를 따로 반환한다.
+        """이전에 저장된 errors.jsonl 항목에 변경 조각과 해결한 시도를 채운다. 두 개수를 따로 반환한다.
         호출하는 쪽이 잠금을 잡고 있어야 한다.
         바뀌지 않은 줄은 바이트 그대로 두고 파일을 원자적으로 다시 쓴다.
 
@@ -1628,7 +1623,7 @@ class CaseStore:
         is not importable); the probable fixer (``_fixer_attributed``) is done also without ``attach_hunks``.
         A line that does not read is kept as it is; the changed entries' JSON files are rewritten. Returns
         (entries given hunks, entries given ``resolved_by``)."""
-        # sbmig.script가 없거나 깨져도 변경 조각만 건너뛰고 나머지는 계속하도록 여기서 import한다
+        # sbmig.script가 없거나 깨져도 변경 조각만 건너뛰도록 여기서 import한다
         try:
             from sbmig.script.notes import attach_hunks
         except Exception as ex:  # noqa: BLE001 - 변경 조각만 건너뛰고 해결한 시도 추정은 계속한다
@@ -1648,8 +1643,8 @@ class CaseStore:
         bad, cut = 0, self.snippet_lines
         parsed: list[tuple[bytes, Optional[ErrorEntry]]] = []
         tries_by_run: dict[str, dict[tuple[str, int, int], tuple[str, FixTry]]] = {}
-        # 바뀌지 않은 줄을 다시 직렬화하지 않고 읽을 수 없는 줄도 보존하도록 바이트 단위로 처리한다
-        # 해결한 시도를 추정하기 위해 실행별로 모든 시도를 (케이스, 라운드, n)마다 하나씩 모은다
+        # 바이트 단위로 처리한다. 바뀌지 않은 줄은 다시 직렬화하지 않고, 읽을 수 없는 줄도 그대로 둔다
+        # 해결한 시도를 추정하려고 실행별로 시도를 (케이스, 라운드, n)마다 하나씩 모은다
         for b in raw.split(b"\n"):
             e = None
             if b.strip():
@@ -1706,7 +1701,7 @@ class CaseStore:
 
     def _write_md_locked(self) -> None:
         """cases.md를 다시 쓴다. 잠금은 호출하는 쪽이 잡는다.
-        원본에서 다시 만들 수 있는 파일이므로 실패해도 경고만 남긴다."""
+        원본에서 다시 만들 수 있는 파일이라 실패해도 경고만 남긴다."""
         try:
             atomic_write(self.md_path, render_cases_md(self.cases()))
         except Exception as e:  # noqa: BLE001 - the view is derived (`sbmig kb reindex` rewrites it)
@@ -1719,7 +1714,8 @@ class CaseStore:
         return self.md_path
 
     def stats(self) -> dict[str, Any]:
-        """``sbmig kb stats``에 보여 줄 숫자(오류 수, 케이스 수, 상태별 스크립트 버전 수, 고정된 케이스 수)를 반환한다."""
+        """``sbmig kb stats``에 보여 줄 숫자를 반환한다.
+        오류 수, 케이스 수, 상태별 스크립트 버전 수, 고정된 케이스 수다."""
         cases = self.cases()
         scripts = [s for c, _ in cases for s in c.scripts]
         return {
@@ -1777,7 +1773,7 @@ class CaseStore:
                             "sbmig kb reindex")
         if self.cases_dir.is_dir():
             found = []
-            # cases/_other는 케이스 없는 항목의 오류별 JSON 폴더이므로 케이스로 보지 않는다
+            # cases/_other는 케이스 없는 항목의 오류별 JSON 폴더다. 케이스로 보지 않는다
             for d in sorted(p for p in self.cases_dir.iterdir() if p.is_dir() and p.name != OTHER_DIR):
                 rel = f"{CASES_DIR}/{d.name}"
                 path = d / CASE_FILE
@@ -1823,7 +1819,7 @@ class CaseStore:
 
     @property
     def pending_path(self) -> Path:
-        """재서명이 아직 끝내지 못한 폴더 정리 목록 ``<kb>/resign-pending.json``의 경로를 반환한다.
+        """재서명이 아직 못 끝낸 폴더 정리 목록(``<kb>/resign-pending.json``)의 경로를 반환한다.
         다음 재서명이 이 정리를 먼저 마친다."""
         return self.root / RESIGN_PENDING
 
@@ -1845,7 +1841,7 @@ class CaseStore:
 
     def skipped_cases(self) -> dict[str, str]:
         """지난 재서명이 건너뛴 케이스(ID와 이유)를 반환한다.
-        자동 재서명은 이 케이스를 다시 시도하지 않고 ``sbmig kb reindex``만 다시 시도한다.
+        자동 재서명은 이 케이스를 다시 시도하지 않는다. ``sbmig kb reindex``만 다시 시도한다.
 
         ``kb.json`` "skipped": id → reason."""
         got = self.marker().get("skipped")
@@ -1868,7 +1864,7 @@ class CaseStore:
 
     def _register_prefixes(self) -> None:
         """설정에 있는 사내 라이브러리 접두어를 서명 규칙에 등록한다.
-        ``MavenRunner``와 같은 호출이므로 CLI의 재서명도 실행 중과 같은 키를 만든다.
+        ``MavenRunner``와 같은 호출이다. 그래서 CLI의 재서명도 실행 중과 같은 키를 만든다.
         설정이 없으면 WARNING을 한 번 남긴다.
 
         Without the prefixes, members of in-house types would be keyed like library types differently from a
@@ -1904,7 +1900,7 @@ class CaseStore:
 
     def _load_any(self, case_id: str) -> Optional[tuple[CaseInfo, dict[str, Any]]]:
         """case.json을 폴더 이름과 맞는지 확인하지 않고 읽는다.
-        폴더 이름 변경이 중단되면 이전 ID를 가리키는 case.json이 남으므로 그 파일을 읽을 때 쓴다."""
+        폴더 이름 변경이 중단되면 이전 ID를 가리키는 case.json이 남는다. 그 파일을 읽을 때 쓴다."""
         if not valid_case_id(case_id):
             return None
         try:
@@ -1918,7 +1914,7 @@ class CaseStore:
                         ) -> tuple[dict[int, ErrorEntry], dict[int, bytes], Any]:
         """``case_id``가 ``ids``에 있는 줄만 파싱해 항목마다 재서명 계획을 정한다.
         메모리를 아끼려고 큰 텍스트(raw, diff)를 버린 항목만 남긴다.
-        중간에 끊긴 쓰기가 줄 앞에 남긴 깨진 바이트는 따로 모아 두었다가 다시 쓸 때 ``.corrupt``로 옮긴다.
+        중간에 끊긴 쓰기가 줄 앞에 남긴 깨진 바이트는 따로 모은다. 다시 쓸 때 ``.corrupt``로 옮긴다.
 
         Returns (line number → slim entry, line number → torn prefix bytes, the EntryPlan: new L2 / stamp)."""
         from sbmig.kb.jsonl import parse_record
@@ -2043,8 +2039,8 @@ class CaseStore:
             return rep
 
         touched = set(groups) | {n for p in plans for n in p.targets} | recover
-        # 어디서 중단되든 다음 재서명이 빠른 경로로 건너뛰지 않고 이 케이스들을
-        # 다시 세도록, 쓰기 전에 진행 중임을 kb.json에 기록한다
+        # 쓰기 전에 진행 중인 케이스를 kb.json에 기록한다.
+        # 어디서 중단되든 다음 재서명이 빠른 경로로 건너뛰지 않고 이 케이스들을 다시 센다
         if plans or eplan.stamp:
             self._write_marker(dict(prev_skipped), sig=0, resigning=touched)
         ctx = _ResignCtx()
@@ -2083,15 +2079,15 @@ class CaseStore:
             self._keep_alive()
             self._save(hit[0].model_copy(update={"sig": v}), hit[1])
             rep.cases_stamped += 1
-        # 3) 정리할 폴더 목록 기록(중단되면 다음 재서명이 마저 처리) -> 4)
-        # errors.jsonl을 스트리밍 복사로 한 번 원자적으로 다시 쓰기
+        # 3) 정리할 폴더 목록 기록(중단되면 다음 재서명이 마저 처리)
+        # -> 4) errors.jsonl을 스트리밍 복사로 한 번에 원자적으로 다시 쓰기
         if ctx.journal["remove"] or ctx.journal["trim"]:
             atomic_write(self.pending_path, json.dumps(ctx.journal, ensure_ascii=False, indent=2) + "\n")
         if moved or ctx.whole:
             self._resign_write_entries(moved, torn, ctx.whole)
         # 5) 오류별 JSON을 새 케이스 폴더로 이동 -> 6) 비운 이전 폴더 정리 -> 7) 다시 세기 -> 8) kb.json 갱신
         self._resign_move_entry_files(entries, moved)
-        entries.clear()                                   # 아래 재집계는 항목을 따로 읽으므로 메모리를 비운다
+        entries.clear()                                   # 아래 재집계는 항목을 따로 읽는다. 메모리를 비운다
         if self.pending_path.exists():
             self._finish_pending()
         self._resign_fill(rep, eplan, done, skipped, existed)
@@ -2103,7 +2099,7 @@ class CaseStore:
         new_skipped.update(rep.reasons)
         if rep.changed or recover:
             if recount:
-                # 읽을 수 없는 case.json 위에 새 파일을 쓰지 않도록 건너뛴 케이스는 다시 세지 않는다
+                # 건너뛴 케이스는 다시 세지 않는다. 읽을 수 없는 case.json 위에 새 파일을 쓰지 않는다
                 self._recount_cases((touched | ctx.saves.keys()) - set(new_skipped))
             else:
                 self._write_md_locked()
@@ -2122,8 +2118,8 @@ class CaseStore:
     def _resign_targets_bad(self, old: str, hit: Optional[tuple[CaseInfo, dict[str, Any]]],
                             l2s: dict[str, str]) -> str:
         """옮겨 갈 대상 케이스들이 기록을 받을 수 있는지 확인한다.
-        읽을 수 없거나 다른 L2가 쓰고 있으면 그 이유를, 괜찮으면 빈 문자열을 반환한다.
-        중단된 이름 변경으로 이전 ID를 가리키는 case.json은 이번에 고칠 것이므로 문제로 보지 않는다."""
+        읽을 수 없거나 다른 L2가 쓰고 있으면 그 이유를 반환한다. 괜찮으면 빈 문자열이다.
+        중단된 이름 변경으로 이전 ID를 가리키는 case.json은 문제로 보지 않는다. 이번에 고친다."""
         for n, l2 in l2s.items():
             if n == old:
                 continue
@@ -2157,8 +2153,9 @@ class CaseStore:
 
     def _resign_place(self, p: "_CasePlan", entries: dict[int, ErrorEntry], ctx: "_ResignCtx") -> None:
         """재서명의 첫 단계로 한 케이스의 폴더와 스크립트를 옮긴다.
-        케이스 전체가 옮겨 가면 폴더 이름을 바꾸거나 대상에 합치고, 여러 케이스로 나뉘면 버전마다 그 버전을
-        실행한 항목 쪽으로 보낸다. 이전 폴더 정리는 errors.jsonl을 다시 쓴 뒤에 한다.
+        케이스 전체가 옮겨 가면 폴더 이름을 바꾸거나 대상에 합친다.
+        여러 케이스로 나뉘면 버전마다 그 버전을 실행한 항목 쪽으로 보낸다.
+        이전 폴더 정리는 errors.jsonl을 다시 쓴 뒤에 한다.
 
         Whole move: rename when the target does not exist, else merge (same code once, a clashing number takes
         the next free one). Split: a version nobody ran stays with the old case, or goes to the largest part.
@@ -2208,7 +2205,7 @@ class CaseStore:
             home = old if kept else largest
             assign = {s.version: (ran.get(s.version) or {home}) for s in versions}
         shared = {ver for ver, ns in assign.items() if len(ns) > 1}
-        # 대상 케이스를 먼저 모두 확인해서, CaseUnreadable이면 스크립트를 복사하기 전에 이 케이스를 건너뛴다
+        # 대상 케이스를 먼저 모두 확인한다. CaseUnreadable이면 스크립트를 복사하기 전에 이 케이스를 건너뛴다
         resolved: dict[str, tuple[CaseInfo, dict[str, Any]]] = {}
         for n in sorted(x for x in p.targets if x != old):
             if n in ctx.saves:
@@ -2232,7 +2229,7 @@ class CaseStore:
             if o_case is not None and not tc.last_solution and o_case.last_solution:
                 tc.last_analysis, tc.last_solution = o_case.last_analysis, o_case.last_solution
             staged[n] = (tc, tx, vmap)
-        # 중간에 실패하면 이 케이스 전체를 건너뛴 것으로 처리하기 위해, 모든 대상이 끝난 뒤에만 계획에 반영한다
+        # 모든 대상이 끝난 뒤에만 계획에 반영한다. 중간에 실패하면 이 케이스 전체를 건너뛴 것이 된다
         for n, (tc, tx, vmap) in staged.items():
             ctx.vmaps[(old, n)] = vmap
             ctx.saves[n] = (tc, tx)
@@ -2255,8 +2252,8 @@ class CaseStore:
 
     @staticmethod
     def _become(case: CaseInfo, n: str, l2: str, old: str, old_aliases: Iterable[str], msg: str, v: int) -> None:
-        """케이스의 ID를 ``n``, L2를 ``l2``, 서명 규칙 버전을 현재 버전으로 바꾸고 이전 ID들을 aliases에 추가한다.
-        aliases는 사람이 조회할 때만 쓴다. 재서명은 이 값으로 케이스를 합치지 않는다."""
+        """케이스의 ID를 ``n``, L2를 ``l2``로 바꾸고 서명 규칙 버전을 현재 버전으로 올린다.
+        이전 ID들은 aliases에 추가한다. aliases는 사람이 조회할 때만 쓴다. 재서명은 이 값으로 케이스를 합치지 않는다."""
         renamed = case.case_id != n
         case.case_id = n
         if l2 and (renamed or not case.l2):
@@ -2273,9 +2270,9 @@ class CaseStore:
             return None
 
     def _copy_versions(self, old: str, versions: list[CaseScript], tc: CaseInfo) -> dict[int, int]:
-        """``old`` 케이스의 스크립트 버전들을 케이스 ``tc``로 복사하고 이전 번호와 새 번호의 대응을 반환한다.
+        """``old`` 케이스의 스크립트 버전들을 케이스 ``tc``로 복사한다. 이전 번호와 새 번호의 대응을 반환한다.
         대상에 내용이 같은 파일이 있으면 그 번호를 쓰고 기록을 합친다.
-        이때 성공, 실패 수는 큰 쪽 값을 쓰므로 정확하지 않다.
+        이때 성공, 실패 수는 둘 중 큰 값을 쓴다. 정확한 값은 아니다.
 
         Merge rules as ``merge_from``: counts = max of the two records (not a sum), projects united, runs
         merged. A byte-identical file may also come from an interrupted re-sign. In a new folder the numbers
@@ -2327,8 +2324,9 @@ class CaseStore:
                                                "parent": vmap.get(s.parent) if s.parent else None})
 
     def _recount_versions(self, case: CaseInfo, versions: set[int], entries: list[ErrorEntry]) -> None:
-        """여러 케이스로 나뉜 버전의 실행 기록을 이 케이스의 항목으로 다시 만들고, 성공, 실패, 프로젝트, 상태를 다시 센다.
-        실행 기록이 ``errors.script_runs``개로 잘려 있고 시도 번호 없는 기록은 버리므로 결과는 근사치다.
+        """여러 케이스로 나뉜 버전의 실행 기록을 이 케이스의 항목으로 다시 만든다.
+        성공, 실패, 프로젝트, 상태도 다시 센다. 결과는 근사치다.
+        실행 기록은 ``errors.script_runs``개로 잘려 있고, 시도 번호 없는 기록은 버리기 때문이다.
 
         Stored runs are kept when one of these entries' tries made them; retired stays retired."""
         keys: dict[int, set[tuple[str, int, int]]] = {}
@@ -2347,8 +2345,8 @@ class CaseStore:
     def _resign_entries(self, entries: dict[int, ErrorEntry], eplan: Any, skipped: set[int],
                         ctx: "_ResignCtx", v: int) -> dict[int, dict[str, Any]]:
         """재서명으로 바뀌는 항목과 바꿀 필드를 줄 번호별로 정한다. 항목 ID는 그대로 둔다.
-        바꾸는 필드는 ``sig``, 새 ``case_id`` / ``l2``, ``was``의 이전 ID, 시도의 스크립트 번호, ``script`` 경로,
-        통째로 옮긴 케이스를 가리키는 ``resolved_by``다.
+        바꾸는 필드는 ``sig``, 새 ``case_id`` / ``l2``, ``was``의 이전 ID, 시도의 스크립트 번호, ``script`` 경로다.
+        통째로 옮긴 케이스를 가리키는 ``resolved_by``도 바꾼다.
 
         The tries' renumbering travels as ``_vmap`` and is applied to the full record on the rewrite."""
         out: dict[int, dict[str, Any]] = {}
@@ -2430,7 +2428,7 @@ class CaseStore:
 
     def _resign_move_entry_files(self, entries: dict[int, ErrorEntry], moved: dict[int, dict[str, Any]]) -> None:
         """케이스가 바뀐 항목의 오류별 JSON을 새 케이스 폴더에 쓰고 이전 파일을 지운다.
-        원본에서 다시 만들 수 있는 파일이므로 실패하면 WARNING만 남긴다. 빠진 파일은 다시 셀 때 만든다.
+        원본에서 다시 만들 수 있는 파일이라 실패하면 WARNING만 남긴다. 빠진 파일은 다시 셀 때 만든다.
 
         The new file is built from the rewritten errors.jsonl (those lines only)."""
         want = {i for i, u in moved.items() if "case_id" in u and i in entries and u["case_id"] != entries[i].case_id}
@@ -2459,7 +2457,7 @@ class CaseStore:
                     log.warning("kb re-sign: %s not removed: %s", self.entry_file(old), ex)
 
     def _finish_pending(self) -> set[str]:
-        """``resign-pending.json``에 남은 폴더 정리를 마치고 다시 셀 케이스 ID들을 반환한다.
+        """``resign-pending.json``에 남은 폴더 정리를 마친다. 다시 셀 케이스 ID들을 반환한다.
         여러 번 실행해도 결과가 같다.
         항목마다 errors.jsonl 다시 쓰기가 끝났을 때만 정리한다. 끝나지 않았으면 그 정리는 버린다.
 
@@ -2523,7 +2521,7 @@ class CaseStore:
     def _remove_moved(self, old: str, targets: list[str]) -> None:
         """전체가 옮겨 간 케이스의 이전 폴더를 지운다.
         모든 스크립트가 대상에 그대로 있고 다시 만들 수 있는 파일만 남았을 때만 지운다.
-        스크립트를 먼저, case.json을 마지막에 지우므로 중단돼도 다시 실행하면 끝까지 처리된다.
+        스크립트를 먼저, case.json을 마지막에 지운다. 그래서 중단돼도 다시 실행하면 끝까지 처리된다.
         조건이 맞지 않으면 WARNING을 남기고 폴더를 그대로 둔다.
 
         "Derived files" = case.json, per-entry JSON, temp files; scripts are compared byte for byte."""
@@ -2557,7 +2555,7 @@ class CaseStore:
                 p.rmdir()
             elif p.name != CASE_FILE:
                 p.unlink()
-        (d / CASE_FILE).unlink(missing_ok=True)           # 여기까지는 케이스로 보여야 하므로 마지막에 지운다
+        (d / CASE_FILE).unlink(missing_ok=True)           # 여기까지는 케이스로 보여야 해서 마지막에 지운다
         try:
             d.rmdir()
         except OSError as ex:
@@ -2567,7 +2565,8 @@ class CaseStore:
     def _trim_moved(self, old: str, item: dict[str, Any], targets: list[str]) -> None:
         """여러 케이스로 나뉜 케이스 중 남는 쪽을 정리한다.
         옮겨 간 버전을 목록에서 빼고, 대상에 그대로 있는 ``fix_v*.py``를 지운다.
-        여러 케이스에 남은 버전은 남은 항목으로 다시 센다. 파일을 기준으로 판단하므로 중단 뒤 다시 실행해도 끝까지 처리된다."""
+        여러 케이스에 남은 버전은 남은 항목으로 다시 센다.
+        파일을 기준으로 판단하므로 중단 뒤 다시 실행해도 끝까지 처리된다."""
         hit = self._read(old)
         if hit is None:
             return
@@ -2604,7 +2603,7 @@ class CaseStore:
     def merge_from(self, other: "CaseStore") -> dict[str, int]:
         """다른 KB(내보낸 것을 푼 폴더)를 이 KB에 합치고 끝에 :meth:`recount`를 호출한다.
         여러 번 실행해도 결과가 같다.
-        이미 있는 케이스의 스크립트는 코드로 비교해서, 같으면 기록을 합치고 다르면 다음 빈 번호로 넣는다.
+        이미 있는 케이스의 스크립트는 코드로 비교한다. 같으면 기록을 합치고, 다르면 다음 빈 번호로 넣는다.
         가져온 기록은 같은 잠금 안에서 재서명한다. 다른 L2가 쓰는 케이스 ID에는 합치지 않는다.
 
         Same code → counters max / projects union; a missing local case is copied whole. Round trips
@@ -2634,14 +2633,13 @@ class CaseStore:
                     try:
                         mine = self._confirm_new(cid)    # 다른 쪽이 방금 만든 케이스 위에 복사하지 않는다
                     except CaseUnreadable as ex:
-                        # 이 케이스만 건너뛴다.
-                        # 가져오기는 여러 번 해도 결과가 같으므로 나중에 다시 하면 합쳐진다
+                        # 이 케이스만 건너뛴다. 가져오기는 여러 번 해도 결과가 같아서 나중에 다시 하면 합쳐진다
                         log.warning("kb import: case %s skipped (%s) — import the same file again later", cid, ex)
                         counters["cases_skipped"] = counters.get("cases_skipped", 0) + 1
                         continue
                 if mine is None and not self._disk_versions(cid):
                     for s in t_case.scripts:
-                        # 가져온 case.json의 file 값은 믿지 않고 항상 케이스 폴더 안의 정해진 이름으로 쓴다
+                        # 가져온 case.json의 file 값은 믿지 않는다. 항상 케이스 폴더 안의 정해진 이름으로 쓴다
                         s.file = f"fix_v{int(s.version)}.py"
                         code = other.code(cid, s.version)
                         if code is not None:
@@ -2656,7 +2654,7 @@ class CaseStore:
                     continue
                 if mine is None:
                     # case.json 없이 fix_v*.py만 남은 폴더다.
-                    # 그 파일을 덮어쓰지 않도록 가져온 스크립트는 아래에서 다음 빈 번호로 넣는다
+                    # 가져온 스크립트는 그 파일을 덮어쓰지 않도록 아래에서 다음 빈 번호로 넣는다
                     case, extra = t_case.model_copy(update={"scripts": []}, deep=True), dict(t_extra)
                     counters["cases_added"] += 1
                 else:
@@ -2674,7 +2672,7 @@ class CaseStore:
                     if have is not None:
                         local[s.version] = have.version
                         kl, kt, gone = self._merge_runs(have, s, local)
-                        # 한쪽이 왕복으로 되돌린 성공은 큰 수를 고르기 전에 아직 세고 있는 쪽에서 실패로 바꾼다
+                        # 한쪽이 왕복으로 되돌린 성공은 아직 세고 있는 쪽에서 실패로 바꾼다. 그다음 큰 수를 고른다
                         have.successes = max(0, max(have.successes - kl, s.successes - kt))
                         have.failures = max(have.failures + kl, s.failures + kt)
                         have.projects += [p for p in s.projects if p not in have.projects]
@@ -2684,7 +2682,7 @@ class CaseStore:
                             self._took_back_on_merge(have, gone)
                         counters["scripts_merged"] += 1
                         continue
-                    # add_script와 같은 규칙으로, 목록에 없는 fix_v*.py 번호도 피한다
+                    # add_script와 같은 규칙이다. 목록에 없는 fix_v*.py 번호도 피한다
                     v = self._claim_script(cid, self._next_version(case), code.encode("utf-8"))
                     local[s.version] = v
                     new = s.model_copy(update={"version": v, "file": f"fix_v{v}.py",
@@ -2695,8 +2693,8 @@ class CaseStore:
                 if t_case.last_solution and not case.last_solution:
                     case.last_analysis, case.last_solution = t_case.last_analysis, t_case.last_solution
                 self._save(case, extra)
-            # 가져온 기록은 이전 규칙으로 서명됐을 수 있으므로 같은 잠금 안에서 재서명한 뒤 한 번만 다시 센다
-            # 항목 ID는 바뀌지 않으므로 중복 거르기는 그대로 동작한다
+            # 가져온 기록은 이전 규칙으로 서명됐을 수 있다. 같은 잠금 안에서 재서명한 뒤 한 번만 다시 센다
+            # 항목 ID는 바뀌지 않아서 중복 거르기는 그대로 동작한다
             if not held:
                 log.warning("kb import: the KB lock was not taken — no re-sign; run `sbmig kb reindex` later")
             else:
@@ -2712,7 +2710,8 @@ class CaseStore:
     def _merge_runs(self, have: CaseScript, theirs: CaseScript, local: dict[int, int]
                     ) -> tuple[int, int, list[str]]:
         """두 KB에 같은 스크립트가 있을 때 실행 기록을 합친다. 계보와 이유는 이쪽에 없을 때만 가져온다.
-        한쪽은 round_trip, 다른 쪽은 성공으로 기록한 시도의 수를 쪽마다 세어 되돌린 성공의 프로젝트와 함께 반환한다.
+        한쪽은 round_trip, 다른 쪽은 성공으로 기록한 시도를 쪽마다 센다.
+        그 두 수와 되돌린 성공의 프로젝트 목록을 반환한다.
 
         The same script in both KBs: the union of their runs (same record once), lineage / reasons when ours has
         none. A try (run_id, round, n; n non-zero) that one side records as ``round_trip`` and the other as
@@ -2729,7 +2728,7 @@ class CaseStore:
         mine = {ident(r): r for r in have.runs}
         kl = kt = 0
         gone: list[str] = []
-        # 같은 시도는 round_trip 기록이 성공 기록을 대신한다. credit에서 되돌린 성공을 가져오지 않기 위해서다
+        # 같은 시도는 round_trip 기록이 성공 기록을 대신한다. credit에서 되돌린 성공을 다시 가져오지 않는다
         trips: dict[tuple, ScriptRun] = {}
         for r in theirs.runs:
             ours = mine.get(ident(r))
@@ -2837,8 +2836,8 @@ def _cell(text: Any, limit: int = 120) -> str:
 
 
 def render_cases_md(cases: list[tuple[CaseInfo, dict[str, Any]]]) -> str:
-    """케이스마다 한 줄씩 쓴 ``cases.md`` 내용을 만든다. 케이스, 이름, 프로젝트 수, seen / resolved,
-    스크립트, pin, 마지막 결과를 쓰고 많이 나온 케이스가 먼저 온다.
+    """케이스마다 한 줄씩 쓴 ``cases.md`` 내용을 만든다. 많이 나온 케이스가 먼저 온다.
+    열은 케이스, 이름, 프로젝트 수, seen / resolved, 스크립트, pin, 마지막 결과다.
 
     Scripts column: version status successes/failures ``— <last failure>``."""
     scripts = [s for c, _ in cases for s in c.scripts]

@@ -1,9 +1,7 @@
-"""케이스 ID 계산, 저장할 텍스트 정리, 원자적 파일 쓰기처럼 오류 목록과 KB가 함께 쓰는 함수를 모은 모듈.
-``sbmig.errors.entries``, ``sbmig.errors.cases``, ``sbmig.kb.store``가 사용한다.
-- L2 서명에는 폴더 이름에 쓸 수 없는 문자가 있으므로 L2의 해시를 케이스 ID로 쓴다
-- 케이스 ID 계산식은 트리아지(``sbmig.triage.cluster``)와 같아야 한다. 다르면 클러스터와 오류 목록의 케이스가 어긋난다
+"""오류 목록과 KB가 함께 쓰는 함수를 모은 모듈. 케이스 ID 계산, 저장할 텍스트 정리, 원자적 파일 쓰기가 있다.
 
-Spec: docs/v2/PLAN-v2.1.md §3.3 / §3.4.
+Spec: docs/v2/PLAN-v2.1.md §3.3 / §3.4. Used by ``sbmig.errors.entries``, ``sbmig.errors.cases`` and
+``sbmig.kb.store``. An L2 signature holds characters a folder name cannot, so the case id is a hash of it.
 
 * case_id_for: ``sha1(l2)[:10]`` ("" without an L2), the same formula as sbmig.triage.cluster.l2_case_id.
 * case_id_of: the L2 id, else ``sha1(kind|file|L1)[:10]``, the same fallback as sbmig.triage.cluster.case_id_of,
@@ -55,7 +53,7 @@ def case_id_of(e: BuildError) -> str:
 
 def entry_id(run_id: str, case_id: str, file: Optional[str], line: Optional[int], message: str) -> str:
     """오류 목록 항목 ID ``sha1(run_id|case_id|file|line|message)[:12]``를 계산한다.
-    입력이 같으면 ID도 같으므로 KB에 다시 기록할 때 이미 있는 항목을 이 ID로 걸러낸다."""
+    입력이 같으면 ID도 같다. KB에 다시 기록할 때 이미 있는 항목을 이 ID로 걸러낸다."""
     key = "|".join((run_id or "", case_id or "", posix(file), str(line or 0), message or ""))
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
@@ -150,7 +148,7 @@ def _root_pairs(roots: Iterable[Any]) -> list[tuple[str, str]]:
         home = str(Path.home())
     except Exception:  # pragma: no cover - 홈 디렉토리를 알 수 없는 환경
         home = ""
-    if len(home) > 3:                                     # 홈 경로에는 운영자 이름이 들어 있으므로 남기지 않는다
+    if len(home) > 3:                                     # 홈 경로에는 운영자 이름이 들어 있어서 남기지 않는다
         out += [(home, "~"), (home.replace("\\", "/"), "~")]
     return out
 
@@ -187,7 +185,7 @@ class Cleaner:
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """같은 디렉토리의 임시 파일에 쓴 뒤 ``os.replace``로 바꿔 넣어 반쯤 쓴 파일이 남지 않게 한다.
-    대상 파일이 잠겨 있으면 간격을 늘리며 다시 시도하고, 끝내 실패하면 ``PermissionError``를 던진다.
+    대상 파일이 잠겨 있으면 간격을 늘리며 다시 시도한다. 끝내 실패하면 ``PermissionError``를 던진다.
 
     PermissionError is how Windows reports a scanner or editor holding the target; other errors are not retried.
     The temp file is removed on every failure."""

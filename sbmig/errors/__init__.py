@@ -1,12 +1,8 @@
 """실행 한 번의 오류 목록과 파일 KB를 다루는 패키지.
-검증 빌드와 수정 루프가 ``ErrorList``에 오류와 시도를 기록하고, 실행이 끝나면 ``CaseStore.record_run``이 그
-목록을 KB(``errors.jsonl``, ``cases/<case_id>/``)에 추가한다.
-- ``ErrorList``: 실행 디렉토리의 ``errors.jsonl`` / ``errors.md``를 관리한다
-- ``CaseStore``: KB의 케이스 폴더를 관리한다. 바깥에서는 파사드 ``sbmig.kb.FileKnowledgeBase``로 쓴다
-- ``case_id_for`` / ``case_id_of``: 케이스 ID(L2 서명의 sha1 앞 10자리)를 만든다
-- ``entry_id``: 항목 ID(sha1 앞 12자리)를 만든다
-- ``CaseStore.resign``: 이전 서명 규칙의 기록을 현재 규칙의 케이스 ID로 옮긴다
-KB는 파일로만 관리한다(DB 사용 금지).
+
+The verify build and the fix loop record errors and attempts in ``ErrorList``; when the run ends
+``CaseStore.record_run`` appends that list to the KB (``errors.jsonl``, ``cases/<case_id>/``). The KB is
+file-based only (no database).
 
 Spec: docs/v2/PLAN-v2.1.md §3.3 – §3.5.
 

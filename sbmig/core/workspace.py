@@ -1,9 +1,9 @@
-"""실행 한 번의 작업 공간을 다루는 모듈. 프로젝트 복사본(project/, git 저장소)과 실행 디렉토리를 관리한다.
-접수에서 Workspace.from_input이 입력을 `<out>/<run_id>/project`로 복사하고, 이후 단계는 ws.read / write /
-commit / revert_to를 쓴다.
-- 파일은 감지한 인코딩으로 읽고 같은 인코딩으로 쓴다. 소스를 UTF-8로 바꾸지 않는다
-- git은 대화형으로 실행하지 않는다. 프롬프트, 훅, 서명을 끄고 타임아웃을 건다
-- 실행 디렉토리에는 아래 목록에 있는 파일만 남긴다
+"""실행 한 번의 작업 공간을 다루는 모듈. 프로젝트 복사본(git 저장소)과 실행 디렉토리를 관리한다.
+
+The intake's `Workspace.from_input` copies the input to `<out>/<run_id>/project`; later stages use ws.read /
+write / commit / revert_to. Files are read and written back in their detected encoding; sources are never
+converted to UTF-8. git never runs interactively: prompts, hooks and signing are off, every call has a
+timeout.
 
 Layout of one run (nothing else is kept):
     <out_dir>/<run_id>/
@@ -49,16 +49,16 @@ STOP_REQUEST_FILE = "stop.request"
 STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
 
 GIT_TIMEOUT_S = 600.0      # 작업 공간 git 명령 하나의 타임아웃(초)
-# 호출마다 넘기는 git 설정. 플릿 실행 경로가 260자를 넘는 문제, 전역 autocrlf가 되돌릴 때 `.sh`를 CRLF로 바꾸는 문제,
-# 한글 파일 이름이 8진수로 이스케이프되는 문제, 다른 계정 소유 디렉토리에서 모든 호출이 실패하는 문제를 막는다
+# git 호출마다 넘기는 설정. 260자 넘는 경로, 되돌릴 때 `.sh`가 CRLF로 바뀌는 문제를 막는다.
+# 한글 파일 이름의 8진수 이스케이프, 다른 계정 소유 디렉토리에서의 실패도 막는다
 GIT_CONFIG: tuple[str, ...] = ("commit.gpgsign=false", "tag.gpgsign=false", "core.longpaths=true",
                                "core.autocrlf=false", "core.quotepath=false", "safe.directory=*",
                                # 실행 저장소는 잠깐 쓰고 버리므로 커밋 뒤 백그라운드 repack을 끈다(NFS 볼륨)
                                "maintenance.auto=false", "gc.auto=0")
-# .git/info/attributes에 넣는 값. 프로젝트의 .gitattributes보다 우선하므로 reset --hard가 줄바꿈, LFS, 인코딩을
-# 변환하지 않는다
+# .git/info/attributes에 넣는 값. 프로젝트의 .gitattributes보다 우선한다.
+# 그래서 reset --hard가 줄바꿈, LFS, 인코딩을 바꾸지 않는다
 GIT_INFO_ATTRIBUTES = "* -text -eol -filter -ident -working-tree-encoding\n"
-# target/ 밖에 빌드가 만드는 파일. as-is 트리에 이미 있으면 추적을 유지하고, 없으면 무시한다
+# 빌드가 target/ 밖에 만드는 파일. 원래 프로젝트에 있던 파일이면 계속 추적하고, 아니면 무시한다
 GENERATED_IGNORES: tuple[str, ...] = (".flattened-pom.xml", "**/src/main/generated/", "**/src/test/generated/",
                                       ".apt_generated/", ".apt_generated_tests/")
 _CREATE_NO_WINDOW = 0x08000000
@@ -70,7 +70,7 @@ def _on_windows() -> bool:
 
 def _child_creationflags() -> int:
     """Windows에서 자식 프로세스에 숨은 콘솔을 따로 붙이는 생성 플래그를 반환한다. 다른 OS에서는 0이다.
-    운영자가 누른 Ctrl+Break, Ctrl+C가 git, cmd.exe, java에 직접 전달되지 않게 하기 위해서다.
+    운영자가 누른 Ctrl+Break, Ctrl+C가 git, cmd.exe, java에 바로 전달되지 않게 한다.
 
     Ctrl+Break is the thread dump of `sbmig.core.diag`; sbmig decides what to kill."""
     return getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW) if _on_windows() else 0
@@ -78,7 +78,7 @@ def _child_creationflags() -> int:
 
 def _as_text(x) -> str:
     """subprocess 출력을 문자열로 바꾼다.
-    바이트는 콘솔 코드 페이지가 아니라 항상 UTF-8로 디코딩하고, 디코딩할 수 없는 바이트는 대체 문자로 바꾼다.
+    바이트는 콘솔 코드 페이지와 상관없이 UTF-8로 디코딩한다. 디코딩할 수 없는 바이트는 대체 문자가 된다.
     None(읽기 스레드가 죽은 경우)은 빈 문자열이다."""
     if x is None:
         return ""
@@ -144,8 +144,8 @@ def _norm_encoding(name: str) -> str:
 
 
 def _sniff_bytes(data: bytes, candidates: tuple[str, ...]) -> str:
-    """바이트 데이터의 인코딩을 추정한다. UTF-8 BOM이 있으면 utf-8-sig, 없으면 전체를 오류 없이 디코딩할 수
-    있는 첫 후보를, 그런 후보가 없으면 utf-8을 반환한다."""
+    """바이트 데이터의 인코딩을 추정한다. UTF-8 BOM이 있으면 utf-8-sig다.
+    없으면 오류 없이 디코딩되는 첫 후보를 반환한다. 맞는 후보가 없으면 utf-8이다."""
     if data.startswith(_UTF8_BOM):
         return "utf-8-sig"
     for enc in candidates:
@@ -159,8 +159,8 @@ def _sniff_bytes(data: bytes, candidates: tuple[str, ...]) -> str:
 
 def detect_encoding(path: str | Path, candidates: Optional[list[str] | tuple[str, ...]] = None) -> str:
     """텍스트 파일의 인코딩을 감지한다.
-    BOM이 있으면 utf-8-sig, 없으면 전체를 오류 없이 디코딩할 수 있는 첫 후보를 반환한다.
-    결과는 경로, 수정 시각, 크기로 캐시한다. 없는 파일, 빈 파일, ASCII 파일이면 utf-8을 반환한다.
+    BOM이 있으면 utf-8-sig, 없으면 오류 없이 디코딩되는 첫 후보를 반환한다.
+    없는 파일, 빈 파일, ASCII 파일이면 utf-8이다. 결과는 경로, 수정 시각, 크기로 캐시한다.
 
     Default candidates: utf-8, cp949, euc-kr, shift_jis, latin-1."""
     cands = tuple(candidates) if candidates else DEFAULT_ENCODING_CANDIDATES
@@ -192,7 +192,7 @@ def _remember_encoding(p: Path, enc: str, cands: tuple[str, ...]) -> None:
 
 def _java_unicode_escape(text: str, enc: str) -> str:
     """대상 인코딩에 없는 문자를 Java `\\uXXXX` 이스케이프로 바꾼다.
-    cp949 소스를 cp949 그대로 저장하기 위해 쓴다.
+    cp949 소스를 cp949 그대로 저장할 때 쓴다.
 
     \\uXXXX is valid anywhere in a .java source, comments and string literals included."""
     out: list[str] = []
@@ -235,7 +235,9 @@ def posix_rel(p: str | PurePath) -> str:
 
 def _relative_posix(p: PurePath, root: PurePath) -> Optional[str]:
     """root 기준의 posix 상대 경로를 반환한다.
-    root 아래가 아니면 None을 반환하고, Windows에서는 대소문자를 구분하지 않는다."""
+    root 아래가 아니면 None을 반환한다.
+
+    Case-insensitive on Windows."""
     try:
         return p.relative_to(root).as_posix()
     except ValueError:
@@ -247,8 +249,8 @@ _MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")      # Maven이 targe
 
 def _is_output_target(parent: Path, parent_parts: tuple[str, ...] | list[str], has_pom: Optional[bool] = None) -> bool:
     """`parent/target`이 Maven 빌드 산출물 디렉토리인지 판단한다.
-    패키지 이름이 target인 소스를 지우지 않기 위해 쓴다.
-    src 아래면 산출물이 아니고, 옆에 pom.xml이 있거나 안에 Maven이 만든 기록 디렉토리가 있으면 산출물로 본다.
+    패키지 이름이 target인 소스를 지우지 않으려고 쓴다. src 아래면 산출물이 아니다.
+    옆에 pom.xml이 있거나 안에 Maven이 만든 기록 디렉토리가 있으면 산출물로 본다.
 
     The bookkeeping-dir rule covers a module whose pom the restructure moved away."""
     if "src" in parent_parts:
@@ -313,7 +315,7 @@ class ZipRefused(ValueError):
 
 class ZipLimits(BaseModel):
     """올린 ZIP을 풀 때의 한도(바이트, 배수)를 담는 클래스. 0이면 그 한도는 없다.
-    전체 크기, 항목 하나의 크기, 항목 하나의 압축률을 보고 압축률은 `RATIO_MIN_BYTES` 이상 풀리는 항목만 본다.
+    전체 크기, 항목 하나의 크기, 항목 하나의 압축률을 본다. 압축률은 `RATIO_MIN_BYTES` 이상 풀리는 항목만 본다.
 
     Same meaning as `intake.max_unpacked_mb` / `max_entry_mb` / `max_compression_ratio` and the remediation
     intake's limits."""
@@ -348,7 +350,7 @@ def _shown(name: str) -> str:
 
 
 def _check_declared(plan: list[tuple[zipfile.ZipInfo, Path, str]], limits: ZipLimits) -> None:
-    # ZIP 디렉토리에 적힌 크기로 한도를 먼저 판단한다. 아무것도 쓰기 전이다
+    # 아무것도 쓰기 전에 ZIP 디렉토리에 기록된 크기로 한도를 먼저 확인한다
     total = 0
     for member, _target, name in plan:
         if member.is_dir():
@@ -371,9 +373,12 @@ def _check_declared(plan: list[tuple[zipfile.ZipInfo, Path, str]], limits: ZipLi
 
 def _safe_extract(zf: zipfile.ZipFile, dest: Path, limits: ZipLimits | None = None) -> None:
     """zip을 안전하게 푼다.
-    파일 이름을 복원(fix_zip_name)하고, 대상 디렉토리 밖으로 나가는 항목(zip slip)은 거부한다.
-    ``limits``가 있으면 쓰기 전에 ZIP 디렉토리의 크기로, 푸는 동안 실제로 쓴 바이트로 한도를 확인하고 넘으면
-    ``ZipRefused``를 던진다. 이미 쓴 파일은 호출한 쪽이 지운다."""
+    깨진 파일 이름은 복원한다. 대상 디렉토리 밖을 가리키는 항목은 거부한다(zip slip 공격 방지).
+    ``limits``가 있으면 풀기 전과 푸는 동안 한도를 확인한다. 넘으면 ``ZipRefused``를 던진다.
+    이미 쓴 파일은 호출한 쪽이 지운다.
+
+    The limits are checked against the ZIP directory's sizes before writing, then against the bytes
+    written."""
     dest = dest.resolve()
     plan: list[tuple[zipfile.ZipInfo, Path, str]] = []
     for member in zf.infolist():
@@ -403,7 +408,7 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path, limits: ZipLimits | None = No
                     break
                 size += len(chunk)
                 total += len(chunk)
-                # ZIP 디렉토리의 크기는 거짓일 수 있으므로 실제로 쓴 바이트로 다시 확인한다
+                # ZIP 디렉토리의 크기는 거짓일 수 있다. 실제로 쓴 바이트로 다시 확인한다
                 if limits.max_entry_bytes and size > limits.max_entry_bytes:
                     raise ZipRefused(f"ZIP refused while unpacking: the entry {_shown(name)} wrote more than "
                                      f"{_mib(limits.max_entry_bytes)} MiB (intake.max_entry_mb) — {_LIES}")
@@ -423,7 +428,8 @@ _ROOT_BUILD_FILES = ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gr
 
 def _detect_project_root(extracted: Path) -> Path:
     """압축을 푼 디렉토리에서 프로젝트 루트를 찾는다. 최상위 폴더가 하나뿐이면 그 안으로 들어간다.
-    맨 위에 빌드 파일이 있으면 멈춘다. Gradle, Ant 파일에서도 멈추므로 접수가 실제 빌드 도구 이름으로 거절할 수 있다."""
+    맨 위에 빌드 파일이 있으면 거기서 멈춘다. Gradle, Ant 파일에서도 멈춘다.
+    그래야 접수가 실제 빌드 도구 이름으로 거절할 수 있다."""
     entries = [p for p in extracted.iterdir() if not p.name.startswith("__MACOSX") and p.name != ".DS_Store"]
     if any((extracted / n).exists() for n in _ROOT_BUILD_FILES):
         return extracted
@@ -437,15 +443,15 @@ RUN_DIR_FILES = ("errors.jsonl", "errors.md", "report.md", "report.json", "sbmig
 
 
 def logs_dir(ws: Any) -> Path:
-    """작업 공간(또는 테스트, 화면처럼 run_dir만 가진 대체 객체)의 `<run dir>/logs` 경로를 반환한다."""
+    """실행 디렉토리의 `logs` 폴더 경로를 반환한다. run_dir만 가진 객체(테스트, 화면)도 받는다."""
     d = getattr(ws, "logs_dir", None)
     return Path(d) if d is not None else Path(ws.run_dir) / "logs"
 
 
 class Workspace:
     """실행 한 번의 작업 공간 클래스.
-    root는 프로젝트 복사본(브랜치 sbmig/<run_id>)이고 run_dir은 실행 결과를 담는 디렉토리다.
-    모든 단계가 파일 읽기와 쓰기, 커밋과 되돌리기, diff, 저널 기록을 이 클래스로 처리한다."""
+    root는 프로젝트 복사본이다(브랜치 sbmig/<run_id>). run_dir은 실행 결과를 담는 디렉토리다.
+    모든 단계가 파일 읽기와 쓰기, 커밋과 되돌리기, diff, 저널 기록을 이 클래스로 한다."""
     def __init__(self, root: Path, run_dir: Path, run_id: str):
         self.root = Path(root).resolve()
         self.run_dir = Path(run_dir).resolve()
@@ -453,14 +459,14 @@ class Workspace:
         self.logs_dir = self.run_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.journal_path = self.run_dir / "journal.jsonl"
-        # 다른 프로세스에서 실행 중인 경우 웹이 이 파일로 중단을 요청한다
+        # 실행이 다른 프로세스에 있으면 웹이 이 파일로 중단을 요청한다
         self.stop_request_path = self.run_dir / STOP_REQUEST_FILE
         self._log_counter = 0
         self.git_branch = f"sbmig/{run_id}"
         self._git_ready = False
         self.encoding_candidates: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES
         self._read_encodings: dict[str, str] = {}      # 절대 경로별로 마지막에 읽거나 쓴 인코딩
-        # 접수에서 찾은, IDE 출력이나 백업 폴더(boot/bin 등)에 남은 pom 복사본 폴더.
+        # 접수에서 찾은 pom 복사본 폴더(IDE 출력이나 백업 폴더, boot/bin 등).
         # walk / glob이 target/처럼 건너뛴다
         self.ignored_dirs: set[str] = set()
         # 올린 zip이 풀기 한도를 넘어 접수에서 거절한 사유. None이면 정상 접수다
@@ -475,10 +481,11 @@ class Workspace:
     @classmethod
     def from_input(cls, src: str | Path, out_dir: str | Path, run_id: Optional[str] = None,
                    limits: ZipLimits | None = None) -> "Workspace":
-        """입력 디렉토리를 복사하거나 zip을 풀어 `<out_dir>/<run_id>/project`를 만들고 Workspace를 반환한다.
-        접수 단계에서 호출한다. zip이 풀기 한도(``limits``, None이면 ``intake`` 기본값)를 넘으면 아무것도 남기지 않고
-        빈 project 폴더와 ``intake_refusal``(사유 문장)을 가진 Workspace를 반환한다.
+        """입력 폴더를 복사하거나 zip을 풀어 프로젝트 복사본을 만들고 Workspace를 반환한다. 접수가 호출한다.
+        zip이 풀기 한도를 넘으면 푼 것을 모두 지운다. 이때는 빈 project 폴더와 거절 사유(``intake_refusal``)를
+        가진 Workspace를 반환한다.
 
+        The project lands in `<out_dir>/<run_id>/project`; `limits` None = the `intake` defaults.
         Raises FileExistsError when the project folder exists, ValueError for an input that is neither a
         directory nor a zip. A refusal journals `intake_refused`; the caller ends the run like an intake
         refusal."""
@@ -534,7 +541,7 @@ class Workspace:
         return rel if rel is not None else p.as_posix()
 
     def is_build_output(self, rel: str | Path) -> bool:
-        """경로가 이 프로젝트의 Maven 빌드 산출물 target/이거나 그 안에 있는지 확인한다(`is_build_output_path`)."""
+        """경로가 이 프로젝트의 Maven 빌드 산출물(target/) 안에 있으면 True를 반환한다."""
         return is_build_output_path(self.rel(rel), self.root)
 
     def exists(self, rel: str | Path) -> bool:
@@ -552,8 +559,8 @@ class Workspace:
 
     def read(self, rel: str | Path, encoding: Optional[str] = None) -> str:
         """파일을 감지한 인코딩으로 읽는다.
-        ``encoding``이 None이면 감지한 인코딩을 쓴다. 줄바꿈(\\r\\n 포함)은 그대로 두고, write가 같은 인코딩으로
-        쓰도록 인코딩을 기억해 둔다."""
+        ``encoding``을 주면 그 인코딩으로 읽는다. 줄바꿈(\\r\\n 포함)은 그대로 둔다.
+        읽은 인코딩을 기억해 두고, write가 같은 인코딩으로 쓴다."""
         p = self.abs(rel)
         enc = encoding or detect_encoding(p, self.encoding_candidates)
         with open(p, "r", encoding=enc, errors="replace", newline="") as fh:
@@ -563,7 +570,8 @@ class Workspace:
 
     def write(self, rel: str | Path, text: str, encoding: Optional[str] = None) -> None:
         """텍스트를 파일의 원래 인코딩으로 쓴다. BOM은 유지하고 새 파일은 utf-8로 쓴다.
-        그 인코딩에 없는 문자가 있으면 .java 파일은 \\uXXXX로 바꾸고, 다른 파일은 UTF-8로 저장하면서 경고 로그를 남긴다.
+        그 인코딩에 없는 문자가 있으면 .java 파일은 \\uXXXX로 바꿔 쓴다.
+        다른 파일은 UTF-8로 저장하고 경고 로그를 남긴다.
 
         encoding None = the encoding the file was read with, else the detected one. Newlines are untouched."""
         p = self.abs(rel)
@@ -575,7 +583,7 @@ class Workspace:
                 enc = detect_encoding(p, self.encoding_candidates)
                 if enc == "utf-8" and self._read_encodings.get(key) not in (None, "utf-8"):
                     # 지금은 ASCII뿐이지만 cp949로 읽었던 파일이다.
-                    # 나중에 한글이 들어올 수 있으므로 원래 인코딩을 유지한다
+                    # 나중에 한글이 들어올 수 있으니 원래 인코딩을 유지한다
                     enc = self._read_encodings[key]
             else:
                 enc = self._read_encodings.get(key, "utf-8")
@@ -610,12 +618,12 @@ class Workspace:
         shutil.move(str(src), str(dst))
 
     def is_ignored(self, rel: str) -> bool:
-        """``rel``이 접수에서 무시하기로 한 폴더(``ignored_dirs``, 남은 pom 복사본) 안에 있는지 확인한다."""
+        """``rel``이 접수에서 무시하기로 한 폴더(pom 복사본 폴더) 안에 있으면 True를 반환한다."""
         r = str(rel).replace("\\", "/").strip("/")
         return any(r == d or r.startswith(d + "/") for d in self.ignored_dirs if d)
 
     def walk(self) -> Iterator[tuple[str, list[str], list[str]]]:
-        """프로젝트 디렉토리를 os.walk로 순회한다.
+        """프로젝트 폴더를 하위 폴더까지 순회한다.
         .git, Maven 빌드 산출물, ``ignored_dirs``에는 들어가지 않는다.
 
         Yields (rel dir with "/", "" for the root; dir names; file names)."""
@@ -631,7 +639,7 @@ class Workspace:
 
     def glob(self, pattern: str) -> list[str]:
         """이름이 패턴에 맞는 파일과 디렉토리의 프로젝트 상대 경로 목록을 반환한다.
-        .git, 빌드 산출물, ``ignored_dirs``는 제외한다. 패턴에 '/'가 있으면 rglob으로 경로 전체를 맞춘다."""
+        .git, 빌드 산출물, ``ignored_dirs``는 제외한다. 패턴에 '/'가 있으면 경로 전체를 패턴과 맞춘다."""
         if "/" in pattern or "\\" in pattern:
             return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern))
                           if ".git" not in r.split("/") and not is_build_output_path(r, self.root)
@@ -670,10 +678,10 @@ class Workspace:
         rec = {"ts": datetime.now(timezone.utc).isoformat(), "run_id": self.run_id, **event}
         line = json.dumps(rec, ensure_ascii=False, default=_json_default)
         if output_scrubbing():
-            # 웹 화면이 실행 중에 이 파일을 읽으므로 기록할 때 마스킹한다.
-            # JSON이 깨지지 않도록 값 단위로 처리한다
+            # 웹 화면이 실행 중에 이 파일을 읽는다. 그래서 기록할 때 마스킹한다.
+            # JSON이 깨지지 않도록 값 단위로 마스킹한다
             clean = scrub_json(json.loads(line))
-            # 마스킹에 실패하면 줄 전체가 정해진 형태로 바뀌므로 시각과 실행 ID는 따로 남긴다
+            # 마스킹에 실패하면 줄 전체가 정해진 형태로 바뀐다. 시각과 실행 ID는 따로 남긴다
             clean.setdefault("ts", rec["ts"])
             clean.setdefault("run_id", self.run_id)
             line = json.dumps(clean, ensure_ascii=False)
@@ -681,7 +689,7 @@ class Workspace:
             fh.write(line + "\n")
 
     def save_model(self, name: str, model: BaseModel) -> Path:
-        """pydantic 모델을 실행 디렉토리에 JSON 파일(profile.json, plan.json 등)로 저장한다."""
+        """모델을 실행 디렉토리에 JSON 파일로 저장한다(profile.json, plan.json 등)."""
         p = self.run_dir / name
         p.write_text(model.model_dump_json(indent=2), encoding="utf-8")
         return p
@@ -689,11 +697,13 @@ class Workspace:
     # ------------------------------------------------------------------ git 스냅샷
     def _git(self, *args: str, check: bool = True, env: Optional[dict[str, str]] = None,
              input: Optional[bytes] = None) -> subprocess.CompletedProcess:
-        """작업 공간에서 git 명령을 실행한다. stdin을 닫고 프롬프트, 서명, 훅을 끄고 타임아웃을 건다.
-        출력은 콘솔 코드 페이지가 아니라 UTF-8로 디코딩한다.
- A global git config may ask for a GPG passphrase, run hooks or call a credential manager; in a Windows
-service process that waits forever. A `text=True` cp949 decode on Windows dies inside subprocess's reader
-        thread and leaves `stdout=None`. `_git_bytes` keeps the raw bytes (patch files)."""
+        """작업 공간에서 git 명령을 실행한다. 프롬프트, 서명, 훅을 끄고 타임아웃을 건다.
+        출력은 콘솔 코드 페이지와 상관없이 UTF-8로 디코딩한다.
+
+        A global git config may ask for a GPG passphrase, run hooks or call a credential manager; in a
+        Windows service process that waits forever. A `text=True` cp949 decode on Windows dies inside
+        subprocess's reader thread and leaves `stdout=None`. `_git_bytes` keeps the raw bytes (patch
+        files)."""
         cp = self._git_bytes(*args, check=check, env=env, input=input)
         return subprocess.CompletedProcess(cp.args, cp.returncode, _as_text(cp.stdout), _as_text(cp.stderr))
 
@@ -718,7 +728,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         프롬프트와 편집기를 막고 작성자를 sbmig로 고정한다. 타임아웃이나 check 실패면 GitError를 던진다.
         - ``env``: 고정 값 위에 덧붙일 환경 변수
         - ``input``: stdin으로 보낼 바이트. 없으면 stdin을 닫는다
-        - ``stdout``: 바이너리 파일 객체를 주면 출력이 바로 그 파일로 가고 ``cp.stdout``은 비어 있다"""
+        - ``stdout``: 바이너리 파일 객체를 주면 출력이 그 파일로 간다. 이때 ``cp.stdout``은 비어 있다"""
         cmd = self._git_cmd(args)
         io_kw: dict[str, Any] = {"stderr": subprocess.PIPE,
                                  "stdout": stdout if stdout is not None else subprocess.PIPE}
@@ -739,8 +749,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return cp
 
     def git_init(self) -> str:
-        """프로젝트를 git 저장소(브랜치 sbmig/<run_id>)로 만들고 .gitignore와 속성 파일을 맞춘 뒤 as-is
-        상태를 첫 커밋으로 남긴다. 그 커밋의 sha를 반환한다."""
+        """프로젝트를 git 저장소(브랜치 sbmig/<run_id>)로 만들고, 원래 상태를 첫 커밋으로 남긴다.
+        .gitignore와 속성 파일도 맞춘다. 첫 커밋의 sha를 반환한다."""
         if not (self.root / ".git").exists():
             self._git("init", "-q")
             self._git("checkout", "-q", "-b", self.git_branch)
@@ -764,8 +774,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
     def _gitignore_lines(self) -> list[str]:
         """git_init이 루트 .gitignore에 넣을 줄 목록을 반환한다.
         target/은 pom 옆에 있는 빌드 산출물만 무시한다.
-        빌드가 만드는 파일(.flattened-pom.xml 등)도 무시해야 바뀐 파일이 없는지 정확히 판단할 수 있다.
-        단, as-is 트리에 이미 있는 생성 파일은 무시하지 않는다.
+        빌드가 만드는 파일(.flattened-pom.xml 등)도 무시한다. 그래야 바뀐 파일이 없는지 정확히 알 수 있다.
+        원래 프로젝트에 이미 있던 생성 파일은 무시하지 않는다.
 
         `!**/src/**/target/` keeps packages such as `src/main/java/com/x/target/`; every other as-is
         `target` dir that is not build output gets its own `!/<dir>/target/`. The `.../**` twins re-include
@@ -803,9 +813,9 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return out
 
     def commit(self, message: str, allow_empty: bool = False, *, paths: Optional[Iterable[str]] = None) -> str:
-        """작업 트리를 커밋한다. paths가 없으면 무시된 jar까지 전부, 있으면 그 경로만 커밋한다.
-        LLM 시도는 스크립트가 보고한 파일만 커밋하므로 빌드가 lib/에 복사한 jar가 섞이지 않는다.
-        커밋할 것이 없으면 지금 HEAD를 반환한다. 반환값은 HEAD의 sha다.
+        """지금 프로젝트 상태를 커밋하고 HEAD의 sha를 반환한다. 커밋할 것이 없으면 지금 HEAD를 반환한다.
+        ``paths``가 없으면 무시된 jar까지 전부 커밋한다. ``paths``가 있으면 그 경로만 커밋한다.
+        LLM 시도는 스크립트가 보고한 파일만 커밋한다. 그래야 빌드가 lib/에 복사한 jar가 섞이지 않는다.
 
         `paths` outside the project (absolute or with "..") are dropped. Raises GitError when git commit fails
         for another reason than "nothing to commit"."""
@@ -819,8 +829,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
                       if p and not Path(p).is_absolute() and ".." not in p.split("/")]   # 프로젝트 안의 경로만
             if not wanted and not allow_empty:
                 return self.head()
-            # Windows 명령줄 길이 제한 때문에 200개씩 add하고, 실패하면 경로를 하나씩 다시 시도한다
-            # -f는 스크립트가 일부러 바꾼 경로라면 무시 대상이어도 넣기 위해서다
+            # Windows 명령줄 길이 제한 때문에 200개씩 add한다. 실패하면 경로를 하나씩 다시 시도한다
+            # 스크립트가 일부러 바꾼 경로는 무시 대상이어도 넣는다(-f)
             for i in range(0, len(wanted), 200):
                 chunk = wanted[i:i + 200]
                 if self._git("add", "-A", "-f", "--", *chunk, check=False).returncode != 0:
@@ -838,8 +848,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return self.head()
 
     def _force_add_ignored_jars(self) -> None:
-        """프로젝트가 `*.jar` / `lib/`를 무시하더라도 빌드 산출물 밖의 jar는 강제로 add한다.
-        빠지면 changes.patch와 되돌리기에서 jar를 잃기 때문이다. jar 말고 무시된 파일(로그, node_modules 등)은 넣지 않는다."""
+        """빌드 산출물 밖의 jar는 프로젝트가 `*.jar` / `lib/`를 무시해도 강제로 add한다.
+        빠지면 changes.patch와 되돌리기에서 jar를 잃는다. jar가 아닌 무시된 파일(로그, node_modules 등)은 넣지 않는다."""
         cp = self._git("ls-files", "-z", "--others", "--ignored", "--exclude-standard", check=False)
         jars = [f for f in (cp.stdout or "").split("\0")
                 if f.lower().endswith(".jar") and "node_modules/" not in f and not is_build_output_path(f, self.root)]
@@ -851,7 +861,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return self._git("rev-parse", "HEAD").stdout.strip()
 
     def status_paths(self) -> set[str]:
-        """`git status`가 보고하는 경로(수정, 삭제, 미추적 파일)를 루트 기준 posix 경로로 반환한다. 무시된 파일은 제외한다."""
+        """`git status`에 나오는 경로(수정, 삭제, 미추적 파일)를 프로젝트 상대 경로로 반환한다. 무시된 파일은 뺀다."""
         out = self._git("status", "--porcelain", "-z", "--untracked-files=all", check=False).stdout or ""
         paths: set[str] = set()
         items = out.split("\0")
@@ -866,10 +876,9 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return paths
 
     def restore_build_byproducts(self, before: set[str]) -> list[str]:
-        """빌드가 target/ 밖에 만든 파일을 정리해 다음 시도의 커밋과 diff에 섞이지 않게 한다.
-        예외를 던지지 않는다.
-        빌드 전 status_paths와 비교해 새로 바뀐 추적 파일은 되돌리고, 미추적 파일은 .git/info/exclude에 넣는다.
-        정리한 경로 목록을 반환한다.
+        """빌드가 target/ 밖에 만든 파일을 치운다. 다음 시도의 커밋과 diff에 섞이지 않게 한다.
+        빌드 전의 ``before``에 없던 경로만 본다. 추적 파일은 되돌리고, 미추적 파일은 .git/info/exclude에 넣는다.
+        정리한 경로 목록을 반환한다. 예외를 던지지 않는다.
 
         Examples of such products: a module jar maven-dependency-plugin copied into `lib/`, generated
         sources, a rewritten `.flattened-pom.xml`. Call right after a build with the `status_paths()` taken
@@ -909,7 +918,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return bool(self._git("status", "--porcelain").stdout.strip())
 
     def revert_to(self, sha: str) -> None:
-        """작업 디렉토리를 지정한 커밋 상태로 강제로 되돌리고 남은 파일을 정리한다. 빌드 산출물은 남긴다."""
+        """프로젝트를 지정한 커밋 상태로 되돌리고 남은 파일을 지운다. 빌드 산출물은 남긴다."""
         self._git("reset", "-q", "--hard", sha)
         self._git("clean", "-qfd", *self._clean_excludes())
 
@@ -919,7 +928,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         self._git("clean", "-qfd", *self._clean_excludes())
 
     def diff(self, from_sha: str, to_sha: Optional[str] = None, stat: bool = False) -> str:
-        """두 커밋 사이, 또는 커밋과 작업 트리 사이의 diff 텍스트를 반환한다."""
+        """두 커밋 사이의 diff 텍스트를 반환한다. ``to_sha``가 없으면 지금 프로젝트 상태와 비교한다."""
         args = ["diff", "--no-color"]
         if stat:
             args.append("--stat")
@@ -934,8 +943,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return _as_bytes(self._git_bytes(*args).stdout)
 
     def changed_files_since(self, sha: str) -> list[str]:
-        """sha 이후 바뀐 파일과 미추적 파일 목록을 반환한다.
-        커밋 여부와 관계없이 본다. NUL로 구분해 받으므로 한글 이름도 이스케이프 없이 그대로 나온다."""
+        """sha 이후 바뀐 파일과 미추적 파일 목록을 반환한다. 커밋했는지와 상관없이 본다.
+        한글 파일 이름도 이스케이프 없이 그대로 나온다."""
         out = self._git("diff", "--name-only", "-z", sha).stdout
         untracked = self._git("ls-files", "--others", "--exclude-standard", "-z").stdout
         return sorted({f for f in (out + "\0" + untracked).split("\0") if f.strip()})
@@ -946,7 +955,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return [f for f in out.split("\0") if f.strip()]
 
     def numstat_since(self, sha: str) -> list[tuple[str, str, Optional[int], Optional[int]]]:
-        """커밋 sha와 지금 작업 트리 사이에 달라진 추적 파일마다 (경로, 상태, 추가 줄, 삭제 줄)을 반환한다.
+        """커밋 sha 이후 달라진 추적 파일마다 (경로, 상태, 추가 줄, 삭제 줄)을 반환한다.
         상태는 M / A / D 중 하나이고 이름 변경은 삭제와 추가로 나눈다. 바이너리 파일은 줄 수가 None이다.
         git이 실패하면 GitError를 던진다."""
         names = self._git("diff", "--name-status", "--no-renames", "-z", sha).stdout.split("\0")
@@ -964,12 +973,12 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return out
 
     def diff_file_bytes(self, sha: str, rel: str) -> bytes:
-        """커밋 sha와 지금 작업 트리 사이의 파일 하나의 diff를 원본 바이트로 반환한다. 실패하면 GitError를 던진다."""
+        """파일 하나가 커밋 sha 이후 어떻게 바뀌었는지 diff를 원본 바이트로 반환한다. 실패하면 GitError를 던진다."""
         return _as_bytes(self._git_bytes("diff", "--no-color", "--no-renames", sha, "--", rel).stdout)
 
     def file_at(self, sha: str, rel: str) -> Optional[str]:
         """커밋 sha 시점의 파일 내용을 반환한다(`git show <sha>:<path>`).
-        UTF-8로 디코딩하고, 파일이 없거나 git이 실패하면 None을 반환한다. 예외를 던지지 않는다."""
+        내용은 UTF-8로 디코딩한다. 파일이 없거나 git이 실패하면 None을 반환한다. 예외를 던지지 않는다."""
         path = str(rel).replace("\\", "/").lstrip("/").removeprefix("./")
         try:
             cp = self._git("show", f"{sha}:{path}", check=False)
@@ -980,7 +989,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return cp.stdout or ""
 
     def first_commit(self) -> str:
-        """as-is 상태를 저장한 첫 커밋의 sha를 반환한다."""
+        """원래 상태를 저장한 첫 커밋의 sha를 반환한다."""
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
 
     # ------------------------------------------------------------------ tree 객체(코드 변경 화면용)
@@ -1003,8 +1012,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
                 pass
 
     def snapshot_tree(self) -> str:
-        """작업 트리 전체를 tree 객체로 저장하고 sha를 반환한다. 임시 index를 쓰므로 HEAD와 실제 index는 그대로다.
-        커밋할 때처럼 무시된 jar도 넣으므로 지금 `commit()`이 만들 tree와 같다. 실패하면 GitError를 던진다.
+        """지금 프로젝트 전체를 커밋하지 않고 tree 객체로 저장한 뒤 sha를 반환한다. HEAD와 index는 그대로다.
+        무시된 jar도 넣는다. 그래서 지금 `commit()`이 만들 tree와 같다. 실패하면 GitError를 던진다.
 
         Steps: copy `.git/index` WITH its mtime (a fresh mtime would defeat git's racy-clean check, and a
         same-size edit in the index's second would pass as unchanged), `GIT_INDEX_FILE` = the copy, `git
@@ -1014,7 +1023,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         try:
             real = self._git_dir() / "index"
             if real.is_file():
-                # 복사본의 수정 시각이 새로 찍히면 git이 같은 시각에 바뀐 파일을 그대로라고 판단하므로 시각도 복사한다
+                # 수정 시각까지 복사한다. 시각이 새로 찍히면 git이 같은 초에 바뀐 파일을 그대로라고 본다
                 shutil.copy2(real, tmp)
             env = {"GIT_INDEX_FILE": str(tmp)}
             self._git("add", "-A", env=env)
@@ -1031,7 +1040,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
 
     def tree_entries(self, treeish: str) -> dict[str, tuple[str, str]]:
         """tree 안의 일반 파일(모드 100644, 100755)마다 경로와 (모드, sha)를 반환한다.
-        하위 디렉토리까지 보고 심볼릭 링크와 서브모듈은 뺀다. 실패하면 GitError를 던진다."""
+        하위 폴더까지 보고, 심볼릭 링크와 서브모듈은 뺀다. 실패하면 GitError를 던진다."""
         out = self._git_bytes("ls-tree", "-r", "-z", "--full-tree", treeish).stdout or b""
         entries: dict[str, tuple[str, str]] = {}
         for rec in out.split(b"\0"):
@@ -1045,7 +1054,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
         return entries
 
     def make_tree(self, entries: Iterable[tuple[str, str, str]]) -> str:
-        """(모드, sha, 경로) 목록으로 tree 객체를 만들고 sha를 반환한다. 임시 index를 쓰고, 목록이 비면 빈 tree다.
+        """(모드, sha, 경로) 목록으로 tree 객체를 만들고 sha를 반환한다. 목록이 비면 빈 tree다.
         blob은 이미 있어야 한다. 파일이면서 디렉토리인 경로나 없는 blob이면 GitError를 던진다."""
         tmp = self._temp_index()
         try:
@@ -1059,8 +1068,8 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
             self._drop_index(tmp)
 
     def _cat_blobs(self, shas: Iterable[str], limit: int) -> Iterator[tuple[str, Optional[bytes], int]]:
-        """`git cat-file --batch` 한 번으로 blob 내용을 요청한 순서대로 `(sha, bytes, size)`로 낸다.
-        `limit`보다 큰 blob은 읽고 버려 bytes가 None이고, 없는 객체는 size가 -1이다.
+        """blob 내용을 요청한 순서대로 `(sha, bytes, size)`로 낸다. git 호출은 한 번이다.
+        `limit`보다 큰 blob은 bytes가 None이다. 없는 객체는 size가 -1이다.
 
         One blob in memory at a time; a writer thread feeds the requests so neither pipe can fill up. Raises
         GitError."""
@@ -1122,7 +1131,7 @@ service process that waits forever. A `text=True` cp949 decode on Windows dies i
 
     # ------------------------------------------------------------------ 결과물
     def write_patch(self, name: str = "changes.patch") -> Path:
-        """as-is 상태부터 지금까지의 전체 변경을 changes.patch로 기록한다."""
+        """원래 상태부터 지금까지의 전체 변경을 changes.patch로 저장한다."""
         p = self.run_dir / name
         p.write_bytes(self.diff_bytes(self.first_commit()))
         return p
