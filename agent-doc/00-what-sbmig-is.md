@@ -145,6 +145,26 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 | 2 | 끝까지 돌았지만 성공이 아님: 미해결 오류·차단 케이스 남음, 재구성 실패, `hollow-reactor` 등 |
 | 3 | 중단·거부: Maven 아님(Ant 포함), 풀기 한도를 넘은 ZIP, 루트 pom 없음, ADF, Maven/JDK 문제, 사내 부모 pom 해석 불가, 사용자 멈춤(최종 빌드가 다 끝난 뒤의 멈춤 요청은 무시) |
 
+**사내 프레임워크 실행의 완료 표시.** 사내 프레임워크 프로젝트(범위 `jdk-jakarta`, [13](13-framework-projects.md))는 JDK 21, Jakarta 변환까지가
+맡은 일이다. 그래서 변환을 끝낸 실행은 그 뒤 빌드가 실패해도(종료 코드 2, `build=FAIL` 그대로) 사람이 보는 자리에서 완료로 적는다.
+판정은 `sbmig.report.result_line.conversion_complete` 한 곳이고 `report.json`에 이미 있는 값만 읽는다(이전 실행도 같은 규칙으로 보인다):
+
+- 이관 실행이고 계획의 범위가 `jdk-jakarta`다.
+- 플래그에 `aborted`, `aborted:<사유>`, `mvn-not-found`, `rewrite-failed`, `hollow-reactor`가 없다.
+- 계획한 OpenRewrite 단계(레시피가 있는 것)마다 실행 결과가 있고 실패한 결과가 없다. 서비스마다 단계가 있는 MSA에서 시간 예산 때문에
+  한 단계를 건너뛰면 완료가 아니다.
+- 최종 빌드 결과가 있다(통과 여부는 보지 않는다).
+
+| 자리 | 변환을 끝냈고 빌드가 실패한 실행 |
+|---|---|
+| 화면 | 제목 「JDK 21, Jakarta 변환을 마쳤습니다. 변환 뒤 빌드는 통과하지 않았습니다」(성공 색), 「지난 실행」 「완료」, 빌드 검증 단계는 빨간 실패 표시 대신 주의 색 느낌표, 레일 아래 「변환 뒤 빌드는 통과하지 않았습니다. 남은 오류는 보고서에 있습니다.」 |
+| 상태(`GET /api/runs/{id}`, 목록) | `conversion_complete: true`. 종료 코드가 0·2가 아닌 실행(파드가 죽은 경우 등)에는 붙지 않는다 |
+| 관리자 화면 | 결과 `converted`, 「변환 완료」 |
+| 보고서 | 머리 표 「✅ JDK 21, Jakarta 변환 완료 (변환 뒤 빌드는 실패)」(en `✅ CONVERTED (the build does not pass)`), 그 아래 문단이 변환을 마쳤다는 말로 시작한다. 남은 오류 절은 그대로다 |
+
+바뀌지 않는 것: `success`, 종료 코드, `SBMIG-RESULT`의 모든 값, 플릿의 `incomplete`, 오류 목록. OpenRewrite가 읽지 못해 변환하지 않은 파일과
+javax가 남은 JSP는 완료 표시를 막지 않고 「확인해 주세요」에 적는다(읽지 못한 파일은 「변환되지 않은 파일」 줄에 이름과 함께). 변환이 실패했거나 중단된 실행은 이전과 같이 보인다.
+
 마지막 줄 `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> … attn=<codes> review=<v>` 는 운영자가 회사 PC
 화면에서 손으로 옮겨 적는 줄이다(`sbmig/report/result_line.py`). 읽는 법은 [03-run-debug-and-logs.md](03-run-debug-and-logs.md).
 

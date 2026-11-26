@@ -20,9 +20,9 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`); v2.1z-by (the earlier fix in the prompt), v2.1z-bz (trade-back), v2.1z-cb (an error's place: file, else module) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard); v2.1z-ca (a version that took part in a round trip: credit `round_trip`, never reused on its own) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
-| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
+| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls); v2.1z-ck (a framework run whose conversion is done reads as done in the result cell; `exit=` / `build=` unchanged) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses); v2.1z-ch (the admin page's log ZIP of one run carries `logs/`, the reports, the error list and the state files) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses); v2.1z-ch (the admin page's log ZIP of one run carries `logs/`, the reports, the error list and the state files); v2.1z-ck (`conversion_complete` in the run status, the page's 완료, the admin result word `converted`) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key); v2.1z-cg (the image's JDK: Amazon Corretto 21 at a pinned version, checksum checked) |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for); v2.1z-cf (a refusal that lasts names the programs that have the file open; a test that fails when this process holds a path it renames) |
@@ -151,7 +151,7 @@ Source of truth for models and seams: `sbmig/core/models.py`, `sbmig/core/interf
   journal `rewrite_download_retry` / `_result`; error prefix `download-retry: `). Literal versions (`4.0.x`,
   `latest.release`) left in a changed pom → one re-run, else flag `rewrite-unresolved-versions` + follow-up.
 * `RewriteResult.parse_problems` (files rewrite-maven-plugin could not parse): journal `rewrite_parse_problems`, flag
-  `rewrite-parse-problems`, phase note.
+  `rewrite-parse-problems`, phase note (a reduced-scope run also gets a hand-over line naming the files: v2.1z-ck).
 * `sbmig.loop.parse_stop_after(value)` is the one validator for `--stop-after` / web `stop_after` /
   `api.migrate(stop_after=)`; values per "v2 — flow-v2".
 
@@ -8608,3 +8608,115 @@ in place Maven no longer asks a repository for that pom, so a pom uploaded later
 deleted (the file and the hand-over line say so). Measured with a stub in place: a dependency on the same
 coordinate without a classifier, with another classifier or with another `<type>` fails as it did before (`Could
 not find artifact`); `dependency:tree` prints the same line; only the warning `The POM for … is missing` is gone.
+
+## v2.1z-ck — a framework project whose conversion is done is shown as done, also when the build after it fails
+
+**Why.** The first framework project that got through the conversion on the company cluster (2026-11-26) ended
+with a failed build, as designed: such a project gets JDK 21 and Jakarta only, one build, no automatic fix
+(v2.1z-aw). The page called it 「미완료」 in the warning colour. The user: "사내 프레임워크는 이정도면 완료니까
+미완료로 하지말고 사내 프레임워크 java 21, jakarta 변환 완료면 완료로 화면에 표시되도록 해줘! 빌드가 안되더라도
+프로세스상으로는 완료니까!" For these projects the conversion is the whole job; the build errors that remain are
+the owners' and are reported, not a sign that the run did not finish.
+
+**What.** One rule, read by every place that words the outcome of such a run.
+
+1. **The rule**: `sbmig.report.result_line.conversion_complete(report)` (a `RunReport` or the dict read from
+   `report.json`). True when all of these hold:
+   - the run is a migration (`flow` is not `remediation`) planned with `plan.scope == "jdk-jakarta"`;
+   - no flag `aborted`, `aborted:<reason>` or `mvn-not-found` (the run was not refused, stopped or cut short);
+   - no flag `rewrite-failed` and no flag `hollow-reactor`;
+   - every planned conversion step has a result and none failed: the number of OpenRewrite results that are not
+     dry runs (`phases[].rewrite_results[]`) reaches the number of planned steps of kind `openrewrite` that carry
+     recipes (`plan.steps`), is at least one, and every such result is `ok`. One result is recorded per executed
+     step; a step skipped for the time budget records none, which matters for an MSA plan with one step per
+     service (one converted service and one skipped is not a done conversion);
+   - `final_build` is a build result (an object whose `ok` is a boolean): the build was attempted; it may have
+     failed.
+   A value that cannot be read counts as not satisfied (a `flags` that is not a list, `plan.steps` that
+   is not a list or holds an entry without a kind, `phases` or `rewrite_results` that are not lists, a result
+   entry that is not an object, a `final_build` without a boolean `ok`); the function does not raise.
+   It is derived from what a report already stores, so a run that finished before this rule existed is shown
+   the new way after the image is replaced. It applies to every reduced run, with `framework.fix_loop` on or
+   off (the PM's choice: what makes a framework project done is the conversion; with the loop on the wording
+   below still says that the build does not pass).
+2. **What does not change.** `RunReport.success`, the exit code (2 for a failed build), every token of
+   `SBMIG-RESULT` (`exit=2 build=FAIL unresolved=<n> … scope=jdk-jakarta`), `attn`, the fleet's status
+   (`incomplete`), the Job's result, `status()["success"]`, the error list, the report's sections on the errors
+   that remain, and the chained remediation's own state and wording. The build did fail; only the name of the
+   run's outcome changes. A run of another scope is worded as before in every place.
+3. **Run status** (`GET /api/runs/{id}`, each row of `GET /api/runs`, the `status` events): the key
+   `conversion_complete: true` when the rule holds for the run's `report.json` and the run's exit code is 2, 0 or
+   not recorded; absent otherwise (no report yet, a report that cannot be read, any other run, a remediation-flow
+   run, a Job whose container ended with another code after the report was written, e.g. a pod killed during
+   the chained remediation).
+4. **The page** (`static/index.html`), only when `conversion_complete === true`, `success === false`, the exit
+   code is 2, 0 or not recorded (the same codes as the status key; a Worker ends with 0 after a failed build
+   unless `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`), and the run is not one of the earlier cases of `describe` (waiting, running,
+   stopped by a person, exit code 3); any other exit code reads as it did before:
+   - title in the success colour: 「JDK 21, Jakarta 변환을 마쳤습니다. 변환 뒤 빌드는 통과하지 않았습니다」, followed
+     as before by 「남은 오류 N건」 / 「막힌 항목 N건」 when there are any;
+   - the row of 「지난 실행」: 「완료」 in the success colour (the suffix of a chained remediation as before);
+   - the stage rail: the build step is not drawn as failed (red cross). It gets the class `buildwarn` (an
+     exclamation mark in the warning colour), and the note under the rail reads 「변환 뒤 빌드는 통과하지
+     않았습니다. 남은 오류는 보고서에 있습니다.」 (only in place of the note 「빌드 검증 단계가 실패로 끝났습니다」;
+     a stop, refusal or remediation note is never replaced, and a step already drawn as stopped or refused keeps
+     its mark). `markVerify()` decides, each time one of its inputs changes. While the run is still going (the
+     chained remediation follows the build), the page decides from what it has seen: a reduced-scope run
+     (`framework_project` / `plan` journal events, or the status's `framework`) whose journal shows no failed
+     conversion: a `rewrite_failed` event, or a `rewrite` event that carries `step` with `ok: false` (a `rewrite`
+     event without `step` is one try that may be repeated and is not a result). The final status
+     (`conversion_complete`) corrects the mark either way. Opening another run starts from nothing
+     (`resetRail`).
+   - the chips of the result card (남은 오류, 막힌 항목, LLM 호출), the framework notice, the download buttons
+     and the remediation block are unchanged.
+5. **The admin page**: the result word of such a run is `converted` (instead of `incomplete`), shown as
+   「변환 완료」 in the success colour; the 범위 column still says 「JDK·jakarta만」.
+6. **The reports.** `SBMIG-RESULT`, the flags and every section about the errors that remain are unchanged.
+   - Korean guide (`guide_ko.py`): the result cell reads 「✅ JDK 21, Jakarta 변환 완료 (변환 뒤 빌드는 실패)」 (a noun
+     phrase like its sibling 「❌ 변환 실패 (빌드는 통과)」), without the trailing 「(최종 `mvn clean package`)」 of the other labels. The paragraph under the
+     head table begins 「JDK 21과 Jakarta 변환을 마쳤습니다. <이름> 프레임워크 프로젝트는 변환까지가 이번 작업의
+     범위입니다.」 and goes on with the build: without the fix loop 「변환 뒤 빌드는 통과하지 않았고 빌드 오류는
+     자동으로 고치지 않았습니다.」 and the pointer to 「변환 뒤 남은 빌드 오류」 (or to the last build log when no
+     error row is left); with the loop on 「빌드 오류를 자동으로 고쳐 보았지만 최종 빌드는 아직 통과하지 않습니다.」
+     (「변환 뒤 빌드는 아직 통과하지 않습니다.」 when the loop made no attempt) and the pointer to 「해결하지 못한
+     오류」 / 「진행하지 않은 항목」. Both end by naming who fixes what is left. A run the guide treats as stopped
+     (the abort flag or the abort hand-over line) keeps 「❌ 실행 중단 …」.
+   - English layout (`markdown.py`): `result_label` → `✅ CONVERTED (the build does not pass)` (order: NOT
+     CONVERTED, BUILD SUCCESS, CONVERTED, NOT BUILDING); the head row is `| **Result** | ✅ CONVERTED (the build
+     does not pass) |` without `(final `mvn clean package`)`. Nothing else of the layout moves.
+   - Console summary of `sbmig run` (`writer.py`): `CONVERTED (the build does not pass)` in yellow in place of
+     the red `NOT BUILDING`.
+   A run whose conversion failed keeps 「❌ 변환 실패 (빌드는 통과)」 / 「❌ 빌드 실패」 (v2.1z-ay).
+
+7. **What the label must not hide.** A conversion counts as done although OpenRewrite could not read some files
+   (the recipes skip them without an error; flag `rewrite-parse-problems`). In a reduced-scope run those files
+   stay unconverted in the delivered tree, so `_report_parse_problems` adds a hand-over line for each conversion step that names new files: `OpenRewrite
+   could not read N source file(s) (a, b, …): the JDK 21 / Jakarta recipes skipped them, so they are not converted
+   — check and convert them by hand` (the first five by name and `+N`; files an earlier step of the same run
+   already named are left out, so an MSA plan does not repeat a list; the set of named files is per-run state).
+   When the plugin gave no file names (the runner's placeholder `PARSE_PROBLEMS_UNKNOWN`), the line carries no
+   count and points at that step's rewrite log instead; the placeholder is never counted as a file and never
+   remembered as named. The Korean guide shows it in 「확인해 주세요」 with the lead 「변환되지 않은 파일」, after the pointers to
+   the remaining errors: 「OpenRewrite가 읽지 못한 소스 파일이 N개 있습니다: …. 이 파일(들)에는 JDK 21, Jakarta
+   변환이 적용되지 않았습니다. 직접 확인해 변환해 주세요.」 A full run gets no such line (its fix loop covers what
+   the build finds). Three sentences were corrected because they said something untrue for a run without the fix
+   loop or with a failed build:
+   - the flag text of `rewrite-parse-problems` no longer says that the fix loop covered the errors: `… skipped
+     them; what that leaves shows up in the build` (「…건너뛰었고, 그 때문에 생기는 오류는 빌드에서 드러납니다.」),
+     for every run; the phase note of a run without the fix loop ends `the build shows what follows`;
+   - the hand-over line `JSP javax references remain (…)` says `(the build passes, Tomcat 10+ fails at runtime)`
+     only when the final build passed; otherwise `(Tomcat 10+ fails at runtime on them)`
+     (「(Tomcat 10 이상에서 실행하면 실패합니다)」);
+   - the hand-over line about version strings a recipe left unresolved (`the recipe run could not download Maven
+     metadata …`) has a Korean rule now; it was shown in English in the Korean guide.
+
+**Not covered.** The label says nothing about whether the project works: the converted code was not compiled
+to the end. Files OpenRewrite could not parse, versions it left as literals and JSP files the rename step
+could not change do not make the rule false (the PM's choice): each has a hand-over line that the Korean guide
+shows in 「확인해 주세요」 (item 7), and a conversion that leaves such files is still shown as done. The
+scope is named 「JDK 21, Jakarta」 also when the plan left the jakarta set out because the project has no Java EE
+javax import. With the non-default `loop.always_final_verify: false`, an MSA run whose later service builds were
+skipped still has a `final_build` and can satisfy the rule (the report stores no per-step build results). A framework run that was stopped, refused or cut short, whose conversion failed, or whose reactor
+compiles none of the tree's sources is worded as before. The wording of the chained remediation after such a
+build (「조치함 · 빌드 미확인」, v2.1z-aw) is not touched. `sbmig fleet` still counts the project as incomplete and
+`--retry-failed` runs it again.

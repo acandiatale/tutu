@@ -1608,3 +1608,25 @@ cluster is hit, on every run. Contract: `docs/INTERFACES.md` "v2.1z-cj".
 | Documents | `agent-doc/07` (both cases, within its size limit), `deploy/README.md`, `docs/migration-agent/README.md`, RUNBOOK symptom row | `tests/docs` | done |
 | Not covered | a transfer error on the pom of such a library stops Maven itself (v2.1z-ax reads only the form without a classifier); snapshots; a zero-length main jar; a plugin's own dependency in such a log gets an unnecessary stub; nothing removes a stub when the real pom is uploaded | — | known |
 | Not checked | the company cluster (the user's hand-made poms of the same form are the first check there) | — | open |
+
+## Status — 2026-11-26, a framework project whose conversion is done is shown as done (v2.1z-ck)
+
+The first framework project that got through the conversion on the company cluster ended with a failed build, as
+designed, and the page called it 「미완료」. The user: "사내 프레임워크는 이정도면 완료니까 미완료로 하지말고 사내
+프레임워크 java 21, jakarta 변환 완료면 완료로 화면에 표시되도록 해줘! 빌드가 안되더라도 프로세스상으로는 완료니까!"
+Contract: `docs/INTERFACES.md` "v2.1z-ck".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| The rule | `result_line.conversion_complete(report)` (object or `report.json` dict): a reduced-scope migration, no abort flag, no `rewrite-failed` / `hollow-reactor`, a result for every planned conversion step and none failed, a final build result. Derived from stored report data, so earlier runs are shown the new way | unit tests on both forms; engine-driven tests with the real orchestrator and the fakes (build fails, conversion fails, a second service skipped for the time budget, stop request, http blocker, build passes) | done |
+| Unchanged on purpose | `success`, exit code 2, `SBMIG-RESULT … build=FAIL`, the fleet's `incomplete`, the error sections | tests | done |
+| Run status | `conversion_complete: true` (exit code 0, 2 or not recorded; never for a remediation-flow run or a pod that ended with another code) | `tests/web/test_v21zck_status_admin.py` | done |
+| The page | title in the success colour 「JDK 21, Jakarta 변환을 마쳤습니다. 변환 뒤 빌드는 통과하지 않았습니다」, 「완료」 in 「지난 실행」, the build step with an exclamation mark in the warning colour instead of a red cross, the note under the rail | page functions run under node; a real browser on a stored framework run and on a copy with `rewrite-failed` (list, card, rail, 420 px, switching runs) | done |
+| The admin page | result word `converted`, 「변환 완료」 | tests | done |
+| The reports | head cell 「✅ JDK 21, Jakarta 변환 완료 (변환 뒤 빌드는 실패)」 / `✅ CONVERTED (the build does not pass)`, the paragraph under it starts with the conversion being done; console `CONVERTED (the build does not pass)` | tests; rendered guides read top to bottom; goldens unchanged | done |
+| What the label must not hide | a reduced-scope run names the files OpenRewrite could not read in 「확인해 주세요」 (「변환되지 않은 파일」; without names: the rewrite log); three sentences that were untrue for a run without the fix loop or with a failed build were corrected (flag text, JSP line, a line shown in English) | engine-driven tests | done |
+| Review | four rounds by one independent reviewer. Round one: a skipped service step in an MSA plan read as done, a pod that died after the report read as done, weak evidence for the final build, operator guidance cut from `agent-doc/13`. Round two: unparsed files reached no place a reader looks, the page and the server disagreed about exit code 0. Round three: the plugin's nameless summary was counted as one file. Round four: nothing | every finding reproduced first | done |
+| Whole suite | 10,353 passed | `pytest` | done |
+| Documents | `agent-doc/00` §7 (the rule and where it shows), `agent-doc/13` (pointer), `deploy/README.md`, `docs/RUNBOOK.md` §0.3, `docs/migration-agent/README.md` §4.9 | `tests/docs` | done |
+| The PM's choices | the rule also holds with `framework.fix_loop` on; unparsed files and JSP leftovers do not undo the label; 「JDK 21, Jakarta」 names the scope also when the plan left the jakarta set out | told to the user | open |
+| Not checked | the company cluster and Job mode (the exit-code paths are read from the code); the real plugin printing only its summary line; an MSA plan made by the real planner, end to end | — | open |

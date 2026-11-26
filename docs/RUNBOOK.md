@@ -84,6 +84,11 @@ the company parent, stored scripts, LLM; an attempt that changes a `<parent>` or
 is rolled back). The chained remediation follows whether the build passed or failed (below). No restructure, no structure review, parent pom and
 framework version kept. The page and the report name the framework: `<name> 프레임워크는 JDK 21, Jakarta만 적용합니다.`
 (contract: `docs/INTERFACES.md` "v2.1z-aw — framework projects: conversion only, and the framework is named").
+A run whose conversion is done reads as done even when the build after it fails: 「완료」 on the page (title 「JDK 21, Jakarta
+변환을 마쳤습니다. 변환 뒤 빌드는 통과하지 않았습니다」, the build step in the warning colour, not a red cross), 「변환 완료」 on the
+admin page, 「✅ JDK 21, Jakarta 변환 완료 (변환 뒤 빌드는 실패)」 in the report's head table. The result line
+still says `exit=2 build=FAIL`; a run whose conversion failed (`rewrite-failed`) or that was stopped is not shown as done
+(contract: `docs/INTERFACES.md` "v2.1z-ck").
 Details: `agent-doc/13-framework-projects.md`. To validate in the company environment:
 
 | Item | What to do / look for |

@@ -120,7 +120,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
   부모가 프로젝트 자신의 모듈이면 수정 루프가 다룬다.
 - 성공: 빌드가 성공이면 exit 0이고 취약점 조치가 이어 돈다. 재구성이 없으니 `restructure-failed`도 없다.
 - 실패: 최종 빌드가 실패하면 exit 2이고 `result.zip`은 변환한 트리다. 남은 오류는 프로젝트 담당자와 프레임워크 담당자의 몫이다.
-  취약점 조치는 수정 루프를 돌았든 아니든 이어서 돈다(8절). 이관은 실패(exit 2) 그대로다.
+  취약점 조치는 이어서 돈다(8절). exit 2지만 변환이 끝났으면 완료로 적는다([00](00-what-sbmig-is.md) 7절).
 
 ## 5. 수정 루프를 켰을 때 (`framework.fix_loop: true`)
 
@@ -228,5 +228,5 @@ grep -n "def _check_framework" -A50 sbmig/loop/orchestrator.py | grep -n "journa
 grep -n "framework_guard\|def _framework" sbmig/loop/fixloop.py
 grep -n "framework:" -A30 config/default.yml
 grep -n "def display_name" -A25 sbmig/core/config.py
-.venv/bin/python -m pytest -o addopts="" -q tests/analyze/test_framework.py tests/plan/test_planner_framework.py tests/loop/test_fixloop_framework.py
+.venv/bin/python -m pytest -q tests/analyze/test_framework.py tests/plan/test_planner_framework.py tests/loop/test_fixloop_framework.py
 ```

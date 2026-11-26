@@ -748,6 +748,23 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   ZIP must come from the delivery (`build_tolerated`), not from the run's mode — a change set that ADDED an error is
   still a failed build. Fixture `fw-build-error` (a call removed after Java 8: builds on 8, fails on 21). Contract:
   `docs/INTERFACES.md` "v2.1z-aw".
+- **A framework run whose conversion is done reads as done (2026-11-26, v2.1z-ck)** — the user, after the first
+  framework project got through the conversion on the cluster: "사내 프레임워크는 이정도면 완료니까 미완료로 하지말고 사내
+  프레임워크 java 21, jakarta 변환 완료면 완료로 화면에 표시되도록 해줘! 빌드가 안되더라도 프로세스상으로는 완료니까!" One
+  rule, `sbmig.report.result_line.conversion_complete` (a reduced-scope migration, not aborted, no `rewrite-failed` /
+  `hollow-reactor`, a real OpenRewrite result for every planned conversion step and all of them ok, a final build
+  result), read by every place
+  that words the outcome: the run status (`conversion_complete: true`), the page (title in the success colour, 「완료」
+  in 「지난 실행」, the build step in the warning colour instead of a red cross), the admin page (result word
+  `converted`, 「변환 완료」) and the head of both reports. **Unchanged**: `success`, exit 2, `SBMIG-RESULT … build=FAIL`,
+  the fleet's `incomplete`, the error sections: the build did fail, only the name of the outcome changed. The rule is
+  derived from what a report already stores, so runs that ended before it existed are shown the new way. My choice,
+  told to the user: it also holds with `framework.fix_loop` on. Four review rounds shaped it: an MSA plan with one
+  service step skipped for the time budget, a pod that died after `report.json` was written (the label is given
+  only for exit code 0, 2 or none) and files OpenRewrite could not read (a reduced run now names them in
+  「확인해 주세요」) all read as done at first. Lesson: a label that says "done" needs a test that drives the real
+  engine into every way of not being done; reports built by hand in a test only show the rule agreeing with itself.
+  Contract: `docs/INTERFACES.md` "v2.1z-ck".
 - **First real cluster projects, 2026-11-19 (v2.1z-ax / ay / az)** — three things the fixtures never had.
   (1) **A library uploaded without its pom** (an in-house jar in the releases repository): Maven asks every repository
   for the pom; "not found" everywhere is a warning, but ONE repository answering with an error (the Central proxy of a
