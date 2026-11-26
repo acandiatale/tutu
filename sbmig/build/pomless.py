@@ -1,12 +1,15 @@
-"""저장소에 jar만 있고 pom이 없는 라이브러리 때문에 Maven이 멈추면 로컬 저장소에 최소 pom을 두고 다시 실행하는 모듈.
+"""저장소에 pom이 없는 라이브러리 때문에 Maven이나 OpenRewrite가 멈추면 로컬 저장소에 최소 pom을 두고 다시 실행하는 모듈.
 의존성을 해석하는 모든 Maven 호출이 ``run_with_stubs``를 거친다. 빌드, OpenRewrite, effective-pom,
 dependency:tree, 취약점 조치가 모두 해당한다.
-- 실패 로그에서 pom 전송 오류로 읽지 못한 jar 의존성(classifier 없음)만 찾는다
-- jar는 어느 저장소에서든 받을 수 있고 pom은 어느 저장소에서도 받지 못할 때만 파일을 만든다
+- 실패 로그에서 두 가지를 찾는다. pom 전송 오류로 읽지 못한 jar 의존성(classifier 없음)과 OpenRewrite가 받지 못한 pom이다
+- jar만 있는 라이브러리는 jar를 어느 저장소에서든 받을 수 있고 pom은 어느 저장소에서도 받지 못할 때만 파일을 만든다
+- classifier가 붙은 jar만 있는 라이브러리는 그 jar가 로컬 저장소에 있고 pom과 기본 jar가 어디에도 없을 때만 만든다.
+  이때 최소 pom의 packaging은 pom이고, SNAPSHOT 버전에는 만들지 않는다
+- Maven 경고에 나온 classifier jar 의존성은 OpenRewrite 문장의 라이브러리에 최소 pom을 둔 라운드에서만 함께 처리한다
 - 있는 파일은 덮어쓰지 않는다. 라이브러리마다 실행당 한 번, ``build.pomless_stub_max``개까지만 만든다
 - 프로젝트 파일은 바꾸지 않는다
 
-Contract: docs/INTERFACES.md "v2.1z-ax".
+Contracts: docs/INTERFACES.md "v2.1z-ax" (jar without pom) and "v2.1z-cj" (only a jar with a classifier).
 
 Measured with Maven 3.9.10: Maven asks every repository for the pom of a dependency; when one of them answers with a
 transfer error (a Central proxy in a closed network answers 502 for a path it never cached, a refused connection) the
@@ -20,6 +23,20 @@ the repository that has it (either repository order; a leftover `.pom.lastUpdate
 such libraries, each is proven (`prove`: the jar is obtainable from a repository or already in the local repository,
 and no repository returned the pom) and gets a stub (`write_stub`), then `run(k)` runs the same command again.
 Journal `pomless_check {ga, version, reason}` (no stub) / `pomless_stub {ga, version, path, jar_from, created}`.
+
+The second form (`detect_classified`, `prove_classified`, `classified_stub_text`): OpenRewrite (rewrite-maven-plugin
+6.46.1) stops with `Unable to download POM: G:A:V. Tried repositories:` for a library whose version holds only
+`<a>-<v>-<classifier>.jar`. Its downloader accepts a pom found nowhere only when a non-empty `<a>-<v>.jar` lies in the
+local repository or a repository answers HEAD for it, and a local pom with packaging `jar` only with that jar beside
+it; a local pom with packaging `pom` is taken as it is (measured: packaging jar fails, packaging pom passes, and
+`mvn clean package` passes with it). Maven itself only warns for such a library and resolves the classified jar into
+the local repository before the plugin runs, so the proof reads that folder and asks the repositories for the pom and
+the main jar only. Maven's `The POM for G:A:jar:C:V is missing` warnings of the same log (`classified_warnings`)
+are candidates too, read only when a library of the sentence got its stub in that round (OpenRewrite names only the
+first failing module's libraries; when every library of the sentence is refused, the rerun would fail on it again).
+Its stub record carries
+`form: "classified"` and `jar`; the first form's keys are unchanged. An existing pom there is `pom-present` (no
+rerun: OpenRewrite failed with a pom in place, so the cause is another one). A `-SNAPSHOT` version is `snapshot`.
 """
 from __future__ import annotations
 
@@ -27,6 +44,7 @@ import logging
 import os
 import re
 import secrets
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +69,14 @@ _DESCRIPTOR_RE = re.compile(r"Failed to read artifact descriptor for (?P<c>" + _
 # 플러그인과 빌드 확장의 해석 실패는 의존성이 아니므로 직전 줄의 이 문구로 거른다
 _PLUGIN_RE = re.compile(r"Plugin \S+ or one of its dependencies could not be resolved|build extension", re.IGNORECASE)
 _CONTEXT_LINES = 3
+# OpenRewrite가 pom을 받지 못했을 때 남기는 문장이다. "POM" 뒤에 콜론이 없는 플레이스홀더 오류는 다른 실패다
+_UNABLE_POM_RE = re.compile(r"Unable to download POM: (?P<g>[^:\s]+):(?P<a>[^:\s]+):(?P<v>[^:\s]+?)\. Tried repositories:")
+# Maven이 classifier가 붙은 의존성의 pom을 찾지 못했을 때 남기는 경고다. 좌표는 g:a:jar:classifier:v 다섯 부분이다
+_POM_MISSING_RE = re.compile(r"The POM for (?P<c>[^\s:]+(?::[^\s:]+)+) is missing")
+# Maven의 경고는 SNAPSHOT 버전을 날짜가 붙은 이름(1.0-20260101.120000-1)으로 남긴다
+_DATED_SNAPSHOT_RE = re.compile(r"-\d{8}\.\d{6}-\d+$")
+_CLASSIFIER_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+_NOT_CLASSIFIED = {"sources", "javadoc"}      # 소스와 문서 jar는 라이브러리 본체가 아니므로 세지 않는다
 
 
 @dataclass
@@ -125,6 +151,39 @@ def detect(text: str) -> list[tuple[str, str, str]]:
     return out
 
 
+def detect_classified(text: str) -> list[tuple[str, str, str]]:
+    """OpenRewrite 로그에서 pom을 받지 못한 라이브러리의 (g, a, v) 목록을 로그 순서대로 반환한다. 같은 좌표는 한 번만 넣는다.
+
+    Matches `Unable to download POM: G:A:V. Tried repositories:` anywhere on a line (Maven prefixes every line; the
+    plugin prints it inside an XML comment marker). The answers printed under it are not read: a later block of the
+    same library says `Did not attempt to download …`, and `prove_classified` asks the repositories itself. Not
+    matched: `Unable to download POM <gav>. Version contains unresolved property placeholder.`."""
+    out: list[tuple[str, str, str]] = []
+    for m in _UNABLE_POM_RE.finditer(text or ""):
+        gav = (m.group("g"), m.group("a"), m.group("v"))
+        if gav not in out:
+            out.append(gav)
+    return out
+
+
+def classified_warnings(text: str) -> list[tuple[str, str, str]]:
+    """Maven이 pom이 없다고 경고한 classifier jar 의존성의 (g, a, v) 목록을 로그 순서대로 반환한다. 같은 좌표는 한 번만 넣는다.
+    OpenRewrite 문장이 있는지는 보지 않는다. 언제 쓸지는 ``_stub_round``가 정한다.
+
+    `The POM for G:A:jar:C:V is missing` with exactly five parts and type `jar`. OpenRewrite stops at the first module
+    whose pom it cannot resolve and names only that module's libraries, while Maven has resolved (and warned about)
+    every module before the goal ends: these are the further candidates that make it one rerun per log."""
+    out: list[tuple[str, str, str]] = []
+    for m in _POM_MISSING_RE.finditer(text or ""):
+        parts = m.group("c").split(":")
+        if len(parts) != 5 or parts[2] != "jar":
+            continue
+        gav = (parts[0], parts[1], parts[4])
+        if gav not in out:
+            out.append(gav)
+    return out
+
+
 def _settings_local_repo(path: Optional[Path]) -> Optional[str]:
     if path is None or not path.is_file():
         return None
@@ -192,9 +251,28 @@ def stub_text(group_id: str, artifact_id: str, version: str) -> str:
             "</project>\n")
 
 
-def write_stub(path: Path, group_id: str, artifact_id: str, version: str) -> bool:
+def classified_stub_text(group_id: str, artifact_id: str, version: str, jar_name: str) -> str:
+    """classifier가 붙은 jar만 있는 라이브러리의 최소 pom 내용을 반환한다. packaging은 pom이고 의존성은 넣지 않는다.
+
+    Starts with the same comment opening as `stub_text` (`STUB_MARKER` within the first bytes, so `is_stub` sees it).
+    `jar_name` comes from `prove_classified`, which never returns a name holding `--`, so the comment stays valid."""
+    return ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            f"<!-- {STUB_MARKER} {group_id}:{artifact_id}:{version}. Only a jar with a\n"
+            f"     classifier exists for this version ({jar_name}). OpenRewrite needs a pom for a library without a main\n"
+            "     jar, so sbmig wrote this minimal pom. packaging is pom because this version has no main artifact. It\n"
+            "     declares no dependencies. Delete this file when the real pom is uploaded to the repository. -->\n"
+            "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n"
+            "  <modelVersion>4.0.0</modelVersion>\n"
+            f"  <groupId>{group_id}</groupId>\n"
+            f"  <artifactId>{artifact_id}</artifactId>\n"
+            f"  <version>{version}</version>\n"
+            "  <packaging>pom</packaging>\n"
+            "</project>\n")
+
+
+def write_stub(path: Path, group_id: str, artifact_id: str, version: str, text: Optional[str] = None) -> bool:
     """최소 pom을 같은 폴더의 임시 파일에 쓴 뒤 기존 파일을 덮어쓰지 않게 옮긴다. 새로 만들었으면 True를 반환한다.
-    파일이 이미 있거나 그사이 다른 파드가 만들었으면 False를 반환한다.
+    파일이 이미 있거나 그사이 다른 파드가 만들었으면 False를 반환한다. ``text``가 없으면 ``stub_text``의 내용을 쓴다.
 
     Temp file, then a hard link to the final name (fails when the name exists: another build pod on the same
     NFS volume won), temp removed. A file system without hard links falls back to a rename after an existence
@@ -205,7 +283,7 @@ def write_stub(path: Path, group_id: str, artifact_id: str, version: str) -> boo
     tmp = path.with_name(f".{path.name}.sbmig-{os.getpid()}-{secrets.token_hex(4)}.tmp")
     try:
         with open(tmp, "x", encoding="utf-8", newline="\n") as fh:
-            fh.write(stub_text(group_id, artifact_id, version))
+            fh.write(text if text is not None else stub_text(group_id, artifact_id, version))
             fh.flush()
             os.fsync(fh.fileno())
         try:
@@ -256,6 +334,61 @@ def prove(lookup: Any, local_repo: Path, group_id: str, artifact_id: str, versio
     return (strip_userinfo(hit), "") if hit else (None, "jar-unavailable")
 
 
+def _classified_jar(folder: Path, artifact_id: str, version: str) -> Optional[str]:
+    prefix = f"{artifact_id}-{version}-"
+    try:
+        names = sorted(p.name for p in folder.iterdir())
+    except OSError:
+        return None
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".jar")) or "--" in name:
+            continue
+        classifier = name[len(prefix):-len(".jar")]
+        if not _CLASSIFIER_RE.match(classifier) or classifier.lower() in _NOT_CLASSIFIED:
+            continue
+        try:
+            st = (folder / name).lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_size > 0:
+            return name
+    return None
+
+
+def prove_classified(lookup: Any, local_repo: Path, group_id: str, artifact_id: str,
+                     version: str) -> tuple[Optional[str], str]:
+    """classifier가 붙은 jar만 있고 pom과 기본 jar는 어디에도 없는지 확인한다.
+    (classifier가 붙은 jar 파일 이름, "")이나 (None, 이유)를 반환한다. 로컬 저장소를 먼저 보고 원격 저장소는 그다음에 조회한다.
+    SNAPSHOT 버전은 파일을 보거나 원격 저장소를 조회하기 전에 거절한다.
+
+    Order, first failure wins: `snapshot` (the version ends in `-SNAPSHOT`, or is the dated form
+    `<base>-<yyyymmdd.hhmmss>-<n>` that Maven's `The POM for … is missing` warning prints for a snapshot: OpenRewrite
+    asks for the dated file name, which `<a>-<v>.pom` does not answer), `pom-present` (a pom file is already in the
+    local folder), `main-jar-available` (a local `<a>-<v>.jar`), `jar-unavailable` (no regular non-empty
+    `<a>-<v>-<classifier>.jar`, classifier `[A-Za-z0-9_.-]+`, `sources` / `javadoc` not counted, a name with `--`
+    not counted; the first by name wins),
+    `no-repository` (lookup without `file_answers` or without repositories), `pom-available` (a repository returned
+    the pom), `main-jar-available` (a repository answered `ok` for the main jar)."""
+    if version.endswith("-SNAPSHOT") or _DATED_SNAPSHOT_RE.search(version):
+        return None, "snapshot"
+    folder = local_repo.joinpath(*group_id.split("."), artifact_id, version)
+    if (folder / f"{artifact_id}-{version}.pom").exists():
+        return None, "pom-present"
+    if (folder / f"{artifact_id}-{version}.jar").exists():
+        return None, "main-jar-available"
+    jar = _classified_jar(folder, artifact_id, version)
+    if jar is None:
+        return None, "jar-unavailable"
+    urls = lookup.repository_urls() if hasattr(lookup, "repository_urls") else []
+    if not urls or not hasattr(lookup, "file_answers"):
+        return None, "no-repository"
+    if any(o == "ok" for _u, o, _d in lookup.file_answers(group_id, artifact_id, version, "pom")):
+        return None, "pom-available"
+    if any(o == "ok" for _u, o, _d in lookup.file_answers(group_id, artifact_id, version, "jar")):
+        return None, "main-jar-available"
+    return jar, ""
+
+
 def _journal(journal: Optional[Callable[[dict], None]], event: dict) -> None:
     if journal is None:
         return
@@ -270,7 +403,7 @@ def _stub_round(cfg: Any, text: str, *, journal: Optional[Callable[[dict], None]
     """로그에 나온 라이브러리마다 확인하고 최소 pom을 둔다. 이번에 준비한 파일 수를 반환한다."""
     ready = 0
     on = bool(getattr(cfg.build, "pomless_stub", True))
-    cap = max(0, int(getattr(cfg.build, "pomless_stub_max", 20) or 0))
+    cap = max(0, int(getattr(cfg.build, "pomless_stub_max", 60) or 0))
     for g, a, v in detect(text):
         gav = f"{g}:{a}:{v}"
         if gav in memo.handled:
@@ -313,7 +446,64 @@ def _stub_round(cfg: Any, text: str, *, journal: Optional[Callable[[dict], None]
         log.info("maven: %s has a jar but no pom in the repository — %s minimal pom %s (jar from %s); running the same "
                  "command again", gav, "wrote a" if created else "using the existing", path, jar_from or "the repository")
         ready += 1
-    return ready
+    named = 0
+    for g, a, v in detect_classified(text):
+        named += _classified_candidate(cfg, g, a, v, on=on, cap=cap, journal=journal, memo=memo,
+                                       project_root=project_root, lookup=lookup)
+    warned = 0
+    # OpenRewrite 문장의 라이브러리가 하나도 준비되지 않으면 다시 실행해도 같은 곳에서 실패하므로 경고는 보지 않는다
+    if named:
+        for g, a, v in classified_warnings(text):
+            warned += _classified_candidate(cfg, g, a, v, on=on, cap=cap, journal=journal, memo=memo,
+                                            project_root=project_root, lookup=lookup)
+    return ready + named + warned
+
+
+def _classified_candidate(cfg: Any, g: str, a: str, v: str, *, on: bool, cap: int,
+                          journal: Optional[Callable[[dict], None]], memo: PomlessMemo, project_root: Optional[Path],
+                          lookup: Any) -> int:
+    """classifier jar만 있는 라이브러리 하나를 확인하고 최소 pom을 둔다. 준비됐으면 1, 아니면 0을 반환한다.
+    이번 실행에서 이미 처리한 라이브러리는 0이다."""
+    gav = f"{g}:{a}:{v}"
+    if gav in memo.handled:
+        return 0
+    memo.handled.add(gav)
+    check = {"event": "pomless_check", "ga": f"{g}:{a}", "version": v}
+    if not on:
+        _journal(journal, {**check, "reason": "off"})
+        return 0
+    if not plain_coordinate(g, a, v):
+        log.warning("maven: %s has no pom OpenRewrite could download, but its coordinates are not a plain Maven "
+                    "coordinate — no minimal pom written", gav)
+        _journal(journal, {**check, "reason": "bad-coordinate"})
+        return 0
+    if len(memo.stubs) >= cap:
+        _journal(journal, {**check, "reason": "cap"})
+        return 0
+    repo = maven_local_repo(cfg)
+    if repo is None:
+        _journal(journal, {**check, "reason": "no-repository"})
+        return 0
+    path = repo.joinpath(*g.split("."), a, v, f"{a}-{v}.pom")
+    jar, why = prove_classified(lookup if lookup is not None else _lookup(cfg, memo, project_root), repo, g, a, v)
+    if jar is None:
+        log.info("maven: %s — OpenRewrite could not download its pom; no minimal pom written (%s)", gav, why)
+        _journal(journal, {**check, "reason": why})
+        return 0
+    try:
+        # 그사이 다른 파드가 만든 파일도 지금 있으므로 준비된 것으로 본다
+        created = write_stub(path, g, a, v, classified_stub_text(g, a, v, jar))
+    except OSError as e:
+        log.warning("maven: minimal pom for %s not written (%s: %s)", gav, type(e).__name__, e)
+        _journal(journal, {**check, "reason": "no-repository"})
+        return 0
+    stub = {"ga": f"{g}:{a}", "version": v, "path": str(path), "jar_from": "local repository", "created": created,
+            "form": "classified", "jar": jar}
+    memo.stubs.append(stub)
+    _journal(journal, {"event": "pomless_stub", **stub})
+    log.info("maven: %s has only a jar with a classifier (%s) and no pom — %s minimal pom %s (packaging pom); "
+             "running the same command again", gav, jar, "wrote a" if created else "using the existing", path)
+    return 1
 
 
 def run_with_stubs(cfg: Any, run: Callable[[int], R], *, journal: Optional[Callable[[dict], None]],
@@ -328,7 +518,7 @@ def run_with_stubs(cfg: Any, run: Callable[[int], R], *, journal: Optional[Calla
     command are bounded by `build.pomless_stub_max` (each round needs a library not handled before in this
     run)."""
     result = run(0)
-    rounds = max(0, int(getattr(cfg.build, "pomless_stub_max", 20) or 0))
+    rounds = max(0, int(getattr(cfg.build, "pomless_stub_max", 60) or 0))
     k = 0
     while failed(result) and k < max(1, rounds):
         if not _stub_round(cfg, text(result), journal=journal, memo=memo, project_root=project_root, lookup=lookup):
@@ -408,7 +598,7 @@ def known_coordinates(ws: Any) -> list[tuple[str, str, str]]:
                     continue
                 while stack:
                     node = stack.pop(0)
-                    if not node.root and (node.gav.type or "jar") == "jar" and not node.gav.classifier:
+                    if not node.root and (node.gav.type or "jar") == "jar":
                         add(node.gav.group_id, node.gav.artifact_id, node.gav.version)
                     stack.extend(node.children)
             for eff in sorted(logs.glob("effective-*.json")):
@@ -429,7 +619,7 @@ def known_coordinates(ws: Any) -> list[tuple[str, str, str]]:
         poms, _skipped = parse_poms(ws)
         for pom in poms:
             for d in pom.dependencies:
-                if (d.type or "jar") == "jar" and not d.classifier:
+                if (d.type or "jar") == "jar":
                     add(d.group_id, d.artifact_id, d.version)
     except Exception as e:  # noqa: BLE001 - pom을 읽지 못해도 실행은 계속한다
         log.debug("pomless: project poms not read: %s: %s", type(e).__name__, e)

@@ -508,7 +508,7 @@ build:
   # 로컬 Maven 저장소에 최소 pom을 만들고 같은 Maven 명령을 한 번 더 실행한다. 프로젝트 파일은 바꾸지 않는다.
   # 만든 파일은 보고서와 저널(pomless_stub)에 남는다. 저장소에 진짜 pom이 올라오면 그 파일을 지운다.
   pomless_stub: true
-  pomless_stub_max: 20   # 한 실행에서 만드는 최소 pom의 상한
+  pomless_stub_max: 60   # 한 실행에서 만드는 최소 pom의 상한. 모듈이 많은 사내 프레임워크도 한 번에 처리하도록 넉넉하게 둔다
   # Windows에서 백신, IDE, 남은 java 프로세스가 target/의 파일을 잡고 있어 빌드가 실패하면,
   # file_lock_retry_wait_s초 기다렸다가 같은 빌드를 최대 file_lock_retries번 다시 실행한다(0이면 끔).
   # 환경 문제를 LLM에 보내지 않기 위해서다. 판별 패턴은 knowledge/config/build_env_errors.yml에 있다.

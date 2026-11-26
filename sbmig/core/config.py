@@ -423,7 +423,7 @@ class BuildConfig(BaseModel):
     # 저장소에 jar만 있고 pom이 없는 라이브러리 때문에 Maven이 멈추면 로컬 저장소에 최소 pom을 만들고 다시 실행한다
     # jar는 받을 수 있고 pom은 어느 저장소에도 없는지 먼저 확인한다. 프로젝트 파일은 바꾸지 않는다
     pomless_stub: bool = True
-    pomless_stub_max: int = 20                          # 한 실행에서 만드는 최소 pom의 상한
+    pomless_stub_max: int = 60                          # 한 실행에서 만드는 최소 pom의 상한
     # 필터링되는 리소스 아래에서 항상 바이너리로 취급할 회사 확장자(예: dmdb, 소문자에 점 없이)
     # 재구성이 스캔에서 찾은 확장자와 함께 <nonFilteredFileExtensions>에 넣어 MalformedInputException을 막는다
     non_filtered_extensions: list[str] = Field(default_factory=list)
