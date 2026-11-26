@@ -1,11 +1,11 @@
 """첫 Maven 호출 전에 사내 부모 체인의 build extension을 받을 수 있는지 점검하는 모듈.
-상속된 확장은 자식 pom에서 뺄 수 없고, 하나라도 받지 못하면 OpenRewrite를 포함한 모든 Maven 호출이
-``Unresolveable build extension``으로 실패한다.
-- 확장마다 로컬 저장소나 원격 저장소에서 pom을 읽을 수 있는지 확인한다. 확장 pom의 ``<parent>`` 체인도 확인한다
-- 읽히는 확장은 그 아티팩트 폴더의 오래된 ``*.lastUpdated`` 표식만 지운다. ``~/.m2`` 전체는 건드리지 않는다
-- 어디서도 읽지 못하면 경고, 플래그, 인수인계로 운영자에게 알린다.
-  그 확장을 Nexus에 올리거나 부모 pom에서 빼야 한다
-- 예외를 던지지 않는다
+확장 하나라도 받지 못하면 OpenRewrite를 포함한 모든 Maven 호출이 실패한다.
+
+An inherited extension cannot be removed in a child pom; one that cannot be resolved fails every Maven call
+with ``Unresolveable build extension``. Each extension's pom is read from the local or a remote repository,
+its ``<parent>`` chain too. For a readable one only the stale ``*.lastUpdated`` markers of its artifact folder
+are removed, never the rest of ``~/.m2``. One readable nowhere is reported to the operator by a warning, a
+flag and a hand-over line: it has to be published to Nexus or removed from the parent pom. Never raises.
 """
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ log = logging.getLogger("sbmig.build.parent_extensions")
 
 @dataclass
 class ExtensionCheck:
-    """build extension 하나의 점검 결과를 담는 데이터 클래스.
-    좌표, 선언한 pom, 읽기 결과와 출처, 지운 표식 파일을 담는다."""
+    """build extension 하나의 점검 결과를 담는 클래스.
+    좌표, 선언한 pom, 읽을 수 있었는지와 어디서 읽었는지, 지운 표식 파일을 담는다."""
     coordinates: str
     declared_by: str
     readable: bool
@@ -49,7 +49,7 @@ def _split(coord: str) -> tuple[str, str, str] | None:
 
 def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers: bool = True) -> list[ExtensionCheck]:
     """부모 체인이 선언한 build extension을 하나씩 점검해 결과 목록을 반환한다.
-    ``clear_markers``가 참이면 읽히는 확장의 로컬 표식을 지운다.
+    ``clear_markers``면 읽히는 확장의 로컬 표식 파일을 지운다.
     체인을 읽지 못했거나 확장이 없으면 빈 목록을 반환한다. 예외를 던지지 않는다."""
     out: list[ExtensionCheck] = []
     try:
@@ -60,7 +60,7 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
         if not exts:
             return out
         local = local_repository(cfg)
-        # 확장마다 <parent> 체인 전체가 필요할 수 있으므로 읽기 상한을 확장 수에 맞춘다. 공통 조상은 한 번만 읽는다
+        # 읽기 상한을 확장 수에 맞춘다. 확장마다 <parent> 체인 전체가 필요할 수 있다. 공통 조상은 한 번만 읽는다
         reader = PomReader(cfg, local, limit=len(exts) * (MAX_ANCESTORS + 1) + 2)
         memo: dict[tuple[str, str, str], tuple[str | None, str]] = {}
 
@@ -79,11 +79,11 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
             text, where = read(g, a, v)
             check = ExtensionCheck(coord, declared, bool(text), where)
             if text and clear_markers and local is not None:
-                # pom이 있어도 옆에 오래된 `.jar.lastUpdated`가 남으면 Maven이 하루 동안 jar를 거부하므로
+                # pom이 있어도 오래된 `.jar.lastUpdated`가 남아 있으면 Maven이 하루 동안 jar를 받지 않는다
                 # 로컬에서 읽었든 원격에서 읽었든 표식을 지운다
                 check.markers_removed = _remove_stale_markers(local.joinpath(*g.split("."), a, v))
             if text:
-                # Maven은 확장 pom의 <parent> 체인도 읽으므로 조상까지 따라가서 처음 읽지 못한 것을 알린다
+                # Maven은 확장 pom의 <parent> 체인도 읽는다. 조상까지 따라가서 처음 읽지 못한 pom을 알린다
                 _check_ancestors(read, text, check, local, clear_markers)
             out.append(check)
     except Exception as e:  # noqa: BLE001 - 사전 점검이 접수를 멈추지 않는다. 문제는 Maven이 알린다
@@ -118,7 +118,7 @@ def _check_ancestors(read: Any, text: str, check: ExtensionCheck, local: Path | 
 
 
 def _remove_stale_markers(folder: Path) -> list[str]:
-    """``<local repo>/<g>/<a>/<v>/*.lastUpdated`` 파일만 지우고 지운 파일 이름 목록을 반환한다."""
+    """``<local repo>/<g>/<a>/<v>/*.lastUpdated`` 파일만 지운다. 지운 파일 이름 목록을 반환한다."""
     removed: list[str] = []
     try:
         if not folder.is_dir():

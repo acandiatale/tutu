@@ -1,15 +1,10 @@
-"""아직 javax.*를 쓰는 라이브러리의 jakarta 빌드를 저장소(회사 Nexus, 미러, 로컬 저장소)에서 직접 찾는 모듈.
-같은 좌표의 상위 메이저(``2.0.5-jakarta``)나 다른 artifactId(``grid8-jakarta``)로 jakarta 빌드가 올라와
-있어도 LLM은 없다고 거절하기 때문이다.
-수정 루프가 ``external_javax_api`` 케이스의 사전 시도 ``sbmig-jakarta``와 프롬프트의 "Dependency versions"
-줄을 만들 때 ``discover_jakarta_builds``를 호출한다.
-- 찾는 순서: 라이브러리 표(``jakarta_key``, classifier) -> 같은 좌표의 상위 릴리스 -> Nexus 3 검색 API -> 이름 규칙
-- 후보마다 jakarta 빌드인지 확인한다. 버전 한정어나 classifier, pom의 jakarta.* 선언, jar의 class 파일 참조 순으로 본다
-- 확인되지 않은 후보는 보고만 하고 적용하지 않는다
-- 모든 조회에 상한이 있고 실행마다 (g, a)별로 캐시한다
-- 예외를 던지지 않는다. 실패하면 빈 결과를 반환하고 ``searched``에 기록을 남긴다
+"""javax.*를 쓰는 라이브러리의 jakarta 빌드가 저장소(회사 Nexus, 미러, 로컬 저장소)에 있는지 직접 찾는 모듈.
 
 docs/INTERFACES.md "v2.1z-e".
+Why: the LLM declines when the jakarta build sits under a higher major (``2.0.5-jakarta``) or another
+artifactId (``grid8-jakarta``). The fix loop calls ``discover_jakarta_builds`` for the
+``external_javax_api`` pre-try ``sbmig-jakarta`` and for the prompt's "Dependency versions" lines. Results
+are cached per (g, a) for the run.
 
 `discover_jakarta_builds(lookup, group, artifact, current, table_entry=…, cfg=…)` returns `JakartaDiscovery`:
 the verified jakarta builds of a javax-era library in the configured repository, in this order and all
@@ -48,8 +43,8 @@ DEFAULT_MAX_JAR_SCAN_MB = 20
 NEXUS_PAGES = 3                           # Nexus 검색 한 번에 넘겨 보는 continuationToken 페이지 수
 NEXUS_MAX_PAIRS = 10                      # 검색 결과에서 가져올 (group, name) 쌍 수
 MAX_CLASS_ENTRIES = 4000                  # jar 검사 한 번에 보는 class 파일 수
-STEM_MIN_CHARS = 3                        # 이보다 짧은 이름(`a`, `ui`)은 Nexus의 모든 것에 맞으므로 검색하지 않는다
-# jar 검사가 세는 EE 루트 패키지. jakarta로 옮겨진 것들이고, javax.annotation.processing은 JDK 패키지라 뺀다
+STEM_MIN_CHARS = 3                        # 이보다 짧은 이름(`a`, `ui`)은 검색하지 않는다. Nexus의 거의 모든 것에 맞는다
+# jar 검사가 세는 EE 루트 패키지. jakarta로 옮겨진 패키지들이다. javax.annotation.processing은 JDK 패키지라 뺀다
 _EE_ROOTS = ("servlet", "persistence", "validation", "annotation", "inject", "transaction", "ws/rs", "jms", "mail",
              "websocket", "el", "faces", "xml/bind", "enterprise", "ejb", "activation", "json", "batch", "resource",
              "interceptor", "decorator", "security/enterprise", "xml/ws", "xml/soap", "jws")
@@ -64,7 +59,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z]+|\d+")
 @dataclass
 class JakartaBuild:
     """찾은 jakarta 빌드 후보 하나를 담는 클래스.
-    좌표, 출처(``source``), 확인 여부(``verified``)와 근거(``how``), 상위 메이저 여부(``major_change``)를 담는다.
+    jakarta로 확인됐는지(``verified``)와 그 근거(``how``), 상위 메이저인지(``major_change``)를 함께 담는다.
     상위 메이저 후보는 운영자가 확인해야 한다.
 
     `source`: table / same / nexus-search / name-probe."""
@@ -105,7 +100,7 @@ class JakartaBuild:
 @dataclass
 class JakartaDiscovery:
     """라이브러리 하나의 탐색 결과를 담는 클래스.
-    후보(``builds``), 사람이 읽는 조회 기록(``searched``), 탐색한 이름(``probed``)을 담는다.
+    찾은 후보(``builds``), 조회 기록(``searched``), 찾아본 이름(``probed``)을 담는다.
     저장소를 전혀 쓸 수 없었으면 ``error``에 이유가 들어간다."""
     key: str
     current: Optional[str] = None
@@ -120,8 +115,8 @@ class JakartaDiscovery:
         return [b for b in self.builds if b.verified]
 
     def best(self) -> Optional[JakartaBuild]:
-        """사전 시도가 적용할 빌드 하나를 확인된 후보 중에서 고른다. 확인된 후보가 없으면 None을 반환한다.
-        라이브러리 표, 같은 메이저의 최신, 가장 낮은 상위 메이저의 최신, Nexus 검색, 이름 탐색 순이다."""
+        """확인된 후보 중에서 사전 시도가 적용할 빌드 하나를 고른다. 확인된 후보가 없으면 None을 반환한다.
+        우선순위는 라이브러리 표, 같은 메이저의 최신, 가장 낮은 상위 메이저의 최신, Nexus 검색, 이름 탐색 순이다."""
         ok = self.verified
         if not ok:
             return None
@@ -155,8 +150,8 @@ class JakartaDiscovery:
 
     def hint_lines(self) -> list[str]:
         """프롬프트 "Dependency versions" 절에 넣을 줄을 만든다.
-        빌드마다 한 줄을 쓰고 확인되지 않은 후보에는 자동으로 적용하지 않는다는 표시를 붙인다.
-        후보가 없으면 조회 내용을 한 줄로 남긴다. javax 빌드로 확인된 후보는 넣지 않는다."""
+        후보마다 한 줄이다. 확인되지 않은 후보에는 자동으로 적용하지 않는다는 표시를 붙인다.
+        javax 빌드로 확인된 후보는 넣지 않는다. 후보가 없으면 조회 내용을 한 줄로 남긴다."""
         out: list[str] = []
         for b in self.builds:
             if b.javax:
@@ -173,7 +168,7 @@ class JakartaDiscovery:
 
     @property
     def off(self) -> bool:
-        """``libraries.discover_jakarta_builds: false`` 설정으로 탐색을 하지 않았는지 반환한다.
+        """설정(``libraries.discover_jakarta_builds: false``)으로 탐색을 껐으면 True를 반환한다.
         이때는 jakarta 빌드가 없다고 말하지 않는다."""
         return any(x.startswith("discovery off (") for x in self.searched)
 
@@ -199,7 +194,7 @@ def digit_variants(name: str, steps: int = 2) -> list[str]:
 def sibling_names(group: str, artifact: str, limit: int = DEFAULT_MAX_PROBES) -> list[tuple[str, str]]:
     """탐색할 형제 좌표를 가능성이 높은 순으로 ``limit``개까지 만든다.
     ``-jakarta``를 붙인 이름, 숫자를 올린 이름, ``ee9``와 ``ee10`` 이름 순이다.
-    groupId만 올린 좌표(``com.vendor9:vendor8``)는 의미가 없으므로 뺀다.
+    groupId만 올린 좌표(``com.vendor9:vendor8``)는 만들지 않는다.
 
     Digits are raised on the artifactId AND the group's last segment together first, then on the artifactId
     alone."""
@@ -230,7 +225,7 @@ def sibling_names(group: str, artifact: str, limit: int = DEFAULT_MAX_PROBES) ->
 
 def artifact_names_jakarta(artifact_id: str) -> bool:
     """artifactId의 토큰에 ``jakarta``가 있는지 반환한다.
-    공급사가 이름으로 표시한 빌드(``dext5-jakarta``)이므로 그것만으로 확인된 것으로 본다."""
+    이름에 jakarta가 있으면(``dext5-jakarta``) 공급사가 표시한 빌드로 보고, 그것만으로 확인된 것으로 친다."""
     return any(t.lower() == "jakarta" for t in re.split(r"[-_.]", artifact_id or "") if t)
 
 
@@ -243,9 +238,9 @@ def qualifier_is_jakarta(version: str) -> bool:
 # jar 검사
 # ---------------------------------------------------------------------------------------------------------------------
 def scan_jar(data: bytes, max_classes: int = MAX_CLASS_ENTRIES) -> Optional[bool]:
-    """jar의 class 파일이 ``jakarta/<ee>/``를 참조하면 True, ``javax/<ee>/``만 참조하면 False, 둘 다 없거나
-    zip이 깨졌으면 None을 반환한다.
-    상수 풀을 파싱하지 않고 바이트를 검색해 센다. JDK의 ``javax.annotation.processing``은 세지 않는다."""
+    """jar가 jakarta 빌드인지 class 파일을 보고 판단한다.
+    ``jakarta/<ee>/``를 참조하면 True, ``javax/<ee>/``만 참조하면 False다. 둘 다 없거나 zip이 깨졌으면 None이다.
+    상수 풀을 파싱하지 않고 바이트를 검색한다. JDK의 ``javax.annotation.processing``은 세지 않는다."""
     jakarta = javax = 0
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -313,7 +308,7 @@ class _Verifier:
         if qualifier_is_jakarta(v):
             return True, "version qualifier"
         if artifact_names_jakarta(a):
-            # artifactId에 jakarta가 붙은 빌드(`dext5-jakarta:21.1`)는 공급사가 표시한 것이므로 pom, jar는 더 보지 않는다
+            # artifactId에 jakarta가 붙은 빌드(`dext5-jakarta:21.1`)는 공급사가 표시한 것이다. pom, jar는 더 보지 않는다
             return True, "artifactId names jakarta"
         pj = pom_hint
         if pj is None:
@@ -350,7 +345,7 @@ class _Verifier:
 
 
 def _nexus_search(lookup: Any, group: str, artifact: str, d: JakartaDiscovery) -> list[tuple[str, str]]:
-    """Nexus 3 검색 API로 이름이나 groupId의 앞부분(끝 숫자를 뗀 이름)이 같은 (group, name) 쌍을 찾는다.
+    """Nexus 3 검색 API로 이름이 비슷한 라이브러리를 찾는다. 끝 숫자를 뗀 이름이나 groupId로 검색한다.
     현재 좌표는 빼고 최대 NEXUS_MAX_PAIRS개를 반환한다. 조회한 내용은 ``d.searched``에 남긴다."""
     urls: list[str] = []
     try:
@@ -414,7 +409,7 @@ def _nexus_search(lookup: Any, group: str, artifact: str, d: JakartaDiscovery) -
                     if not g2 or not a2 or (g2, a2) == (group, artifact) or (g2, a2) in pairs:
                         continue
                     if st.lower() not in a2.lower() and stem(a2).lower() != st.lower():
-                        continue                  # 검색이 넓으므로 앞부분이 같은 이름만 남긴다
+                        continue                  # 검색 결과가 넓다. 앞부분이 같은 이름만 남긴다
                     pairs.append((g2, a2))
                     if len(pairs) >= NEXUS_MAX_PAIRS:
                         break
@@ -482,7 +477,7 @@ def _discover(lookup: Any, group: str, artifact: str, cur: Optional[str], d: Jak
             return
         seen.add(k)
         if source == "table":
-            ok, how = True, "library table (a person's entry)"     # 사람이 만든 표이므로 그것이 확인이다
+            ok, how = True, "library table (a person's entry)"     # 사람이 만든 표라서 따로 확인하지 않는다
         else:
             ok, how = ver.verify(g, a, v, classifier, pom_hint)
         major_change = (g, a) == (group, artifact) and cur_major is not None and (major_of(v) or 0) > cur_major
@@ -537,7 +532,7 @@ def _discover(lookup: Any, group: str, artifact: str, cur: Optional[str], d: Jak
 
     if not hasattr(lookup, "versions") or (rv is not None and rv.error and not rv.same_major and not rv.higher
                                            and "not found" not in rv.error):
-        # 저장소 자체를 읽지 못했으면 형제를 찾아도 결과가 같으므로 조회 기록만 남기고 끝낸다
+        # 저장소를 아예 읽지 못했으면 형제 이름도 찾을 수 없다. 조회 기록만 남기고 끝낸다
         d.searched.append("sibling search skipped: the repository could not be read")
         return
     # (c) 이름 앞부분으로 Nexus 검색
@@ -573,8 +568,8 @@ def _discover(lookup: Any, group: str, artifact: str, cur: Optional[str], d: Jak
 def probe_report(lookup: Any, group: str, artifact: str, current: Optional[str], *, table_entry: Any = None,
                  cfg: Any = None) -> list[str]:
     """``sbmig repo-probe g:a[:v]``가 출력할 줄을 만든다.
-    폐쇄망 PC에서 settings.xml을 보여 줄 수 없을 때 저장소 조회 결과를 한 화면에 보여 주기 위해 쓴다.
-    조회한 URL, URL별 응답, 찾은 버전, 후보의 jakarta 여부, 탐색 결과를 담는다.
+    폐쇄망 PC에서는 settings.xml을 보여 줄 수 없다. 대신 저장소 조회 결과를 한 화면에 보여 준다.
+    조회한 URL과 응답, 찾은 버전, 후보가 jakarta인지, 탐색 결과가 들어간다.
     마지막 줄은 ``REPO-PROBE ok|none …`` 요약이다. 예외를 던지지 않는다."""
     out: list[str] = []
     key = f"{group}:{artifact}"
@@ -586,7 +581,7 @@ def probe_report(lookup: Any, group: str, artifact: str, current: Optional[str],
                                                                   "no global settings)"))
         for m in list(getattr(lookup, "settings_missing", []) or []):
             out.append(f"settings looked for but not read: {m}")
-        # build.repository_url 값을 그대로 출력한다. not set이면 yml을 -c로 주지 않았거나 키가 build: 아래에 없는 것이다
+        # build.repository_url 값을 그대로 출력한다. not set이면 yml을 -c로 주지 않았거나 키가 build: 아래에 없다
         c = cfg if cfg is not None else getattr(lookup, "cfg", None)
         explicit = getattr(getattr(c, "build", None), "repository_url", None)
         if explicit and str(explicit).strip():

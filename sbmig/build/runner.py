@@ -1,10 +1,12 @@
-"""Maven 빌드를 한 번 실행하고, 실패하면 로그를 파싱해 ``BuildResult``로 반환하는 모듈(``BuildRunnerLike``).
-검증 빌드, 수정 루프의 라운드별 재빌드, 최종 빌드가 모두 ``MavenRunner.run``을 쓴다.
-결과의 ``errors``로 오류 목록과 케이스를 만든다.
-- 테스트는 항상 건너뛴다(``build.skip_test_compile: true``면 ``-Dmaven.test.skip=true``)
-- 빌드가 실패해도 예외를 던지지 않고 결과로 반환한다. 빌드 게이트가 이것을 전제로 한다
-- 실패한 빌드는 원인에 따라 다시 실행한다. 순서는 Windows 파일 잠금 -> pom 없는 라이브러리 -> 캐시된 해결 실패(``-U``)다
-- HTTP 차단 미러 때문에 실패한 빌드는 다시 실행하지 않는다
+"""Maven 빌드를 한 번 실행하고 결과를 ``BuildResult``로 반환하는 모듈(``BuildRunnerLike``).
+빌드가 실패하면 로그를 파싱해서 오류 목록을 만든다.
+
+The verify build, the fix loop's rebuild of every round and the final build all go through
+``MavenRunner.run``; the result's ``errors`` become the error list and the cases. Tests are always skipped
+(``build.skip_test_compile: true`` gives ``-Dmaven.test.skip=true``). A failed build never raises, it is a
+result: the build gate relies on that. A failed build is run again by cause, in this order: Windows file
+lock, library without a pom, cached resolution failure (``-U``). A build that Maven's HTTP blocker mirror
+stopped is never run again.
 """
 from __future__ import annotations
 
@@ -35,12 +37,12 @@ log = logging.getLogger("sbmig.build")
 
 MAX_SUMMARY_ERRORS = 60
 SUMMARY_TAIL = 25
-# 파일 잠금 재시도 사이에 기다리는 함수. 테스트가 바꿔 끼운다
+# 파일 잠금 재시도 사이에 기다리는 함수. 테스트가 바꿔 넣는다
 sleep_seconds = time.sleep
 
 __all__ = ["MavenRunner", "build_summary", "maven_available", "negative_cache_hits"]
 
-# Maven은 실패한 다운로드를 ``*.lastUpdated``로 기억하고 갱신 주기(기본 하루) 전에는 다시 받지 않는다.
+# Maven은 실패한 다운로드를 ``*.lastUpdated``로 기억하고, 갱신 주기(기본 하루)가 지나기 전에는 다시 받지 않는다
 # 이 문구가 보이면 ``-U``로 한 번 더 실행한다
 # Maven 3.6-3.8, 3.9의 문구 예. 표식 파일은 `*.lastUpdated` / `_remote.repositories`다
 #   Failure to find g:a:jar:1.0 in https://… was cached in the local repository, resolution will not be reattempted …
@@ -51,11 +53,11 @@ _COORDS = r"[\w.\-]+:[\w.\-]+(?::[\w.\-]+){1,3}"
 _NEGATIVE_GAV_RE = re.compile(r"Failure to (?:find|transfer) (?P<a>" + _COORDS + r") (?:in|from)\b|"
                               r"(?P<b>" + _COORDS + r") (?:was not found in|failed to transfer from) \S+ during a "
                               r"previous attempt")
-# build extension, 부모 / import POM 해결 실패는 원인이 오래된 표식이어도 cached 문구가 나오지 않는다.
-# 그래서 이 문구도 -U 재시도 대상으로 본다. 정말 없는 아티팩트라면 빌드 한 번만 더 든다
+# build extension, 부모 / import POM 해결 실패는 원인이 오래된 표식이어도 cached 문구가 나오지 않는다
+# 그래서 이 문구도 -U 재시도 대상으로 본다. 정말 없는 아티팩트라면 빌드가 한 번 더 들 뿐이다
 _MODEL_RES_RE = re.compile(r"Failed to read artifact descriptor for (?P<a>" + _COORDS + r")|"
                            r"Non-resolvable (?:parent|import) POM[^\n]*?Could not find artifact (?P<b>" + _COORDS + r")")
-# 전송 실패 문구가 있으면 저장소가 내려간 것이다. 이때 -U는 Nexus가 복구될 때까지 빌드만 두 배로 늘리므로 제외한다
+# 전송 실패 문구가 있으면 저장소가 내려간 것이다. 이때 -U는 빌드 횟수만 두 배로 늘린다. 재시도 대상에서 뺀다
 _TRANSFER_RE = re.compile(r"Could not transfer artifact|Connection refused|Connection timed out|Read timed out")
 
 
@@ -86,7 +88,7 @@ def negative_cache_hits(text: str) -> list[str]:
 
 def build_summary(text: str, project_root: Path | str | None = None) -> str:
     """빌드 로그를 요약한다.
-    중복과 상투 문구를 뺀 ``[ERROR]`` 줄(최대 60줄)과 마지막 25줄을 남기고 프로젝트 루트 경로는 지운다."""
+    ``[ERROR]`` 줄(중복과 상투 문구는 빼고 최대 60줄)과 마지막 25줄을 남긴다. 프로젝트 루트 경로는 지운다."""
     seen: set[str] = set()
     errs: list[str] = []
     for line in text.splitlines():
@@ -107,7 +109,7 @@ def build_summary(text: str, project_root: Path | str | None = None) -> str:
 class MavenRunner:
     """Maven 빌드를 실행하고 ``BuildResult``를 반환하는 클래스(``MavenRunner(ws, cfg).run(goal)``).
     빌드가 실패해도 예외를 던지지 않는다.
-    사내 아티팩트의 groupId를 라이브러리 패키지로 등록해 L1 서명에서 ``*``로 가려지지 않게 한다."""
+    사내 아티팩트의 groupId를 라이브러리 패키지로 등록한다. 그래야 L1 서명에서 ``*``로 가려지지 않는다."""
 
     def __init__(self, ws: Workspace, cfg: Config, *, timeout_s: float | None = None):
         self.ws = ws
@@ -115,13 +117,13 @@ class MavenRunner:
         self.timeout_s = timeout_s if timeout_s is not None else float(cfg.build.timeout_minutes) * 60.0
         register_external_prefixes(external_prefixes_from_config(cfg))
 
-        # 앞 프로젝트의 모듈 이름이 남지 않도록 <module>로 가릴 이름 목록을 비우고 시작한다
+        # <module>로 가릴 이름 목록을 비우고 시작한다. 앞 프로젝트의 모듈 이름이 남으면 안 된다
         set_reactor_modules(())
     # ------------------------------------------------------------------ 명령 만들기
     def command(self, goal: str, *, extra_args: Iterable[str] = (), skip_test_compile: bool = False,
                 skip_tests: bool = False) -> list[str]:
         """mvn 명령을 만든다. ``skip_test_compile``이면 ``-Dmaven.test.skip=true``를 붙인다.
-        아닐 때만 ``skip_tests``나 ``build.skip_tests``에 따라 ``-DskipTests``를 붙인다. 두 플래그를 함께 붙이지 않는다.
+        그렇지 않을 때만 ``skip_tests``나 ``build.skip_tests``를 보고 ``-DskipTests``를 붙인다. 둘을 함께 붙이지 않는다.
 
         `-Dmaven.test.skip=true` already implies no test run."""
         cmd = base_command(self.cfg) + goal.split() + list(extra_args)
@@ -143,28 +145,28 @@ class MavenRunner:
     # ------------------------------------------------------------------ 실행
     def run(self, goal: str, *, module: str | None = None, extra_args: Iterable[str] = (), label: str = "",
             skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
-        """빌드를 한 번 실행하고 결과를 반환한다. 실패하면 원인에 따라 다시 실행하고 마지막 결과를 반환한다.
-        ``build.retry_negative_cache``(기본 켬)가 켜져 있으면 캐시된 해결 실패 때문에 실패한 빌드를 ``-U``로
-        한 번 더 실행한다. ``-U`` 재시도는 아티팩트마다 실행당 한 번이다."""
+        """빌드를 실행하고 결과를 반환한다. 실패하면 원인에 따라 다시 실행하고 마지막 결과를 반환한다.
+        캐시된 해결 실패로 실패한 빌드는 ``-U``를 붙여 한 번 더 실행한다(``build.retry_negative_cache``, 기본 켬).
+        ``-U`` 재시도는 아티팩트마다 실행당 한 번이다."""
         extra_args = list(extra_args)
         result, text = self._run_once(goal, module=module, extra_args=extra_args, label=label,
                                       skip_test_compile=skip_test_compile, skip_tests=skip_tests)
-        # Maven의 HTTP 차단 미러는 기다리거나 -U를 붙여도 해결되지 않으므로 재시도하지 않는다.
+        # Maven의 HTTP 차단 미러에 막혔으면 재시도하지 않는다. 기다리거나 -U를 붙여도 해결되지 않는다
         # 수정 루프가 실행을 중단한다
         if not result.ok and http_blocker_hit(text) is not None:
             log.warning("maven: Maven's HTTP repository blocker refused a repository — not retried (fix the Maven settings)")
             return result
-        # Windows 파일 잠금은 환경 문제이므로 수정 루프로 넘기지 않고 기다렸다가 같은 빌드를 다시 실행한다
+        # Windows 파일 잠금은 환경 문제다. 수정 루프로 넘기지 않고, 기다렸다가 같은 빌드를 다시 실행한다
         result, text = self._retry_file_lock(goal, module=module, extra_args=extra_args, label=label,
                                              skip_test_compile=skip_test_compile, skip_tests=skip_tests,
                                              result=result, text=text)
-        # jar만 있고 pom이 없는 라이브러리는 -U로 해결되지 않으므로 -U 재시도보다 먼저 최소 pom을 두고 다시 실행한다
+        # pom 없이 jar만 있는 라이브러리는 -U로 해결되지 않는다. -U 재시도보다 먼저 최소 pom을 두고 다시 실행한다
         result, text = self._retry_pomless(goal, module=module, extra_args=extra_args, label=label,
                                            skip_test_compile=skip_test_compile, skip_tests=skip_tests,
                                            result=result, text=text)
         if result.ok or not self._may_force_update(result.command):
             return result
-        # 정말 없는 아티팩트면 이후 빌드가 모두 두 번씩 실행되므로 -U 재시도는 아티팩트마다 실행당 한 번만 한다
+        # -U 재시도는 아티팩트마다 실행당 한 번만 한다. 정말 없는 아티팩트면 이후 빌드가 모두 두 번씩 실행된다
         retried: set[str] = self.ws.__dict__.setdefault("_negative_cache_retried", set())
         hits = [h for h in negative_cache_hits(text) if h not in retried]
         if not hits:
@@ -182,9 +184,9 @@ class MavenRunner:
     def _retry_file_lock(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
                          skip_test_compile: bool, skip_tests: bool, result: BuildResult,
                          text: str) -> tuple[BuildResult, str]:
-        """실패한 빌드 로그에 Windows 파일 잠금이 보이면 ``build.file_lock_retry_wait_s``초 기다렸다 같은
-        명령을 다시 실행한다. 최대 ``build.file_lock_retries``번까지 재시도하고 마지막 (결과, 로그)를 반환한다.
-        시간 초과한 빌드는 재시도하지 않는다.
+        """실패한 빌드 로그에 Windows 파일 잠금이 보이면 잠시 기다렸다가 같은 명령을 다시 실행한다.
+        ``build.file_lock_retry_wait_s``초 기다리고, 최대 ``build.file_lock_retries``번까지 재시도한다.
+        마지막 (결과, 로그)를 반환한다. 시간 초과한 빌드는 재시도하지 않는다.
 
         Each retry is logged and journaled (`build_file_lock_retry`). Contract: docs/INTERFACES.md "v2.1r"."""
         retries = max(0, int(getattr(self.cfg.build, "file_lock_retries", 3) or 0))
@@ -213,7 +215,7 @@ class MavenRunner:
                        skip_test_compile: bool, skip_tests: bool, result: BuildResult,
                        text: str) -> tuple[BuildResult, str]:
         """저장소에 pom이 없는 라이브러리 때문에 실패했으면 최소 pom을 두고 같은 빌드를 다시 실행한다.
-        ``sbmig.build.pomless.run_with_stubs``를 쓰고, 마지막 실행의 (결과, 로그)를 반환한다.
+        마지막 실행의 (결과, 로그)를 반환한다. 규칙은 ``sbmig.build.pomless.run_with_stubs``와 같다.
 
         Runs before the -U retry: -U cannot help here (Maven does not cache the transfer error; it asks the
         failing repository again). Labels `<label>-pomless<k>`. Contract: docs/INTERFACES.md "v2.1z-ax"."""
@@ -229,8 +231,8 @@ class MavenRunner:
                               text=lambda r: r[1], failed=lambda r: not r[0].ok and not r[0].timed_out)
 
     def _may_force_update(self, cmd: list[str]) -> bool:
-        """-U 재시도를 해도 되는지 확인한다. ``build.retry_negative_cache``가 꺼져 있거나,
-        offline이거나, 명령에 이미 -U가 있으면 False를 반환한다."""
+        """-U 재시도를 해도 되면 True를 반환한다.
+        ``build.retry_negative_cache``가 꺼져 있거나, offline이거나, 명령에 이미 -U가 있으면 False다."""
         if not getattr(self.cfg.build, "retry_negative_cache", True):
             return False
         return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd)
@@ -238,21 +240,21 @@ class MavenRunner:
     def _run_once(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
                   skip_test_compile: bool, skip_tests: bool) -> tuple[BuildResult, str]:
         """빌드를 실제로 한 번 실행하고 (결과, 로그 전문)을 반환한다.
-        명령 생성 -> ``run_logged`` -> 성공 여부 확인 -> 실패하면 로그 파싱 순서다.
-        실패한 빌드의 오류 목록이 비지 않도록 타임아웃, 시작 실패, 오류를 찾지 못한 실패도 오류 하나로 만든다."""
+        명령 생성 -> ``run_logged`` -> 성공 확인 -> 실패하면 로그 파싱 순서다.
+        타임아웃, 시작 실패, 오류를 찾지 못한 실패도 오류 하나로 만든다. 실패한 빌드의 오류 목록은 비지 않는다."""
         cwd, file_args = self._cwd(module)
         cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile,
                            skip_tests=skip_tests)
-        # Maven이 프로젝트 .mvn을 읽지 않으므로 maven.config의 -D / -P와 프로젝트 루트를 명령에 넣는다
+        # Maven은 프로젝트 .mvn을 읽지 않는다. maven.config의 -D / -P와 프로젝트 루트를 명령에 넣는다
         cmd = with_project_mvn(self.cfg, cmd, cwd, top=self.ws.root)
         log_path = self.ws.new_log_path(f"build-{label or goal}")
         log.info("mvn %s (cwd=%s)", " ".join(cmd[1:]), self.ws.rel(cwd) if cwd != self.ws.root else ".")
         pr = run_logged(cmd, cwd=cwd, env=mvn_env(self.cfg), log_path=log_path, timeout_s=self.timeout_s)
         text = pr.text
-        # JVM이 죽거나 출력이 잘린 경우를 성공으로 보지 않도록 exit 0과 'BUILD SUCCESS' 문구를 함께 확인한다
+        # exit 0과 'BUILD SUCCESS' 문구를 함께 확인한다. JVM이 죽거나 출력이 잘린 경우는 성공이 아니다
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
         if ok:
-            # 성공한 빌드는 로그를 파싱하지 않으므로 다음 프로젝트에 이름이 남지 않게
+            # 성공한 빌드는 로그를 파싱하지 않는다. 다음 프로젝트에 이름이 남지 않도록
             # <module>로 가릴 이름 목록을 여기서 비운다
             set_reactor_modules(())
         errors: list[BuildError] = [] if ok else parse_maven_log(
@@ -264,7 +266,7 @@ class MavenRunner:
                 raw="\n".join(text.splitlines()[-40:]))))
         elif pr.error:
             errors = [fill_signatures(BuildError(kind=ErrorKind.UNKNOWN, message=pr.error, raw=pr.error))]
-        # 오류 목록이 비어 있으면 수정 루프가 고칠 케이스가 없어 그냥 끝나므로 오류 하나를 만든다
+        # 실패했는데 오류 목록이 비어 있으면 오류 하나를 만든다. 비어 있으면 수정 루프가 고칠 케이스 없이 끝난다
         if not ok and not errors:                         # 예: "BUILD SUCCESS" 뒤 exit 코드가 0이 아니거나 JVM이 죽은 경우
             errors = [fill_signatures(BuildError(
                 kind=ErrorKind.UNKNOWN, module=module,

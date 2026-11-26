@@ -1,9 +1,4 @@
-"""Maven을 실행하는 공용 함수를 모은 모듈. sbmig가 실행하는 모든 mvn 명령이 이 모듈을 거친다.
-빌드(MavenRunner)와 변환(OpenRewriteRunner)이 같은 명령, 환경 변수, 로그 방식을 쓰게 한다.
-- 주요 함수는 ``base_command``, ``mvn_env``, ``with_project_mvn``, ``run_logged``, ``maven_available``이다
-- 프로젝트의 ``.mvn/`` 폴더와 settings는 읽지 않게 하고, ``maven.config``의 ``-D``, ``-P``만 명령줄로 옮긴다
-- 한국어 Windows의 MS949 콘솔에서는 javac 오류의 한글 경로가 깨지므로 Maven 출력을 UTF-8로 받는다
-- ``mvn.cmd``가 띄운 ``java.exe``가 남지 않도록 항상 프로세스 트리 전체를 종료한다
+"""Maven을 실행하는 공용 함수를 모은 모듈. sbmig가 실행하는 mvn 명령은 모두 이 모듈을 거친다.
 
 * ``base_command(cfg)``: ``[mvn, *extra_args, -s settings, -gs <maven home>/conf/settings.xml,
   -Dmaven.repo.local=…, -o]``
@@ -14,6 +9,13 @@
   ``-Dmaven.multiModuleProjectDirectory=<root>`` right after the executable
 * ``run_logged(...)``: runs a command in its own process group, streams merged stdout/stderr (ANSI stripped)
   to a log file as it arrives, enforces a timeout by killing the whole group.
+* ``maven_available(cfg)``: the preflight ``mvn -v``.
+
+The build (MavenRunner) and the conversion (OpenRewriteRunner) share command, environment and logging through
+this module. The project's ``.mvn/`` folder and settings are not read; only the `-D` / `-P` of its
+``maven.config`` reach the command line. Maven output is taken as UTF-8 because a Korean Windows MS949 console
+garbles Korean paths in javac errors. The whole process tree is always killed, so a ``java.exe`` started by
+``mvn.cmd`` never lingers.
 """
 from __future__ import annotations
 
@@ -37,14 +39,14 @@ from .log_parser import strip_ansi
 
 log = logging.getLogger("sbmig.build")
 
-HEARTBEAT_S = 60.0      # 느린 것과 멈춘 것을 구분하도록 mvn, rewrite 실행 중 이 간격으로 INFO를 남긴다
+HEARTBEAT_S = 60.0      # mvn, rewrite 실행 중 이 간격으로 INFO를 남긴다. 느린 것과 멈춘 것을 구분할 수 있다
 
 
 def _blank(v: str | None) -> bool:
     return v is None or str(v).strip() == ""
 
 
-# 파이프로 출력을 받으면 Maven JVM이 콘솔 코드 페이지(MS949)로 출력해 한글 경로가 깨지므로 UTF-8 속성을 준다
+# 파이프로 출력을 받으면 Maven JVM이 콘솔 코드 페이지(MS949)로 출력해 한글 경로가 깨진다. UTF-8 속성을 준다
 # JDK 18 이상만 System.out, System.err에 이 속성을 따르고 이전 JDK는 무시한다
 UTF8_OUTPUT_PROPS: tuple[str, ...] = ("stdout.encoding", "stderr.encoding")
 
@@ -59,12 +61,13 @@ def with_utf8_output(maven_opts: str | None) -> str:
 
 
 def ignore_project_mvn(cfg: Any) -> bool:
-    """프로젝트의 ``.mvn/`` 폴더를 Maven이 읽지 않게 할지 ``build.ignore_project_mvn``을 보고 반환한다. 기본값은 True다."""
+    """Maven이 프로젝트의 ``.mvn/`` 폴더를 읽지 않게 할지 반환한다.
+    설정 ``build.ignore_project_mvn``을 따르고 기본값은 True다."""
     return bool(getattr(getattr(cfg, "build", None), "ignore_project_mvn", True))
 
 
 # 프로세스마다 시스템 임시 폴더에 빈 폴더 하나를 만들어 모든 Maven 호출이 같이 쓰고, 종료할 때 지운다
-# 런처는 이 폴더의 .mvn/jvm.config를, Maven은 .mvn/maven.config와 extensions.xml을 찾지만 모두 없다
+# Maven은 이 폴더에서 .mvn/jvm.config, maven.config, extensions.xml을 찾는다. 빈 폴더라 아무것도 읽지 않는다
 _BASEDIR: Optional[Path] = None
 _BASEDIR_LOCK = threading.Lock()
 
@@ -92,7 +95,7 @@ def maven_basedir() -> Path:
 
 def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Maven을 실행할 환경 변수를 만든다.
-    현재 환경에 ``build.env``, JAVA_HOME과 PATH, ``extra``, UTF-8 출력 속성을 더한다.
+    현재 환경 변수에 ``build.env``, JAVA_HOME과 PATH, ``extra``, UTF-8 출력 속성을 더한다.
     ``build.ignore_project_mvn``이면 ``MAVEN_BASEDIR``에 빈 폴더를 준다."""
     env = dict(os.environ)
     # sbmig를 실행한 환경의 MAVEN_BASEDIR가 빌드에 섞이지 않게 뺀다
@@ -112,8 +115,8 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
 
 def mvn_executable(cfg: Config) -> str:
     """`build.mvn`을 셸 없이 `subprocess`로 실행할 수 있는 경로로 바꾼다.
-    Windows의 Maven은 `mvn.cmd`여서 `Popen`이 찾지 못하므로 `shutil.which`로 찾는다.
-    찾지 못하면 오류 메시지에 설정한 이름이 나오도록 설정값을 그대로 반환한다.
+    Windows의 Maven은 `mvn.cmd`라서 `Popen`이 찾지 못한다. 그래서 `shutil.which`로 찾는다.
+    찾지 못하면 설정값을 그대로 반환한다. 오류 메시지에 설정한 이름이 나온다.
 
     `Popen(["mvn", ...])` ignores PATHEXT and fails with `WinError 2`. A bare name is looked up in PATH plus
     `MAVEN_HOME`/`M2_HOME`/bin, with `.cmd` / `.bat` on Windows; a path with a directory part is used as
@@ -141,11 +144,11 @@ def base_command(cfg: Config) -> list[str]:
     """모든 mvn 명령의 앞부분을 만든다. ``-Dmaven.test.skip=true``는 ``MavenRunner.command``가 붙인다."""
     b = cfg.build
     cmd = [mvn_executable(cfg), *b.extra_args]
-    # Maven은 모듈 디렉토리에서 실행되므로 상대경로를 주면 settings를 찾지 못하고 조용히 ~/.m2/settings.xml을 쓴다
-    # 그래서 절대경로로 넘긴다. /tmp가 바뀌지 않도록 심볼릭 링크는 풀지 않는다
+    # settings는 절대경로로 넘긴다. Maven은 모듈 폴더에서 실행돼서, 상대경로면 조용히 ~/.m2/settings.xml을 쓴다
+    # /tmp 표기가 바뀌지 않도록 심볼릭 링크는 풀지 않는다
     if not _blank(b.settings_file):
         cmd += ["-s", str(Path(b.settings_file).expanduser().absolute())]
-        # 프로젝트의 .mvn/maven.config에 있는 -gs가 Maven 전역 settings를 대신하지 못하도록 설치본의 파일을 명령줄에 준다
+        # 설치본의 전역 settings를 -gs로 준다. 프로젝트 .mvn/maven.config의 -gs가 대신 읽히지 않는다
         if getattr(b, "ignore_project_settings", True):
             gs = maven_global_settings(cfg)
             _log_global_settings(cmd[0], gs)
@@ -159,7 +162,7 @@ def base_command(cfg: Config) -> list[str]:
 
 
 # Maven 설치 폴더는 실행 파일마다 프로세스에서 한 번만 찾는다. None이면 못 찾은 것이고 -gs를 넘기지 않는다
-# `maven_available`이 `mvn -v`의 `Maven home:`으로 채우고, 아니면 실행 파일 옆의 파일로 찾는다
+# `maven_available`이 `mvn -v`의 `Maven home:`으로 채운다. 없으면 실행 파일 옆에서 찾는다
 _MAVEN_HOMES: dict[str, Optional[Path]] = {}
 _MAVEN_HOME_LOGGED: set[str] = set()
 _MAVEN_HOME_RE = re.compile(r"^Maven home:\s*(.+?)\s*$", re.MULTILINE)
@@ -210,7 +213,7 @@ def maven_home(cfg: Config) -> Optional[Path]:
 
 
 def maven_global_settings(cfg: Config) -> Optional[Path]:
-    """Maven 설치본의 전역 settings 파일(``<maven home>/conf/settings.xml``)을 반환한다. 없으면 None을 반환한다."""
+    """Maven 설치본의 전역 settings(``<maven home>/conf/settings.xml``)를 반환한다. 없으면 None을 반환한다."""
     home = maven_home(cfg)
     if home is None:
         return None
@@ -235,8 +238,8 @@ def _log_global_settings(exe: str, gs: Optional[Path]) -> None:
 
 @dataclass
 class ProjectMavenSettings:
-    """프로젝트의 ``.mvn/maven.config``가 지정한 settings, 오프라인, ``-D``, ``-P`` 옵션을 담는 클래스.
-    settings 관련 옵션은 쓰인 그대로, 값까지 담는다."""
+    """프로젝트 ``.mvn/maven.config``의 옵션을 담는 클래스.
+    settings, 오프라인, ``-D``, ``-P`` 옵션을 파일에 쓰인 그대로 값까지 담는다."""
     path: str
     settings: list[str]
     global_settings: list[str]
@@ -290,7 +293,7 @@ def _option_kind(tok: str) -> tuple[Optional[str], bool]:
 
 
 def project_maven_settings(root: Path) -> Optional[ProjectMavenSettings]:
-    """프로젝트 루트의 ``.mvn/maven.config``에서 settings, 오프라인, ``-D``, ``-P`` 옵션을 읽는다.
+    """프로젝트 루트의 ``.mvn/maven.config``에서 옵션을 읽는다. settings, 오프라인, ``-D``, ``-P``를 본다.
     파일이 없거나 읽지 못하면 None을 반환한다. 파일은 바꾸지 않는다.
 
     Maven 3.9 reads one argument per line and skips `#` lines; the words of a line are split too, as older
@@ -351,7 +354,7 @@ _VALUE_OPTIONS = frozenset({"-t", "--toolchains", "-gt", "--global-toolchains", 
 
 def _config_line_words(line: str) -> list[str]:
     """maven.config 한 줄을 공백으로 나눈 단어 목록을 반환한다.
-    값에 공백이 있는 ``-Dname=value`` 하나만 있는 줄은 Maven 3.9처럼 줄 전체를 인자 하나로 본다."""
+    ``-Dname=value`` 하나만 있고 값에 공백이 있는 줄은 줄 전체를 인자 하나로 본다. Maven 3.9와 같다."""
     words = line.split()
     if len(words) > 1 and _define_value(words[0]) and "=" in words[0] and not any(w.startswith("-") for w in words[1:]):
         return [line.strip()]
@@ -417,8 +420,9 @@ def _file_arg(cmd: Sequence[str]) -> Optional[str]:
 
 
 def with_project_mvn(cfg: Any, cmd: Sequence[str], cwd: Path, top: Optional[Path] = None) -> list[str]:
-    """프로젝트 ``maven.config``의 ``-D``, ``-P``와 프로젝트 루트를 실행 파일 바로 뒤에 넣은 명령을 반환한다.
-    ``build.ignore_project_mvn``이 꺼져 있거나 명령에 루트가 이미 있으면(재시도) 명령을 그대로 반환한다.
+    """Maven이 읽지 않는 프로젝트 ``maven.config``의 ``-D``, ``-P``를 명령줄로 옮긴다.
+    실행 파일 바로 뒤에 그 옵션과 프로젝트 루트(``-Dmaven.multiModuleProjectDirectory``)를 넣는다.
+    ``build.ignore_project_mvn``이 꺼져 있거나 루트가 이미 들어 있으면(재시도) 명령을 그대로 반환한다.
 
     Maven gets the empty `MAVEN_BASEDIR` (`mvn_env`), so this restores what the project's `.mvn/maven.config`
     said. The file is the one Maven would have found from where the call starts (`cwd`, or the directory of
@@ -449,8 +453,8 @@ _MMPD = "-Dmaven.multiModuleProjectDirectory="
 
 
 def project_settings_ignored(cfg: Config, found: ProjectMavenSettings) -> bool:
-    """프로젝트가 지정한 settings가 이번 실행의 Maven 명령에서 무시되는지 확인한다.
-    ``build.settings_file``로 ``-s``를 넘겨야 하고, 프로젝트가 ``-gs``도 지정했으면 sbmig의 ``-gs``도 넘겨야 한다."""
+    """프로젝트가 지정한 settings를 이번 실행의 Maven이 무시하면 True를 반환한다.
+    ``build.settings_file``이 있어야 한다. 프로젝트가 ``-gs``도 지정했으면 sbmig도 ``-gs``를 넘길 수 있어야 한다."""
     b = cfg.build
     if _blank(b.settings_file):
         return False
@@ -460,9 +464,9 @@ def project_settings_ignored(cfg: Config, found: ProjectMavenSettings) -> bool:
 
 
 def project_settings_note(cfg: Config, found: Optional[ProjectMavenSettings]) -> Optional[tuple[str, str]]:
-    """프로젝트의 ``.mvn/maven.config``가 settings를 지정했을 때 (플래그, 인수인계 줄)을 반환한다.
-    ``build.settings_file``이 없거나 settings 옵션이 없으면 None을 반환한다.
-    플래그는 ``project-maven-settings-ignored``나 ``project-maven-settings-used``다."""
+    """프로젝트 ``.mvn/maven.config``가 settings를 지정했으면 플래그와 인수인계 줄을 반환한다.
+    플래그는 ``project-maven-settings-ignored``나 ``project-maven-settings-used``다.
+    ``build.settings_file``이 없거나 settings 옵션이 없으면 None을 반환한다."""
     if found is None or not found.names_settings or _blank(cfg.build.settings_file):
         return None
     head = f"the project's .mvn/maven.config points Maven at its own settings ({found.shown()}): "
@@ -544,7 +548,7 @@ def _mvn_folder(root: Path, d: Path) -> Optional[ProjectMvnFolder]:
     except OSError:
         return None
     if not entries:
-        return None                               # 빈 .mvn은 루트 표시일 뿐이라 알릴 내용이 없다
+        return None                               # 빈 .mvn은 루트 표시일 뿐이다. 알릴 내용이 없다
     jvm = mvn / "jvm.config"
     jvm_opts = [w for ln in _read_text(jvm).splitlines() for w in ln.split("#", 1)[0].split()] if jvm.is_file() else []
     ext = mvn / "extensions.xml"
@@ -564,8 +568,8 @@ def _mvn_folder(root: Path, d: Path) -> Optional[ProjectMvnFolder]:
 
 
 def project_mvn_folders(root: Path, skip: Iterable[str] = (), max_depth: int = 3) -> list[ProjectMvnFolder]:
-    """프로젝트 루트와 그 아래 ``max_depth`` 깊이까지의 ``.mvn`` 폴더를 찾아 내용을 정리한다. 빈 폴더는 뺀다.
-    ``.git``, ``target``, ``node_modules``와 ``skip``에 있는 폴더 아래는 보지 않는다. 파일은 바꾸지 않는다."""
+    """프로젝트 안의 ``.mvn`` 폴더를 ``max_depth`` 깊이까지 찾아 내용을 정리한다. 빈 폴더는 뺀다.
+    ``.git``, ``target``, ``node_modules``, ``skip`` 폴더 아래는 보지 않는다. 파일은 바꾸지 않는다."""
     root = Path(root)
     skipped = {s.strip("/") for s in skip if s}
     out: list[ProjectMvnFolder] = []
@@ -583,8 +587,8 @@ def project_mvn_folders(root: Path, skip: Iterable[str] = (), max_depth: int = 3
 
 
 def project_mvn_note(cfg: Any, folders: Sequence[ProjectMvnFolder]) -> Optional[tuple[str, str]]:
-    """``build.ignore_project_mvn``이 켜져 있고 비어 있지 않은 ``.mvn`` 폴더가 있으면 (플래그, 인수인계 줄)을 반환한다.
-    플래그는 ``project-mvn-ignored``다. 아니면 None을 반환한다."""
+    """프로젝트의 ``.mvn`` 폴더를 쓰지 않았으면 플래그 ``project-mvn-ignored``와 인수인계 줄을 반환한다.
+    ``build.ignore_project_mvn``이 꺼져 있거나 내용이 있는 ``.mvn`` 폴더가 없으면 None을 반환한다."""
     if not ignore_project_mvn(cfg) or not folders:
         return None
     jdk = int(getattr(getattr(cfg, "build", None), "require_java_major", 21) or 21)
@@ -606,9 +610,9 @@ _CATCH_ALL_MIRROR_RE = re.compile(r"<mirrorOf>\s*(\*|external:\*|external:http:\
 
 
 def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
-    """``build.settings_file``에 모든 저장소 요청을 받는 미러(``<mirrorOf>*</mirrorOf>`` 등)가 있는지
-    확인한다. 설정한 파일이 없거나 읽지 못하면 None을 반환한다.
-    이런 미러가 있어야 프로젝트 pom에 선언된 저장소가 폐쇄망에서도 해결된다. 없으면 Maven이 그 URL에 직접 접속한다.
+    """``build.settings_file``에 모든 저장소 요청을 받는 미러(``<mirrorOf>*</mirrorOf>`` 등)가 있는지 확인한다.
+    설정한 파일이 없거나 읽지 못하면 None을 반환한다.
+    이런 미러가 없으면 Maven이 pom에 선언된 저장소 URL에 직접 접속한다. 폐쇄망에서는 실패한다.
 
     `<mirrorOf>` values that count: `*`, `external:*`, `external:http:*`. See RUNBOOK §0.1."""
     if _blank(cfg.build.settings_file):
@@ -623,9 +627,9 @@ def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
 
 
 def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
-    """프로젝트 pom이 선언한 ``<repositories>``에 대해 운영자에게 보여 줄 안내 문구를 만든다.
-    선언이 없으면 빈 목록을 반환한다.
-    문구는 하나이고, Maven이 그 URL에 직접 접속하게 되는 경우에는 ``followup:``으로 시작한다."""
+    """프로젝트 pom이 선언한 ``<repositories>``를 운영자에게 알리는 문구 하나를 만든다.
+    Maven이 그 URL에 직접 접속하게 되면 문구가 ``followup:``으로 시작한다.
+    선언이 없으면 빈 목록을 반환한다."""
     urls: list[str] = []
     for p in poms:
         for u in getattr(p, "repositories", []) or []:
@@ -665,7 +669,7 @@ def local_repo_path(cfg: Config) -> Path:
 @dataclass
 class ProcessResult:
     """``run_logged``의 실행 결과를 담는 클래스.
-    종료 코드, 전체 출력, 걸린 시간, 타임아웃 여부, 시작 실패 사유를 담는다."""
+    종료 코드, 전체 출력, 걸린 시간, 타임아웃이 났는지, 시작하지 못한 이유를 담는다."""
     exit_code: int
     text: str
     duration_s: float
@@ -674,7 +678,8 @@ class ProcessResult:
 
 
 def _popen(*args, **kwargs) -> subprocess.Popen:
-    """테스트가 subprocess 전체를 바꾸지 않고 Maven 프로세스만 가짜로 바꿀 수 있도록 둔 래퍼. git도 subprocess를 쓴다."""
+    """Maven 프로세스를 띄우는 래퍼. 테스트가 이 함수만 가짜로 바꾼다.
+    git도 subprocess를 쓰기 때문에 subprocess 전체를 바꿀 수는 없다."""
     return subprocess.Popen(*args, **kwargs)
 
 
@@ -683,8 +688,8 @@ _CREATE_NO_WINDOW = 0x08000000
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    """Windows에서 Maven, OpenRewrite 프로세스에 숨겨진 별도 콘솔(``CREATE_NO_WINDOW``)을 붙이는 옵션을 반환한다.
-    운영자가 누른 Ctrl+Break, Ctrl+C가 ``mvn.cmd``에 전달되면 "Terminate batch job (Y/N)?"에서 멈추기 때문이다.
+    """Windows에서 Maven, OpenRewrite 프로세스에 숨긴 별도 콘솔(``CREATE_NO_WINDOW``)을 주는 옵션을 반환한다.
+    운영자가 누른 Ctrl+Break, Ctrl+C가 ``mvn.cmd``에 가면 "Terminate batch job (Y/N)?"에서 멈춘다.
 
     Ctrl+Break is the thread dump of `sbmig.core.diag`. sbmig still kills the whole tree itself (`taskkill /T
     /F`)."""
@@ -694,8 +699,8 @@ def _popen_kwargs() -> dict[str, Any]:
 
 
 def _kill_tree_windows(pid: int) -> None:
-    """Windows에서 프로세스 트리 전체를 `taskkill /T /F`로 종료한다.
-    Windows에는 프로세스 그룹이 없어 ``mvn.cmd``만 끝내면 ``java.exe``가 남아 ``target/``과 소스 파일을 잠그기 때문이다."""
+    """Windows에서 자식 프로세스까지 모두 `taskkill /T /F`로 종료한다.
+    Windows에는 프로세스 그룹이 없다. ``mvn.cmd``만 끝내면 ``java.exe``가 남아 ``target/``과 소스 파일을 잠근다."""
     try:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30,
                        encoding="utf-8", errors="replace")
@@ -704,8 +709,8 @@ def _kill_tree_windows(pid: int) -> None:
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
-    """프로세스 트리를 종료한다.
-    SIGTERM을 보내고 5초 기다린 뒤, 남아 있으면 SIGKILL을 보내고 5초 더 기다린다. 오류는 무시한다."""
+    """프로세스를 자식까지 모두 종료한다.
+    SIGTERM을 보내고 5초 기다린다. 그래도 남아 있으면 SIGKILL을 보내고 5초 더 기다린다. 오류는 무시한다."""
     try:
         if IS_WINDOWS:
             _kill_tree_windows(proc.pid)
@@ -736,7 +741,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
 # ---------------------------------------------------------------------------
 # 실행 중인 Maven, OpenRewrite 프로세스 관리
 # ---------------------------------------------------------------------------
-# 웹 서버나 인터프리터가 종료될 때 아직 실행 중인 mvn을 함께 종료하기 위해 run_logged가 띄운 자식 프로세스를 모아 둔다
+# run_logged가 띄운 자식 프로세스를 모아 둔다. 웹 서버나 인터프리터가 끝날 때 실행 중인 mvn도 함께 종료한다
 # 그러지 않으면 Windows에서 mvn.cmd가 띄운 java.exe가 uvicorn 종료 뒤에도 남아 파일을 잠근다
 _LIVE: "set[subprocess.Popen]" = set()
 _LIVE_LOCK = threading.Lock()
@@ -759,7 +764,7 @@ def live_processes() -> list[subprocess.Popen]:
 
 
 def kill_live_processes(reason: str = "shutdown") -> int:
-    """살아 있는 자식 프로세스를 모두 트리째 종료하고 종료한 개수를 반환한다.
+    """실행 중인 자식 프로세스를 그 자식까지 모두 종료하고, 종료한 개수를 반환한다.
     ``atexit``와 웹 앱이 종료될 때 호출된다. Windows는 ``taskkill /T /F``로, 나머지는 프로세스 그룹으로 종료한다."""
     procs = live_processes()
     for proc in procs:
@@ -775,9 +780,9 @@ atexit.register(lambda: kill_live_processes("interpreter exit"))
 def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_path: Path,
                timeout_s: float | None) -> ProcessResult:
     """``cmd``를 별도 프로세스 그룹에서 실행하고 출력을 줄 단위로 ``log_path``에 기록한다.
-    ``HEARTBEAT_S``마다 "still running" 줄을 남기고, 타임아웃이 되면 프로세스 트리를 종료한다.
-    프로세스가 실패해도 예외를 던지지 않고 ProcessResult를 반환한다. 실행 파일이 없으면 종료 코드는 127이다.
-    출력의 ANSI 코드는 지우고 기록한다. 타임아웃이면 종료 코드는 -1이다."""
+    ``HEARTBEAT_S``마다 "still running" 줄을 남긴다. 타임아웃이 되면 자식 프로세스까지 모두 종료한다.
+    실패해도 예외를 던지지 않고 ProcessResult를 반환한다. 실행 파일이 없으면 종료 코드는 127, 타임아웃이면 -1이다.
+    출력의 ANSI 코드는 지우고 기록한다."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     chunks: list[str] = []
     t0 = time.monotonic()
@@ -797,7 +802,7 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         def pump() -> None:
             assert proc.stdout is not None
             for raw in iter(proc.stdout.readline, b""):
-                # 읽기 스레드가 디코딩 오류로 멈추면 파이프가 가득 차 Maven도 멈추므로 깨진 바이트는 U+FFFD로 바꾼다
+                # 깨진 바이트는 U+FFFD로 바꾼다. 읽기 스레드가 디코딩 오류로 멈추면 파이프가 가득 차서 Maven도 멈춘다
                 line = strip_ansi(raw.decode("utf-8", errors="replace"))
                 chunks.append(line)
                 fh.write(line)
@@ -843,8 +848,8 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
 
 
 def maven_available(cfg: Config) -> tuple[bool, str]:
-    """사전 점검으로 ``mvn -v``를 실행해 (성공 여부, 버전 문구)를 반환한다.
-    JDK 21 확인이 실패했을 때 Maven이 실제로 쓴 JDK를 보여 주기 위해 runtime 부분을 남긴다.
+    """사전 점검으로 ``mvn -v``를 실행해 성공했는지와 버전 문구를 반환한다.
+    버전 문구에 runtime 부분을 남긴다. JDK 21 확인이 실패하면 Maven이 실제로 쓴 JDK를 보여 줄 수 있다.
     성공하면 설치 폴더도 기억해 둔다.
 
     Text shape: 'Apache Maven x.y.z; Java version: 21.0.1, runtime: …'."""
@@ -862,7 +867,7 @@ def maven_available(cfg: Config) -> tuple[bool, str]:
     remember_maven_home(cmd[0], out)       # 빌드마다 mvn -v를 다시 실행하지 않도록 설치 폴더를 기억한다
     maven = next((ln.strip() for ln in out.splitlines() if ln.startswith("Apache Maven")), out.strip()[:80])
     line = next((ln.strip() for ln in out.splitlines() if ln.startswith("Java version")), "")
-    # "Java version: 21.0.1, vendor: …, runtime: C:\jdk-21"에서 버전과 runtime만 남긴다. jdk-not-21 중단 문구가 쓴다
+    # "Java version: 21.0.1, vendor: …, runtime: C:\jdk-21"에서 버전과 runtime만 남긴다. jdk-not-21 중단 문구에 들어간다
     parts = [x.strip() for x in line.split(",")]
     java = ", ".join([parts[0], *[x for x in parts[1:] if x.startswith("runtime:")]]) if line else ""
     return True, f"{maven}; {java}" if java else maven

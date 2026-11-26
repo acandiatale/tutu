@@ -1,15 +1,10 @@
-"""저장소에 pom이 없는 라이브러리 때문에 Maven이나 OpenRewrite가 멈추면 로컬 저장소에 최소 pom을 두고 다시 실행하는 모듈.
-의존성을 해석하는 모든 Maven 호출이 ``run_with_stubs``를 거친다. 빌드, OpenRewrite, effective-pom,
-dependency:tree, 취약점 조치가 모두 해당한다.
-- 실패 로그에서 두 가지를 찾는다. pom 전송 오류로 읽지 못한 jar 의존성(classifier 없음)과 OpenRewrite가 받지 못한 pom이다
-- jar만 있는 라이브러리는 jar를 어느 저장소에서든 받을 수 있고 pom은 어느 저장소에서도 받지 못할 때만 파일을 만든다
-- classifier가 붙은 jar만 있는 라이브러리는 그 jar가 로컬 저장소에 있고 pom과 기본 jar가 어디에도 없을 때만 만든다.
-  이때 최소 pom의 packaging은 pom이고, SNAPSHOT 버전에는 만들지 않는다
-- Maven 경고에 나온 classifier jar 의존성은 OpenRewrite 문장의 라이브러리에 최소 pom을 둔 라운드에서만 함께 처리한다
-- 있는 파일은 덮어쓰지 않는다. 라이브러리마다 실행당 한 번, ``build.pomless_stub_max``개까지만 만든다
-- 프로젝트 파일은 바꾸지 않는다
+"""pom 없이 jar만 올라간 라이브러리 때문에 Maven이나 OpenRewrite가 멈추면 최소 pom을 두고 다시 실행하는 모듈.
+최소 pom은 로컬 저장소에 둔다. 프로젝트 파일은 바꾸지 않는다.
 
 Contracts: docs/INTERFACES.md "v2.1z-ax" (jar without pom) and "v2.1z-cj" (only a jar with a classifier).
+Every Maven call that resolves dependencies goes through ``run_with_stubs``: the build, OpenRewrite,
+effective-pom, dependency:tree and the remediation. An existing file is never overwritten; each library is
+handled once per run, and at most ``build.pomless_stub_max`` stubs are written.
 
 Measured with Maven 3.9.10: Maven asks every repository for the pom of a dependency; when one of them answers with a
 transfer error (a Central proxy in a closed network answers 502 for a path it never cached, a refused connection) the
@@ -58,25 +53,25 @@ log = logging.getLogger("sbmig.build.pomless")
 R = TypeVar("R")
 
 FLAG = "pomless-library"
-# 최소 pom의 주석 첫 문장이다. 쓰는 쪽과 나중 실행의 확인이 같은 문구를 쓴다
+# 최소 pom 주석의 첫 문장. 파일을 쓸 때와 나중 실행에서 최소 pom인지 확인할 때 같은 문구를 쓴다
 STUB_MARKER = "Written by sbmig: the repository has a jar but no pom for"
 HEAD_BYTES = 512                 # 최소 pom인지 볼 때 읽는 파일 앞부분의 크기
 MAX_USED_CHECKS = 300            # 나중 실행이 확인하는 의존성 좌표 수의 상한
-# 좌표 한 부분에 허용하는 문자다. 파일 경로에 들어가므로 경로 구분자와 제어 문자를 막는다
+# 좌표 한 부분에 허용하는 문자. 좌표가 파일 경로에 들어가므로 경로 구분자와 제어 문자를 막는다
 _PART_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
 _COORD = r"[A-Za-z0-9_.\-]+"
 _DESCRIPTOR_RE = re.compile(r"Failed to read artifact descriptor for (?P<c>" + _COORD + r"(?::" + _COORD + r"){2,3})")
-# 플러그인과 빌드 확장의 해석 실패는 의존성이 아니므로 직전 줄의 이 문구로 거른다
+# 플러그인과 빌드 확장의 해석 실패는 의존성 문제가 아니다. 직전 줄의 이 문구로 거른다
 _PLUGIN_RE = re.compile(r"Plugin \S+ or one of its dependencies could not be resolved|build extension", re.IGNORECASE)
 _CONTEXT_LINES = 3
-# OpenRewrite가 pom을 받지 못했을 때 남기는 문장이다. "POM" 뒤에 콜론이 없는 플레이스홀더 오류는 다른 실패다
+# OpenRewrite가 pom을 받지 못했을 때 남기는 문장. "POM" 뒤에 콜론이 없는 플레이스홀더 오류는 다른 실패다
 _UNABLE_POM_RE = re.compile(r"Unable to download POM: (?P<g>[^:\s]+):(?P<a>[^:\s]+):(?P<v>[^:\s]+?)\. Tried repositories:")
-# Maven이 classifier가 붙은 의존성의 pom을 찾지 못했을 때 남기는 경고다. 좌표는 g:a:jar:classifier:v 다섯 부분이다
+# Maven이 classifier가 붙은 의존성의 pom을 찾지 못했을 때 남기는 경고. 좌표는 g:a:jar:classifier:v 다섯 부분이다
 _POM_MISSING_RE = re.compile(r"The POM for (?P<c>[^\s:]+(?::[^\s:]+)+) is missing")
 # Maven의 경고는 SNAPSHOT 버전을 날짜가 붙은 이름(1.0-20260101.120000-1)으로 남긴다
 _DATED_SNAPSHOT_RE = re.compile(r"-\d{8}\.\d{6}-\d+$")
 _CLASSIFIER_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
-_NOT_CLASSIFIED = {"sources", "javadoc"}      # 소스와 문서 jar는 라이브러리 본체가 아니므로 세지 않는다
+_NOT_CLASSIFIED = {"sources", "javadoc"}      # 소스와 문서 jar는 라이브러리 본체가 아니다. 세지 않는다
 
 
 @dataclass
@@ -100,7 +95,7 @@ def memo_for(holder: Any) -> PomlessMemo:
 
 
 def plain_coordinate(group_id: str, artifact_id: str, version: str) -> bool:
-    """좌표가 파일 경로와 XML 주석에 넣어도 되는 평범한 Maven 좌표인지 확인한다.
+    """좌표를 파일 경로와 XML 주석에 넣어도 안전하면 True를 반환한다.
 
     No `/`, `\\`, `..`, control characters or `--` (the stub carries an XML comment)."""
     for part in (group_id, artifact_id, version):
@@ -116,8 +111,9 @@ def _transfer_res(g: str, a: str, v: str) -> list[re.Pattern[str]]:
 
 
 def detect(text: str) -> list[tuple[str, str, str]]:
-    """실패한 Maven 로그에서 pom 전송 오류 때문에 정보를 읽지 못한 jar 의존성의 (g, a, v) 목록을 반환한다.
-    부모 pom, import BOM, 플러그인, 빌드 확장, classifier가 있거나 jar가 아닌 타입, HTTP 차단 미러는 넣지 않는다.
+    """실패한 Maven 로그에서 pom을 받다가 전송 오류가 난 jar 의존성을 찾아 (g, a, v) 목록으로 반환한다.
+    부모 pom, import BOM, 플러그인, 빌드 확장은 넣지 않는다. classifier가 있거나 jar가 아닌 의존성도 뺀다.
+    HTTP 차단 미러에서 난 오류도 넣지 않는다.
 
     `Failed to read artifact descriptor for G:A:jar:V` (exactly a jar without classifier) whose cause is a
     transfer error on that library's pom: on the same line (Maven 3.8) or within the next lines (3.9:
@@ -152,7 +148,8 @@ def detect(text: str) -> list[tuple[str, str, str]]:
 
 
 def detect_classified(text: str) -> list[tuple[str, str, str]]:
-    """OpenRewrite 로그에서 pom을 받지 못한 라이브러리의 (g, a, v) 목록을 로그 순서대로 반환한다. 같은 좌표는 한 번만 넣는다.
+    """OpenRewrite 로그에서 pom을 받지 못한 라이브러리를 찾아 (g, a, v) 목록으로 반환한다.
+    로그에 나온 순서대로 넣고, 같은 좌표는 한 번만 넣는다.
 
     Matches `Unable to download POM: G:A:V. Tried repositories:` anywhere on a line (Maven prefixes every line; the
     plugin prints it inside an XML comment marker). The answers printed under it are not read: a later block of the
@@ -167,8 +164,8 @@ def detect_classified(text: str) -> list[tuple[str, str, str]]:
 
 
 def classified_warnings(text: str) -> list[tuple[str, str, str]]:
-    """Maven이 pom이 없다고 경고한 classifier jar 의존성의 (g, a, v) 목록을 로그 순서대로 반환한다. 같은 좌표는 한 번만 넣는다.
-    OpenRewrite 문장이 있는지는 보지 않는다. 언제 쓸지는 ``_stub_round``가 정한다.
+    """Maven이 pom이 없다고 경고한 classifier jar 의존성을 찾아 (g, a, v) 목록으로 반환한다.
+    로그에 나온 순서대로 넣고, 같은 좌표는 한 번만 넣는다. 이 목록을 언제 쓸지는 ``_stub_round``가 정한다.
 
     `The POM for G:A:jar:C:V is missing` with exactly five parts and type `jar`. OpenRewrite stops at the first module
     whose pom it cannot resolve and names only that module's libraries, while Maven has resolved (and warned about)
@@ -224,7 +221,7 @@ def maven_local_repo(cfg: Any) -> Optional[Path]:
     if raw is None:
         try:
             raw = _settings_local_repo(maven_global_settings(cfg))
-        except Exception:  # Maven 설치 위치를 몰라도 기본 경로를 쓰면 되므로 넘어간다
+        except Exception:  # Maven 설치 위치를 몰라도 기본 경로를 쓰면 된다. 넘어간다
             raw = None
     if raw is None:
         return Path.home() / ".m2" / "repository"
@@ -271,8 +268,9 @@ def classified_stub_text(group_id: str, artifact_id: str, version: str, jar_name
 
 
 def write_stub(path: Path, group_id: str, artifact_id: str, version: str, text: Optional[str] = None) -> bool:
-    """최소 pom을 같은 폴더의 임시 파일에 쓴 뒤 기존 파일을 덮어쓰지 않게 옮긴다. 새로 만들었으면 True를 반환한다.
-    파일이 이미 있거나 그사이 다른 파드가 만들었으면 False를 반환한다. ``text``가 없으면 ``stub_text``의 내용을 쓴다.
+    """최소 pom을 쓴다. 새로 만들었으면 True를 반환한다.
+    파일이 이미 있거나 그사이 다른 파드가 만들었으면 덮어쓰지 않고 False를 반환한다.
+    ``text``가 없으면 ``stub_text``의 내용을 쓴다.
 
     Temp file, then a hard link to the final name (fails when the name exists: another build pod on the same
     NFS volume won), temp removed. A file system without hard links falls back to a rename after an existence
@@ -292,7 +290,7 @@ def write_stub(path: Path, group_id: str, artifact_id: str, version: str, text: 
         except FileExistsError:
             return False
         except OSError:
-            # 하드 링크를 지원하지 않는 파일 시스템이면 있는지 확인한 뒤 이름을 바꾼다
+            # 하드 링크를 못 쓰는 파일 시스템이다. 파일이 없는지 확인한 뒤 이름을 바꾼다
             if path.exists():
                 return False
             os.replace(tmp, path)
@@ -313,7 +311,7 @@ def _lookup(cfg: Any, memo: PomlessMemo, project_root: Optional[Path]) -> Any:
 
 def prove(lookup: Any, local_repo: Path, group_id: str, artifact_id: str, version: str) -> tuple[Optional[str], str]:
     """jar는 받을 수 있고 pom은 어느 저장소에서도 받지 못하는지 확인한다.
-    (jar를 받은 곳, "")이나 (None, 이유)를 반환한다.
+    그렇다면 (jar를 받은 곳, "")을, 아니면 (None, 이유)를 반환한다.
 
     The rule: no repository returned the pom with 200 (`missing`, `failed` and `denied` = 401 / 403 all
     count as "not returned"; Maven uses the same credentials, so it cannot read it either) AND the jar is in
@@ -358,8 +356,8 @@ def _classified_jar(folder: Path, artifact_id: str, version: str) -> Optional[st
 def prove_classified(lookup: Any, local_repo: Path, group_id: str, artifact_id: str,
                      version: str) -> tuple[Optional[str], str]:
     """classifier가 붙은 jar만 있고 pom과 기본 jar는 어디에도 없는지 확인한다.
-    (classifier가 붙은 jar 파일 이름, "")이나 (None, 이유)를 반환한다. 로컬 저장소를 먼저 보고 원격 저장소는 그다음에 조회한다.
-    SNAPSHOT 버전은 파일을 보거나 원격 저장소를 조회하기 전에 거절한다.
+    그렇다면 (classifier가 붙은 jar 파일 이름, "")을, 아니면 (None, 이유)를 반환한다.
+    로컬 저장소를 먼저 보고, 원격 저장소는 그다음에 조회한다. SNAPSHOT 버전은 아무것도 보기 전에 거절한다.
 
     Order, first failure wins: `snapshot` (the version ends in `-SNAPSHOT`, or is the dated form
     `<base>-<yyyymmdd.hhmmss>-<n>` that Maven's `The POM for … is missing` warning prints for a snapshot: OpenRewrite
@@ -394,13 +392,13 @@ def _journal(journal: Optional[Callable[[dict], None]], event: dict) -> None:
         return
     try:
         journal(event)
-    except Exception:  # 저널 기록 실패가 빌드를 멈추지 않게 한다
+    except Exception:  # 저널 기록에 실패해도 빌드는 멈추지 않는다
         log.debug("pomless journal line not written", exc_info=True)
 
 
 def _stub_round(cfg: Any, text: str, *, journal: Optional[Callable[[dict], None]], memo: PomlessMemo,
                 project_root: Optional[Path], lookup: Any) -> int:
-    """로그에 나온 라이브러리마다 확인하고 최소 pom을 둔다. 이번에 준비한 파일 수를 반환한다."""
+    """로그에 나온 라이브러리마다 조건을 확인하고 최소 pom을 둔다. 이번에 준비한 파일 수를 반환한다."""
     ready = 0
     on = bool(getattr(cfg.build, "pomless_stub", True))
     cap = max(0, int(getattr(cfg.build, "pomless_stub_max", 60) or 0))
@@ -451,7 +449,7 @@ def _stub_round(cfg: Any, text: str, *, journal: Optional[Callable[[dict], None]
         named += _classified_candidate(cfg, g, a, v, on=on, cap=cap, journal=journal, memo=memo,
                                        project_root=project_root, lookup=lookup)
     warned = 0
-    # OpenRewrite 문장의 라이브러리가 하나도 준비되지 않으면 다시 실행해도 같은 곳에서 실패하므로 경고는 보지 않는다
+    # OpenRewrite 문장의 라이브러리를 하나도 준비하지 못했으면 경고는 보지 않는다. 다시 실행해도 같은 곳에서 실패한다
     if named:
         for g, a, v in classified_warnings(text):
             warned += _classified_candidate(cfg, g, a, v, on=on, cap=cap, journal=journal, memo=memo,
@@ -491,7 +489,7 @@ def _classified_candidate(cfg: Any, g: str, a: str, v: str, *, on: bool, cap: in
         _journal(journal, {**check, "reason": why})
         return 0
     try:
-        # 그사이 다른 파드가 만든 파일도 지금 있으므로 준비된 것으로 본다
+        # 그사이 다른 파드가 만든 파일이 있어도 준비된 것으로 본다
         created = write_stub(path, g, a, v, classified_stub_text(g, a, v, jar))
     except OSError as e:
         log.warning("maven: minimal pom for %s not written (%s: %s)", gav, type(e).__name__, e)
@@ -511,8 +509,8 @@ def run_with_stubs(cfg: Any, run: Callable[[int], R], *, journal: Optional[Calla
                    text: Callable[[R], str] = lambda r: getattr(r, "text", "") or "",
                    failed: Callable[[R], bool] = lambda r: getattr(r, "exit_code", 0) != 0
                    and not getattr(r, "timed_out", False)) -> R:
-    """Maven 명령을 실행하고, jar만 있는 라이브러리 때문에 실패했으면 최소 pom을 둔 뒤 같은 명령을 다시 실행한다.
-    ``run(k)``의 k는 0이 첫 실행이고 1부터가 다시 실행한 횟수다. 마지막 결과를 반환한다.
+    """Maven 명령을 실행한다. pom 없는 라이브러리 때문에 실패했으면 최소 pom을 두고 같은 명령을 다시 실행한다.
+    ``run(k)``의 k는 0이 첫 실행이고, 1부터는 다시 실행한 횟수다. 마지막 결과를 반환한다.
 
     Repeats while the result `failed` and its log names libraries that got a stub in this round. Rounds per
     command are bounded by `build.pomless_stub_max` (each round needs a library not handled before in this
@@ -566,8 +564,8 @@ def is_stub(path: Path) -> bool:
 
 
 def known_coordinates(ws: Any) -> list[tuple[str, str, str]]:
-    """새 Maven 호출 없이 이번 실행이 아는 의존성 좌표 (g, a, v) 목록을 반환한다. 예외를 던지지 않는다.
-    이번 실행이 저장한 전체 dependency:tree 출력, effective pom 저장본의 직접 의존성, 지금 pom의 선언 순으로 모은다.
+    """이번 실행이 이미 아는 의존성 좌표 (g, a, v) 목록을 반환한다. Maven을 새로 실행하지 않는다.
+    저장해 둔 dependency:tree 출력, effective pom의 직접 의존성, 지금 pom의 선언 순으로 모은다. 예외를 던지지 않는다.
 
     Sources, in this order (union, each coordinate once): (1) the unfiltered `dependency:tree`
     outputs this run captured (`logs/deptree-*.txt` whose `.meta.json` has no `includes`: transitives included);
@@ -628,8 +626,8 @@ def known_coordinates(ws: Any) -> list[tuple[str, str, str]]:
 
 def stubs_used(cfg: Any, coords: list[tuple[str, str, str]], *, skip: Optional[set[str]] = None,
                limit: int = MAX_USED_CHECKS) -> list[dict[str, Any]]:
-    """좌표마다 로컬 저장소의 pom이 sbmig가 만든 최소 pom인지 확인한다.
-    맞는 것의 {ga, version, path} 목록을 반환한다. ``limit``개 좌표까지만 확인한다.
+    """로컬 저장소에 있는 pom 중 sbmig가 만든 최소 pom을 찾는다.
+    찾은 것의 {ga, version, path} 목록을 반환한다. ``limit``개 좌표까지만 확인한다.
 
     For at most `limit` coordinates (not in `skip`, plain only): `<local repository>/<g>/<a>/<v>/<a>-<v>.pom` exists
     and its head carries `STUB_MARKER`. One `stat` + one read of `HEAD_BYTES` per existing pom. Never raises."""

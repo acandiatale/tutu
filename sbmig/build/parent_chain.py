@@ -1,11 +1,9 @@
 """사내 부모 pom 체인이 정의한 속성과 관리 버전을 읽는 모듈.
 설정한 사내 부모의 pom을 저장소에서 읽고 ``<parent>``를 따라 올라간다.
-재구성 뒤 effective pom을 얻지 못했을 때 대신 쓰고, ``_drop_bom_property_overrides``는 부모 속성 이름 목록으로 쓴다.
-- 속성은 자식 pom이 정의한 값이 우선한다
-- 관리 버전은 설정한 부모에 가까운 pom의 선언이 우선하고, 직접 선언한 항목이 import BOM보다 우선한다
-- 예외를 던지지 않는다. 읽지 못한 pom은 ``unreadable``과 ``sources``에 남긴다
-- 읽은 것이 있는 결과만 프로세스 안에 캐시한다
 
+Used in place of the effective pom when it cannot be captured after the restructure;
+``_drop_bom_property_overrides`` uses the chain's property names. Never raises: a pom that cannot be read is
+listed in ``unreadable`` and ``sources``. Only a result that read something is cached in the process.
 Entry points: ``load_parent_chain_facts(cfg) -> ParentChainFacts`` and ``ParentChainFacts.as_capture()``.
 Every configured company parent (``artifacts.parent``, ``boot_parent``, ``comp_parent``; de-duplicated, versionless ones
 skipped) is read from the local repository or through ``RepositoryLookup.pom_text`` (``boot_bom.PomReader``), its
@@ -64,7 +62,7 @@ class ParentChainFacts(BaseModel):
     unreadable: list[str] = Field(default_factory=list)
     poms: int = 0
     boot_bom_added: bool = False
-    # Boot BOM을 보충했을 때 체인이 직접 관리하는 항목. None이면 보충하지 않았으므로 ``managed``와 같다
+    # Boot BOM을 보충했을 때 체인이 직접 관리하는 항목. None이면 보충하지 않은 것이고 ``managed``와 같다
     chain_managed: dict[str, str] | None = None
     # 체인이 상속이나 import로 spring-boot-dependencies까지 이어지는지. None은 읽은 pom이 없어 알 수 없다는 뜻
     reaches_boot_bom: bool | None = None
@@ -79,7 +77,7 @@ class ParentChainFacts(BaseModel):
     build_extension_sources: dict[str, str] = Field(default_factory=dict)
     # 치환 전 선언 (groupId, artifactId, version, 선언한 pom). 체인 속성을 모두 합친 뒤 ``_load``에서 치환한다
     extension_decls: list[tuple[str, str, str, str]] = Field(default_factory=list)
-    # 모듈은 사내 부모 하나만 상속하므로 관리 버전도 루트 부모 g:a:v별로 둔다. Boot BOM 보충분은 넣지 않는다
+    # 루트 부모 g:a:v별 관리 버전. 모듈은 사내 부모 하나만 상속한다. Boot BOM 보충분은 넣지 않는다
     root_managed: dict[str, dict[str, str]] = Field(default_factory=dict)
     # 보충한 Boot BOM의 관리 버전. ``boot_bom_added``가 아니면 비어 있고 루트마다 가장 낮은 우선순위로 쓴다
     addon_managed: dict[str, str] = Field(default_factory=dict)
@@ -91,7 +89,7 @@ class ParentChainFacts(BaseModel):
 
     def managed_for(self, parent: str | None, *, own: bool = False) -> dict[str, str]:
         """``<parent>``가 ``parent``인 pom이 상속받는 관리 버전을 반환한다.
-        ``g:a:v``가 맞는 루트가 없으면 ``g:a``로 찾고, 사내 루트 부모가 아니면 빈 dict를 반환한다.
+        ``g:a:v``가 맞는 루트가 없으면 ``g:a``로 찾는다. 사내 루트 부모가 아니면 빈 dict를 반환한다.
         ``own``이면 Boot BOM 보충분을 뺀다.
 
         That root's chain only, plus the Boot BOM add-on at the lowest priority unless ``own``. Facts without per-root
@@ -111,11 +109,11 @@ class ParentChainFacts(BaseModel):
 
     @property
     def empty(self) -> bool:
-        """관리 버전도 속성도 없는지 확인한다. pom을 하나도 읽지 못했다는 뜻이다."""
+        """관리 버전도 속성도 없으면 True를 반환한다. pom을 하나도 읽지 못했다는 뜻이다."""
         return not self.managed and not self.properties
 
     def as_capture(self) -> dict[str, Any]:
-        """재구성 뒤 effective pom 대신 쓸 수 있도록 ``load_effective``와 같은 형태의 dict로 반환한다.
+        """``load_effective``와 같은 형태의 dict로 반환한다. 재구성 뒤 effective pom 대신 쓴다.
 
         The ``sbmig.build.effective.load_effective`` shape; ``direct``, ``plugins``, ``modules`` and ``by_module`` are
         empty, ``parent`` is the first root."""
@@ -222,7 +220,7 @@ def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFa
         if k not in facts.properties:                           # 루트가 여럿이면 먼저 읽은 루트의 값을 쓴다
             facts.properties[k] = v
             facts.property_sources[k] = defined_by[k]
-        # 회사 pom이 정의한 속성만 ${…}로 참조할 수 있으므로 Boot BOM의 lombok.version 같은 속성은 제외한다
+        # ${…}로 참조해도 되는 것은 회사 pom이 정의한 속성뿐이다. Boot BOM의 lombok.version 같은 속성은 뺀다
         if k not in facts.company_properties and is_company_group(defined_by[k].split(":", 1)[0], company or []):
             facts.company_properties[k] = v
             facts.company_property_sources[k] = defined_by[k]
@@ -241,7 +239,7 @@ def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFa
                 reached = reached or f"{rg}:{ra}" in BOOT_CHAIN_KEYS
                 continue
             managed.setdefault(f"{rg}:{ra}", rv)
-    # Maven 규칙대로 직접 선언한 관리 항목이 import BOM보다 우선하므로 import에서는 아직 없는 g:a만 더한다
+    # Maven 규칙대로 직접 선언한 관리 항목이 import BOM보다 우선한다. import에서는 아직 없는 g:a만 더한다
     before = len(facts.sources)
     read_import_boms(reader, imports, resolved, managed, facts.sources)
     for line in facts.sources[before:]:
@@ -271,7 +269,7 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
         chain = _walk(reader, root, facts)
         read_any = read_any or bool(chain)
         reached = _merge_root(reader, chain, facts, ":".join(root), company) or reached
-    # extension 버전 속성은 선언한 pom의 부모에 있을 수 있으므로 체인 전체 속성으로 치환한다
+    # extension 버전 속성은 선언한 pom의 부모에 있을 수도 있다. 그래서 체인 전체 속성으로 치환한다
     resolve_all = make_resolver(facts.properties)
     for eg, ea, ev, coord in facts.extension_decls:
         ext = ":".join(resolve_all(x) or x or "?" for x in (eg, ea, ev))
@@ -281,7 +279,7 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
     facts.reaches_boot_bom = reached if read_any else None
     manages_boot = bool(getattr(getattr(cfg, "artifacts", None), "parent_manages_spring_boot", False))
     if manages_boot and not reached:
-        # 테스트가 ``load_boot_bom_facts``를 바꿔 넣을 수 있도록 함수가 아닌 모듈을 import한다
+        # 함수가 아닌 모듈을 import한다. 테스트가 ``load_boot_bom_facts``를 바꿔 넣을 수 있다
         from sbmig.build import boot_bom
         bb = boot_bom.load_boot_bom_facts(cfg)
         if not bb.empty:
@@ -290,14 +288,14 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
             facts.addon_managed = dict(bb.managed)
             for k, v in bb.managed.items():
                 facts.managed.setdefault(k, v)
-            # 보충한 Boot BOM은 import와 같아서 속성이 상속되지 않으므로 properties에는 넣지 않는다
+            # 보충한 Boot BOM은 import와 같아서 속성이 상속되지 않는다. properties에는 넣지 않는다
         facts.sources += [f"Boot BOM add-on (the chain does not reach {BOOT_BOM}): {s}" for s in bb.sources]
     return facts
 
 
 def load_parent_chain_facts(cfg: Any) -> ParentChainFacts:
     """설정한 사내 부모 체인을 읽어 반환한다. 예외를 던지지 않는다.
-    읽은 것이 있으면 프로세스 안에 캐시하고, 아무것도 읽지 못했으면 다음 호출에서 다시 읽는다.
+    읽은 것이 있으면 프로세스 안에 캐시한다. 아무것도 읽지 못했으면 다음 호출에서 다시 읽는다.
 
     Cache key: (roots, local repository, ``parent_manages_spring_boot``, ``target.spring_boot_version``)."""
     try:
@@ -319,7 +317,7 @@ def load_parent_chain_facts(cfg: Any) -> ParentChainFacts:
         else:
             log.info("parent chain facts unavailable: %s", "; ".join(facts.sources) or "-")
         return facts
-    except Exception as e:  # 부모 체인 정보는 보조 자료이므로 실패해도 재구성을 막지 않는다
+    except Exception as e:  # 부모 체인 정보는 보조 자료다. 실패해도 재구성을 막지 않는다
         log.debug("parent chain facts failed: %s: %s", type(e).__name__, e, exc_info=True)
         return ParentChainFacts(sources=[f"failed: {type(e).__name__}: {e}"[:200]])
 
