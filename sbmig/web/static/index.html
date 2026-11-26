@@ -180,6 +180,11 @@
   .podwait .pwhint { color: var(--ink); font-weight: 600; }
   .podwait .pwraw { margin-top: 4px; color: var(--muted); font-family: var(--mono); font-size: 12px; word-break: break-all; }
   .podwait .pwstop { margin-top: 4px; color: var(--muted); }
+  /* 변환은 마쳤고 그 뒤 빌드만 통과하지 않은 단계(사내 프레임워크 프로젝트): 실패가 아니므로 주의 색 점에 느낌표를 그린다 */
+  .rail .step.buildwarn .dot { background: var(--warn); border-color: var(--warn); }
+  .rail .step.buildwarn .dot::before, .rail .step.buildwarn .dot::after { content: ""; position: absolute; left: 7px; width: 2px; background: #fff; border: 0; transform: none; }
+  .rail .step.buildwarn .dot::before { top: 3px; height: 7px; } .rail .step.buildwarn .dot::after { top: 11px; height: 2px; }
+  .rail .step.buildwarn .label { color: var(--warn); font-weight: 600; }
   /* 사람이 중단을 요청해 멈춘 단계: 실패(빨강)가 아니라 주의 색과 일시정지 표시로 그린다 */
   .rail .step.stopped .dot { background: var(--warn); border-color: var(--warn); }
   .rail .step.stopped .dot::before, .rail .step.stopped .dot::after { content: ""; position: absolute; top: 4px; width: 2px; height: 8px; background: #fff; }
@@ -1081,6 +1086,14 @@
   });
 
   // ---------------------------------------------------------------- 2. 실행 카드
+  // 변환을 마쳤고 그 뒤 빌드만 통과하지 않은 사내 프레임워크 실행의 제목과 레일 안내 줄이다
+  const CONV_DONE_TITLE = 'JDK 21, Jakarta 변환을 마쳤습니다. 변환 뒤 빌드는 통과하지 않았습니다';
+  const CONV_DONE_NOTE = '변환 뒤 빌드는 통과하지 않았습니다. 남은 오류는 보고서에 있습니다.';
+  // Job 모드의 Worker는 빌드가 실패해도 0으로 끝나므로 0, 2, 기록 없음만 변환 완료로 보고 파드가 죽은 137 같은 코드는 제외한다
+  function convDoneOf(st) {
+    return !!st && st.state === 'finished' && st.success === false && st.conversion_complete === true
+      && (st.exit_code === 2 || st.exit_code === 0 || st.exit_code == null);
+  }
   // 상태 한 줄을 사용자가 읽기 쉬운 문장으로 만든다(state / success / exit_code는 /api/runs의 status dict)
   function describe(st) {
     if (st.state === 'queued') {
@@ -1108,6 +1121,8 @@
         const open = st.open ?? st.unresolved ?? 0, blocked = st.blocked || 0;
         if (st.exit_code === 3) return { cls: 'bad', text: '실행이 중간에 끊겼습니다' + (st.error ? '. ' + st.error : ''), short: '끊김' };
         const parts = []; if (open) parts.push(`남은 오류 ${open}건`); if (blocked) parts.push(`막힌 항목 ${blocked}건`);
+        // 사내 프레임워크 프로젝트는 JDK 21, Jakarta 변환이 맡은 일 전부이므로 뒤의 빌드가 실패해도 완료로 쓴다
+        if (convDoneOf(st)) return { cls: 'ok', text: CONV_DONE_TITLE + (parts.length ? `. ${parts.join(', ')}` : ''), short: '완료' };
         return { cls: 'warn', text: '빌드가 끝까지 가지 못했습니다' + (parts.length ? `. ${parts.join(', ')}` : ''), short: '미완료' };
       }
       if (st.exit_code === 0) return { cls: 'ok', text: '끝났습니다', short: '끝' };
@@ -1232,7 +1247,8 @@
     if (st.stop_requested) stopAsked = true;
     if (st.parallel) setParallel(st.parallel);
     if (st.mode === 'k8s-job' || st.mode === 'local-job') jobStep();   // Job 모드(개발 PC의 local-job 포함)에서는 첫 current보다 먼저 접수 앞에 '파드' 단계를 넣는다
-    if (st.state === 'finished') { setCurrent(null); showResult(st, d); }
+    // 끝난 상태의 conversion_complete가 진행 중에 정한 빌드 검증 표시를 바로잡는다
+    if (st.state === 'finished') { convDone = convDoneOf(st); markVerify(); setCurrent(null); showResult(st, d); }
     else if (st.state === 'running' && !railSteps().some((n) => n.classList.contains('done'))) setCurrent(railSteps()[0]);
     // 대기 안내는 대기 중에만 보인다. 시작하거나 끝나면 이 안내만 지운다(그 사이 다른 안내로 바뀌었으면 그대로 둔다)
     if (st.state === 'queued') { queueText = queueNote(st); setText('railnote', queueText); }
@@ -1285,6 +1301,7 @@
   let railFlow = FLOW_FULL;
   function resetRail(flow) {
     const g = $('rail'); g.innerHTML = ''; abortNote = '';
+    convFailed = false; verifyFailed = false; convDone = null;
     railFlow = flow === FLOW_REM ? FLOW_REM : FLOW_FULL;
     if (railFlow === FLOW_REM) {
       for (const n of REM_STEPS) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
@@ -1297,7 +1314,25 @@
     placeSkipped();                                   // 범위를 이미 알고 있으면 하지 않는 단계를 다시 그린다
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
-  function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused'))); }
+  function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused') || n.classList.contains('buildwarn'))); }
+  // 빌드 검증 단계가 실패로 끝난 사내 프레임워크 실행을 변환 완료로 그릴지 정하는 값이다. 실행을 열 때마다 resetRail이 비운다
+  let convFailed = false;       // 저널에 실패한 변환(rewrite_failed, 실패한 변환 단계 결과)이 있었다
+  let verifyFailed = false;     // 빌드 검증 단계의 phase_end가 실패로 왔다
+  let convDone = null;          // 끝난 상태의 conversion_complete 값이다. 끝나기 전에는 null이다
+  const VERIFY_FAIL_NOTE = `${KO.verify} 단계가 실패로 끝났습니다`;
+  // 빌드 검증 단계의 표시를 정한다. 끝난 상태가 있으면 그 값을, 없으면 지금까지 본 범위와 변환 결과를 따른다
+  function markVerify() {
+    const step = $('rail').querySelector('.step[data-phase="verify"]');
+    if (!step || !verifyFailed || step.classList.contains('stopped') || step.classList.contains('refused')) return;
+    const warn = convDone === true || (convDone === null && fwReduced && !convFailed);
+    const was = step.classList.contains('buildwarn');
+    step.classList.remove('done');
+    step.classList.toggle('buildwarn', warn); step.classList.toggle('failed', !warn);
+    // 안내 줄은 빌드 검증 실패 안내일 때만 바꾼다. 중단 사유나 조치 안내를 덮지 않기 위해서다
+    const n = $('railnote'), t = n.textContent;
+    if (warn && t === VERIFY_FAIL_NOTE) n.textContent = CONV_DONE_NOTE;
+    else if (!warn && was && t === CONV_DONE_NOTE) n.textContent = VERIFY_FAIL_NOTE;
+  }
   function setCurrent(el) {
     for (const n of railSteps()) n.classList.remove('current');
     if (el) el.classList.add('current');
@@ -1332,6 +1367,7 @@
     fwInfo = fw || null; fwReduced = !!fwInfo;
     renderFramework();
     placeSkipped();
+    markVerify();                                     // 범위를 빌드 검증 결과보다 늦게 알게 된 경우다
   }
   // 실행 카드와 결과 카드의 안내 문장을 쓴다. 설정 정보가 늦게 오면 다시 호출한다
   function renderFramework() {
@@ -1434,9 +1470,9 @@
     }
     else if (u.stopped) $('railnote').textContent = '요청한 단계까지만 실행하고 멈췄습니다.';
     const steps = railSteps(); let last = -1;
-    steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused')) last = i; });
+    steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused') || n.classList.contains('buildwarn')) last = i; });
     // finalize 뒤에는 이어서 실행되는 취약점 조치(빌드 파드의 remediation 노드)만 남는다. 이미 시작했으면 그것이 현재 단계다
-    const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed):not(.stopped):not(.refused)');
+    const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed):not(.stopped):not(.refused):not(.buildwarn)');
     // 하지 않는 단계(skipped)는 현재 단계가 될 수 없으므로 건너뛴다
     const next = steps.slice(last + 1).find((n) => !n.classList.contains('skipped'));
     setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : next));
@@ -1470,10 +1506,13 @@
       const step = remStep();
       if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = REM_RUNNING_NOTE; }
     }
+    // 변환 단계의 결과(step이 있는 rewrite)만 본다. step이 없는 rewrite는 다시 시도할 수 있는 한 번의 실행이다
+    if (name === 'rewrite_failed' || (name === 'rewrite' && ev.step && ev.ok === false && ev.dry_run !== true)) { convFailed = true; markVerify(); }
     if (name === 'phase_end' && ev.phase) {
       $('railnote').textContent = `${KO[ev.phase] || ev.phase} ${ev.ok === false ? '단계가 실패로 끝났습니다' : '단계 끝'}`;
       const step = $('rail').querySelector(`.step[data-phase="${CSS.escape(ev.phase)}"]`);
       if (step && ev.ok === false) { step.classList.remove('done'); step.classList.add('failed'); }
+      if (ev.phase === 'verify' && ev.ok === false) { verifyFailed = true; markVerify(); }
     }
     const tl = $('timeline');
     const div = document.createElement('div'); div.className = 'row';

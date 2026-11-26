@@ -72,6 +72,9 @@ _JSP_JAKARTA_NOTE_RE = re.compile(r"^(?P<step>[\w.\-]+): JSP javax → jakarta: 
 _JSP_JAKARTA_ANY_RE = re.compile(r"^(?:[\w.\-]+: )?JSP javax → jakarta: \d+ files?, \d+ references?$")
 JSP_JAVAX_LEFT = ("JSP javax references remain ({files}) — rename the javax EE names in page imports / scriptlets / "
                   "useBean to jakarta.* (the build passes, Tomcat 10+ fails at runtime)")
+# 최종 빌드가 통과하지 않은 실행에서는 빌드가 통과한다고 쓰지 않는다
+JSP_JAVAX_LEFT_NOT_BUILT = ("JSP javax references remain ({files}) — rename the javax EE names in page imports / "
+                            "scriptlets / useBean to jakarta.* (Tomcat 10+ fails at runtime on them)")
 JSP_RENAME_OFF = "; `layout.jsp_jakarta_rename` is off"
 # 좌표를 찾지 못한 jar마다 install-file 명령을 만들 때 파일 이름을 이름과 버전으로 나누는 정규식.
 # 분석기가 채운 artifact_id / version이 있으면 그것을 쓴다
@@ -654,13 +657,15 @@ def _jsp_followup_present(report: RunReport) -> bool:
 def jsp_javax_item(report: RunReport, cfg: Any = None) -> str | None:
     """할 일 목록의 JSP 줄 ``JSP javax references remain (N files) …``을 만든다.
     javax가 남은 JSP가 있고 재구성이 같은 후속 작업 줄을 남기지 않았을 때만 만든다. 아니면 None을 반환한다.
-    이름 변경이 꺼져 있었으면 그 사실을 뒤에 붙인다."""
+    이름 변경이 꺼져 있었으면 그 사실을 뒤에 붙인다. 최종 빌드가 통과하지 않았으면 빌드가 통과한다는 말은 빼고 쓴다."""
     left = jsp_javax_left(report)
     if not left or _jsp_followup_present(report):
         return None
     layout = getattr(cfg, "layout", None) if cfg is not None else None
     off = layout is not None and not getattr(layout, "jsp_jakarta_rename", True)
-    return JSP_JAVAX_LEFT.format(files=plural(left, "file")) + (JSP_RENAME_OFF if off else "")
+    fb = getattr(report, "final_build", None)
+    text = JSP_JAVAX_LEFT if fb is not None and bool(getattr(fb, "ok", False)) else JSP_JAVAX_LEFT_NOT_BUILT
+    return text.format(files=plural(left, "file")) + (JSP_RENAME_OFF if off else "")
 
 
 def jar_stem_version(path: str) -> tuple[str, str]:

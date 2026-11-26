@@ -511,7 +511,8 @@ def journal_usage_checked(run_dir: Path, strict: bool = False) -> tuple[dict[str
 def _result_word(exit_code: Any, rep: dict[str, Any] | None) -> str | None:
     # 결과 줄과 같은 단어를 쓴다. exit 0은 ok, 2는 incomplete, 3은 aborted다
     if isinstance(exit_code, int) and not isinstance(exit_code, bool):
-        return _EXIT_RESULT.get(exit_code, f"exit {exit_code}")
+        word = _EXIT_RESULT.get(exit_code, f"exit {exit_code}")
+        return _converted_or(word, rep)
     if rep is None:
         return None
     flags = [f for f in rep.get("flags") or [] if isinstance(f, str)]
@@ -519,7 +520,18 @@ def _result_word(exit_code: Any, rep: dict[str, Any] | None) -> str | None:
         return "aborted"
     if rep.get("success") is True and not rep.get("blocked"):
         return "ok"
-    return "incomplete"
+    return _converted_or("incomplete", rep)
+
+
+def _converted_or(word: str, rep: Any) -> str:
+    # 사내 프레임워크 실행이 JDK 21, Jakarta 변환을 마쳤으면 빌드가 실패해도 미완료 대신 변환 완료로 보여 준다
+    if word != "incomplete" or not isinstance(rep, dict):
+        return word
+    from sbmig.report.result_line import conversion_complete
+    try:
+        return "converted" if conversion_complete(rep) is True else word
+    except Exception:  # noqa: BLE001 - 보고서 모양 때문에 사용량 응답이 실패하면 안 된다
+        return word
 
 
 def _scope_of(rep: dict[str, Any] | None) -> str | None:

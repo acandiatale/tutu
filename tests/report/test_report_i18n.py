@@ -270,9 +270,24 @@ def handover_lines(tmp_path, cfg) -> list[str]:
     jsp_prof.source.jsp_javax_files = 2
     off = cfg.model_copy(deep=True)
     off.layout.jsp_jakarta_rename = False
+    # v2.1z-ck: a run whose final build did not pass gets the sentence without "the build passes"
+    from sbmig.core.models import BuildResult
     for c in (cfg, off):
-        lines += build_handover(as_is_profile(), final_tree(tmp_path / f"jsp{len(lines)}"),
-                                make_report(profile=jsp_prof), effective=EFFECTIVE, cfg=c).from_here
+        for built in (True, False):
+            fb = BuildResult(ok=built, goal="clean package", command=["mvn"], exit_code=0 if built else 1,
+                             duration_s=1.0, log_path="")
+            lines += build_handover(as_is_profile(), final_tree(tmp_path / f"jsp{len(lines)}"),
+                                    make_report(profile=jsp_prof, final_build=fb), effective=EFFECTIVE,
+                                    cfg=c).from_here
+    # v2.1z-ck: the orchestrator's follow-ups for files OpenRewrite could not read (reduced run) and for literal
+    # versions the recipes left (Orchestrator._report_parse_problems / _report_unresolved_versions)
+    lines.append("OpenRewrite could not read 2 source file(s) (src/main/java/com/x/A.java, src/main/java/com/x/B.java): "
+                 "the JDK 21 / Jakarta recipes skipped them, so they are not converted — check and convert them by hand")
+    lines.append("OpenRewrite could not read some source files (their names are in the rewrite log "
+                 "`logs/003-rewrite-transform.rewrite.log`): the JDK 21 / Jakarta recipes skipped them, so they are "
+                 "not converted — check and convert them by hand")
+    lines.append("the recipe run could not download Maven metadata (proxy / rate limit): literal versions `4.0.x` "
+                 "remain in pom.xml, app/pom.xml — re-run sbmig later or set the versions by hand")
 
     # v2.1k: reactor duplicate follow-ups (orchestrator → manual_followups) and the reactor_duplicate suggestion
     lines += _reactor_lines(tmp_path / "rx")

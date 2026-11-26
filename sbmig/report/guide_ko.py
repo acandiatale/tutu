@@ -63,7 +63,7 @@ from .markdown import (
 from sbmig.restructure.pom_charset import HANDOVER_PREFIX as POM_CHARSET_PREFIX
 from sbmig.rewrite.failure import FLAG as REWRITE_FAILED, HANDOVER_PREFIX as REWRITE_FAILED_PREFIX
 
-from .result_line import conversion_only_failed
+from .result_line import conversion_complete, conversion_only_failed
 from .result_line import report_result_line, run_scope
 
 LANG = "ko"
@@ -155,6 +155,15 @@ def _build_failed(r: RunReport) -> bool:
     return r.final_build is None or not r.final_build.ok
 
 
+def _converted_not_built(r: RunReport) -> bool:
+    """사내 프레임워크 실행이 변환을 마쳤지만 최종 빌드가 통과하지 않았는지 확인한다.
+    이런 실행은 결과 칸과 안내 문장에서 변환 완료로 쓴다.
+
+    `conversion_complete` plus not `success` and not `_aborted` (which also reads the abort hand-over line).
+    Contract: docs/INTERFACES.md "v2.1z-ck"."""
+    return not r.success and not _aborted(r) and conversion_complete(r)
+
+
 def _ant_refused(r: RunReport) -> bool:
     return bool(intake_notice_lines(r, LANG))
 
@@ -221,6 +230,9 @@ def head_lines(r: RunReport) -> list[str]:
     elif _aborted(r):
         # 빌드를 한 뒤에 멈춘 실행은 멈췄다는 사실과 마지막 빌드 결과를 함께 쓴다
         result = f"❌ 실행 중단 ({_last_build_ko(r)})"
+    elif _converted_not_built(r):
+        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있으므로 최종 빌드 괄호를 덧붙이지 않는다
+        result = result_label(r, LANG)
     else:
         result = f"{result_label(r, LANG)} (최종 `mvn clean package`)"
     L = ["| | |", "|---|---|", f"| **결과** | {result} |",
@@ -267,6 +279,22 @@ def purpose_lines(r: RunReport) -> list[str]:
         L += ["자동 변환(OpenRewrite)이 실패해 Java 21, Jakarta, Spring 버전 변환 레시피가 적용되지 않았습니다. 그 뒤의 구조 "
               "정리와 빌드 오류 수정은 진행했지만, 레시피가 바꿨어야 할 코드는 바뀌지 않았을 수 있습니다. 실패 원인은 "
               "「확인해 주세요」의 첫 항목에 적었습니다.", ""]
+    if _converted_not_built(r):
+        # 프레임워크 프로젝트는 변환이 이번 작업의 전부이므로 변환을 마쳤다는 것을 먼저 쓰고 빌드 이야기를 잇는다
+        head = f"JDK 21과 Jakarta 변환을 마쳤습니다. {_fw_who(r)}는 변환까지가 이번 작업의 범위입니다."
+        if no_fix_loop(r):
+            rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
+                    else "「참고」의 마지막 빌드 로그를 봐 주세요.")
+            L += [f"{head} 변환 뒤 빌드는 통과하지 않았고 빌드 오류는 자동으로 고치지 않았습니다. {rest} 프로젝트 "
+                  "담당자와 프레임워크 담당자가 고쳐 주셔야 합니다.", ""]
+            return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 바꿨는지, 전환 후 무엇을 확인하셔야 "
+                        "하는지 순서대로 적었습니다.", ""]
+        tried = any(pr.attempts for pr in r.phases or [])
+        build = ("빌드 오류를 자동으로 고쳐 보았지만 최종 빌드는 아직 통과하지 않습니다." if tried
+                 else "변환 뒤 빌드는 아직 통과하지 않습니다.")
+        L += [f"{head} {build} {_where_first(r)} 남은 오류는 프로젝트 담당자와 프레임워크 담당자가 고쳐 주셔야 합니다.", ""]
+        return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 어떻게 바꿨는지, 전환 후 무엇을 "
+                    "확인하셔야 하는지 순서대로 적었습니다.", ""]
     if _build_failed(r) and no_fix_loop(r):
         # 고치려고 한 것이 없으므로 남은 오류를 정리했다는 것과 고칠 사람만 쓴다
         rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
@@ -276,15 +304,19 @@ def purpose_lines(r: RunReport) -> list[str]:
         return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 바꿨는지, 전환 후 무엇을 확인하셔야 "
                     "하는지 순서대로 적었습니다.", ""]
     if _build_failed(r):
-        where = [x for x, has in (("「해결하지 못한 오류」", bool(open_errors(r))), ("「진행하지 않은 항목」", bool(r.blocked)))
-                 if has]
-        if where:
-            obj = "을" if where[-1].endswith("항목」") else "를"
-            L += [f"최종 빌드가 아직 통과하지 않습니다. 아래 {'와 '.join(where)}{obj} 먼저 봐 주세요.", ""]
-        else:
-            L += ["최종 빌드가 아직 통과하지 않습니다. 「참고」의 마지막 빌드 로그를 먼저 봐 주세요.", ""]
+        L += [f"최종 빌드가 아직 통과하지 않습니다. {_where_first(r)}", ""]
     return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 어떻게 바꿨는지, 전환 후 무엇을 "
                 "확인하셔야 하는지 순서대로 적었습니다.", ""]
+
+
+def _where_first(r: RunReport) -> str:
+    """빌드가 실패한 실행에서 먼저 볼 절을 가리키는 문장을 만든다. 가리킬 절이 없으면 마지막 빌드 로그를 가리킨다."""
+    where = [x for x, has in (("「해결하지 못한 오류」", bool(open_errors(r))), ("「진행하지 않은 항목」", bool(r.blocked)))
+             if has]
+    if not where:
+        return "「참고」의 마지막 빌드 로그를 먼저 봐 주세요."
+    obj = "을" if where[-1].endswith("항목」") else "를"
+    return f"아래 {'와 '.join(where)}{obj} 먼저 봐 주세요."
 
 
 # ------------------------------------------------------------------------------------------------------ 전환 내용
@@ -561,11 +593,13 @@ def _merge_item(lines: list[str]) -> str:
 
 _REVIEW_LINES = (("structure review warning — ", "구조 점검에서 나온 주의 사항"),)
 # tr_line으로 옮기는 영어 줄 가운데 첫머리로 종류를 확실히 알 수 있는 줄에만 굵은 머리를 붙인다
+UNCONVERTED_LEAD = "변환되지 않은 파일"       # OpenRewrite가 읽지 못해 변환되지 않은 파일 항목의 머리
 _LEADS = ((re.compile(r"^test sources (were neither compiled nor run|do not compile)"), "테스트"),
           (re.compile(r"^test fails at runtime"), "실행할 때 실패하는 테스트"),
           (re.compile(r"^\d+ externalized (setting|key)\(s\) "), "외부 설정 값"),
           (re.compile(r"^bundled jar `"), "프로젝트에 포함된 jar"),
           (re.compile(r"^JSP javax references remain"), "JSP에 남은 javax 이름"),
+          (re.compile(r"^OpenRewrite could not read (\d+ source file|some source files)"), UNCONVERTED_LEAD),
           (re.compile(r"^structure review fix \(edits / script\) changed"), "구조 점검에서 고친 pom"),
           (re.compile(r"^structure review: critical issue not fixed — "), "구조 점검에서 고치지 못한 문제"),
           (re.compile("^" + re.escape(HTTP_BLOCKED_PREFIX)), "Maven 저장소 접근 차단"),
@@ -676,9 +710,16 @@ def check_items(r: RunReport) -> list[str]:
         items.append(_carried_item(carried))
     if h is not None and h.merge_conflicts:
         items.append(_merge_item(list(h.merge_conflicts)))
+    top: list[str] = []
     if _build_failed(r):
         top = [first[k] for k in ("unresolved", "blocked") if k in first]
         items = top + [x for x in items if x not in top]
+    # 변환되지 않은 파일은 변환 결과에 걸린 일이므로 남은 오류 바로 뒤에 둔다
+    unconverted = [x for x in items if x.startswith(f"**{UNCONVERTED_LEAD}**")]
+    if unconverted:
+        rest = [x for x in items if x not in unconverted]
+        at = len([x for x in rest if x in top])
+        items = rest[:at] + unconverted + rest[at:]
     # 자동 변환 실패는 결과 전체에 걸리므로 언제나 첫 항목으로 둔다
     failed = [x for x in items if x.startswith("**자동 변환 실패**")]
     items = failed + [x for x in items if x not in failed]

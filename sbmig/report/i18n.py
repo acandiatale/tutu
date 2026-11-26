@@ -71,6 +71,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "✅ BUILD SUCCESS": "✅ 빌드 성공",
     "❌ NOT BUILDING": "❌ 빌드 실패",
     "| **Result** | {ok} (final `mvn clean package`) |": "| **결과** | {ok} (최종 `mvn clean package`) |",
+    "| **Result** | {ok} |": "| **결과** | {ok} |",
     "| Case | `{case}` |": "| 프로젝트 유형 | `{case}` |",
     "| As-is | java {java}, spring boot {boot}, spring {spring}, {poms} pom(s) |":
         "| 전환 전 | Java {java}, Spring Boot {boot}, Spring {spring}, pom {poms}개 |",
@@ -412,6 +413,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "follow-ups":
         "자동 변환(OpenRewrite)이 실패해 변환이 적용되지 않았습니다. 원인은 「확인해 주세요」의 첫 항목에 있습니다.",
     "❌ NOT CONVERTED (the build passed)": "❌ 변환 실패 (빌드는 통과)",
+    "✅ CONVERTED (the build does not pass)": "✅ JDK 21, Jakarta 변환 완료 (변환 뒤 빌드는 실패)",
     "**The JDK 21 and Jakarta conversion failed: nothing was converted** (the reason is the first line of Manual "
     "follow-ups).":
         "**JDK 21과 Jakarta 변환이 실패해 아무것도 변환되지 않았습니다.** 원인은 「확인해 주세요」의 첫 항목에 있습니다.",
@@ -558,9 +560,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "어떤 pom도 참조하지 않는 웹 콘텐츠(예: JSP와 다운로드 파일이 있는 STATIC/)는 그대로 두었습니다. 전처럼 웹 "
         "서버에서 제공하거나 front 모듈로 옮겨 주세요.",
     "OpenRewrite could not parse some source files (see the phase notes / rewrite log): recipes that need type "
-    "information skipped them; the fix loop covered what the build found":
+    "information skipped them; what that leaves shows up in the build":
         "OpenRewrite가 일부 소스 파일을 읽지 못했습니다(단계 메모와 rewrite 로그 참고). 타입 정보가 필요한 레시피는 그 "
-        "파일을 건너뛰었고, 빌드에서 드러난 오류는 빌드 오류 수정 단계에서 처리했습니다.",
+        "파일을 건너뛰었고, 그 때문에 생기는 오류는 빌드에서 드러납니다.",
     "web.xml servlets / filters / listeners / error pages were turned into a generated WebXmlRegistrations "
     "@Configuration in the boot module (web.xml itself is not read by Spring Boot) — verify the mappings in the "
     "Handover":
@@ -1170,6 +1172,30 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
       r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\)$"),
      (r"JSP에 javax 참조가 남아 있습니다(파일 \g<n>개). page import / 스크립틀릿 / useBean의 javax EE 이름을 jakarta.*로 "
       r"바꿔 주세요(빌드는 통과하지만 Tomcat 10 이상에서 실행하면 실패합니다).")),
+    ((r"^JSP javax references remain \((?P<n>\d+) files?\) — rename the javax EE names in page imports / scriptlets "
+      r"/ useBean to jakarta\.\* \(Tomcat 10\+ fails at runtime on them\); `layout\.jsp_jakarta_rename` is off$"),
+     (r"JSP에 javax 참조가 남아 있습니다(파일 \g<n>개). page import / 스크립틀릿 / useBean의 javax EE 이름을 jakarta.*로 "
+      r"바꿔 주세요(Tomcat 10 이상에서 실행하면 실패합니다). `layout.jsp_jakarta_rename` 설정이 꺼져 있습니다.")),
+    ((r"^JSP javax references remain \((?P<n>\d+) files?\) — rename the javax EE names in page imports / scriptlets "
+      r"/ useBean to jakarta\.\* \(Tomcat 10\+ fails at runtime on them\)$"),
+     (r"JSP에 javax 참조가 남아 있습니다(파일 \g<n>개). page import / 스크립틀릿 / useBean의 javax EE 이름을 jakarta.*로 "
+      r"바꿔 주세요(Tomcat 10 이상에서 실행하면 실패합니다).")),
+    # 프레임워크 실행에서 OpenRewrite가 읽지 못해 변환되지 않은 파일의 줄(Orchestrator._report_parse_problems)
+    (r"^OpenRewrite could not read (?P<n>\d+) source file\(s\) \((?P<f>.+)\): the JDK 21 / Jakarta recipes skipped "
+     r"them, so they are not converted — check and convert them by hand$",
+     lambda m: (f"OpenRewrite가 읽지 못한 소스 파일이 {m.group('n')}개 있습니다: {m.group('f')}. "
+                f"{'이 파일에는' if m.group('n') == '1' else '이 파일들에는'} JDK 21, Jakarta 변환이 적용되지 않았습니다. "
+                "직접 확인해 변환해 주세요.")),
+    # 로그에 요약 줄만 있어 파일 이름을 모르는 경우. 개수 없이 rewrite 로그를 가리킨다
+    (r"^OpenRewrite could not read some source files \(their names are in the rewrite log (?P<log>`[^`]+`)\): the "
+     r"JDK 21 / Jakarta recipes skipped them, so they are not converted — check and convert them by hand$",
+     r"OpenRewrite가 읽지 못한 소스 파일이 있습니다. 파일 이름은 rewrite 로그 \g<log>에 있습니다. 이 파일들에는 "
+     r"JDK 21, Jakarta 변환이 적용되지 않았습니다. 직접 확인해 변환해 주세요."),
+    # 레시피가 Maven 메타데이터를 받지 못해 버전 문자열이 남은 줄(Orchestrator._report_unresolved_versions)
+    (r"^the recipe run could not download Maven metadata \(proxy / rate limit\): literal versions (?P<v>.+) remain in "
+     r"(?P<p>.+) — re-run sbmig later or set the versions by hand$",
+     r"레시피를 실행할 때 Maven 메타데이터를 받지 못해(프록시나 요청 제한) \g<p>에 해석되지 않은 버전 문자열(\g<v>)이 "
+     r"남았습니다. 나중에 sbmig를 다시 실행하거나 버전을 직접 정해 주세요."),
     # reactor에 중복으로 나열된 모듈을 정리한 줄. sbmig/analyze/aggregator.py의 reactor_followups 문장을 바꾸면 함께 바꾼다
     ((r"^(?P<d>.+?) was listed (?:twice|\d+ times) in the reactor \((?P<poms>[^)]+)\); the (?P<a>.+?) listings? "
       r"(?:was|were) removed so Maven can build — if (?P<b>.+?) is meant to be built on its own, add (?P=d) back "

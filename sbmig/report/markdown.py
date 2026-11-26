@@ -45,7 +45,7 @@ from .handover import (
     unknown_jars_system,
 )
 from .i18n import normalize, tr, tr_line
-from .result_line import conversion_only_failed, report_result_line, run_scope
+from .result_line import conversion_complete, conversion_only_failed, report_result_line, run_scope
 
 # 플래그별로 보고서 "Flags" 섹션에 쓸 설명. 값이 i18n.py STRINGS의 키이기도 하므로 바꾸면 번역도 함께 바꾼다
 FLAG_HELP = {
@@ -75,8 +75,8 @@ FLAG_HELP = {
                                    "recipe changed the code, the restructure replaced the parent and the fix loop did "
                                    "the rest (see the Handover)",
     "rewrite-parse-problems": "OpenRewrite could not parse some source files (see the phase notes / rewrite log): "
-                              "recipes that need type information skipped them; the fix loop covered what the build "
-                              "found",
+                              "recipes that need type information skipped them; what that leaves shows up in the "
+                              "build",
     "javax-api-on-classpath": "javax EE API jars are still on the resolved classpath after the migration (section "
                               "\"javax API jars still on the classpath\"): the direct dependencies that drag them in "
                               "are compiled against javax and need Jakarta builds",
@@ -340,11 +340,20 @@ def converted_nothing(r: RunReport) -> bool:
 
 
 def result_label(r: RunReport, lang: str = "en") -> str:
-    """머리 표의 결과 칸을 만든다. 빌드는 통과했지만 변환이 실패한 실행은 그렇다고 쓴다."""
+    """머리 표의 결과 칸을 만든다. 빌드는 통과했지만 변환이 실패한 실행은 그렇다고 쓴다.
+    사내 프레임워크 실행이 변환을 마쳤으면 빌드가 실패해도 변환 완료로 쓴다.
+
+    Order: NOT CONVERTED first, then BUILD SUCCESS, then CONVERTED when `conversion_complete` holds, else NOT
+    BUILDING. Only the label moves; the error sections, `SBMIG-RESULT` and the exit code stay.
+    Contract: docs/INTERFACES.md "v2.1z-ck"."""
     # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
     if converted_nothing(r):
         return tr(lang, "❌ NOT CONVERTED (the build passed)")
-    return tr(lang, "✅ BUILD SUCCESS") if r.success else tr(lang, "❌ NOT BUILDING")
+    if r.success:
+        return tr(lang, "✅ BUILD SUCCESS")
+    if conversion_complete(r):
+        return tr(lang, "✅ CONVERTED (the build does not pass)")
+    return tr(lang, "❌ NOT BUILDING")
 
 
 def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
@@ -1493,7 +1502,11 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     L += intake_notice_lines(r, lang)       # Ant 거부이면 회사 안내 문구를 보고서 첫 줄에 둔다
     L.append("| | |")
     L.append("|---|---|")
-    L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))
+    if not r.success and conversion_complete(r):
+        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있으므로 최종 빌드 괄호를 덧붙이지 않는다
+        L.append(tr(lang, "| **Result** | {ok} |", ok=ok))
+    else:
+        L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))
     # 운영자가 보고서만 보고도 옮겨 적을 수 있도록 콘솔 마지막 줄과 같은 SBMIG-RESULT 줄을 머리 표에도 둔다
     L.append(f"| SBMIG-RESULT | `{report_result_line(r)}` |")
     entries = entries_of(r)

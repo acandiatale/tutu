@@ -744,6 +744,20 @@ def _framework_from_report(data: Any) -> dict[str, Any] | None:
     return _framework_entry(prof.get("framework") if isinstance(prof, dict) else None)
 
 
+# 변환 완료로 보여 줄 수 있는 실행의 종료 코드. 종료 코드를 기록하지 않은 실행(None)도 완료로 보여 준다
+_CONVERTED_EXIT_CODES = (0, 2)
+
+
+def _conversion_done(data: Any) -> bool:
+    # 보고서 모양이 이상해도 상태 응답이 실패하지 않도록 판정 중 예외는 변환을 마치지 않은 것으로 본다
+    from sbmig.report.result_line import conversion_complete
+    try:
+        return conversion_complete(data) is True
+    except Exception:  # noqa: BLE001 - 상태 응답은 이 표시 때문에 실패하면 안 된다
+        log.debug("conversion_complete not decidable from the report", exc_info=True)
+        return False
+
+
 @dataclass
 class _JournalScan:
     # 실행 하나의 저널을 어디까지 읽었는지와 찾은 프레임워크 이벤트를 담는다
@@ -2416,6 +2430,12 @@ class RunManager:
                 framework = _framework_from_report(data)
                 from_report = True
                 info["success"] = data.get("success")
+                # 사내 프레임워크 실행이 JDK 21, Jakarta 변환을 마쳤으면 빌드가 실패해도 화면이 완료로 보여 준다
+                # 보고서를 쓴 뒤 다른 종료 코드로 끝난 파드(137 등)는 완료로 보이지 않게 한다
+                ec = info.get("exit_code")
+                ec_ok = ec is None or (type(ec) is int and ec in _CONVERTED_EXIT_CODES)
+                if info.get("flow") != FLOW_REMEDIATION and ec_ok and _conversion_done(data):
+                    info["conversion_complete"] = True
                 # 목록이 아닌 값은 없는 것으로 본다
                 info["blocked"] = len(_report_list(data, "blocked"))
                 info["unresolved"] = len(_report_list(data, "unresolved"))

@@ -327,6 +327,7 @@ class Orchestrator:
         self.abort_reason: str | None = None   # 이번 실행에서 처음 `_abort`한 사유
         self._run_steps: list[PlanStep] = []   # step_plan이 덧붙인 verify.build까지 포함한 실행 단계
         self._verify_done: list[str] = []      # 최종 빌드 결과가 나온 verify 단계 id
+        self._parse_problem_files: set[str] = set()   # 변환되지 않은 파일로 이미 알린 소스 파일
         self._flow = FLOW_FULL                 # 현재 실행 방식(full 또는 remediation). _run_guard가 정한다
         self._source = source                  # remediation 실행의 입력 ZIP이나 폴더. None이면 저널의 intake 줄에서 읽는다
         self._remediation_components = remediation_components
@@ -488,6 +489,7 @@ class Orchestrator:
         self._verify_results = []
         self._rewrite_failures = []
         self._verify_done = []
+        self._parse_problem_files = set()
         self._run_steps = []
         self._review_usage = {}
         self._restructure_results = []
@@ -2164,15 +2166,47 @@ class Orchestrator:
 
     def _report_parse_problems(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
         """OpenRewrite가 파싱하지 못한 소스 파일을 플래그, 단계 메모, WARNING으로 남긴다.
-        그 때문에 생기는 빌드 오류는 수정 스크립트가 처리한다."""
+        전체 이관에서는 그 때문에 생기는 빌드 오류를 수정 스크립트가 처리한다.
+        사내 프레임워크 실행에서는 변환되지 않은 파일이므로 직접 확인하라는 후속 조치를 한 줄 남긴다.
+
+        The follow-up names only files no earlier step of this run named (an MSA plan has one rewrite step per
+        service), first 5 by name and `+N`; a full run gets no follow-up (its fix loop covers those files).
+        `PARSE_PROBLEMS_UNKNOWN` (the log had only the plugin's summary line) is never a file name: it gets its own
+        line without a count that names the step's rewrite log (run-dir relative), deduplicated by text.
+        Contract: docs/INTERFACES.md "v2.1z-ck"."""
         files = [str(f) for f in (getattr(res, "parse_problems", None) or [])]
         self.ws.journal({"event": "rewrite_parse_problems", "step": step.id, "files": files,
                          "log": getattr(res, "log_path", None)})
         self._flag(self.PARSE_PROBLEMS_FLAG)
         shown = ", ".join(files[:5]) + (f", … (+{len(files) - 5})" if len(files) > 5 else "")
+        tail = ("the build shows what follows" if self.no_fix_loop else "the fix scripts cover what the build finds")
         pr.notes.append(f"{step.id}: OpenRewrite could not parse {len(files)} source file(s) ({shown}) — recipes "
-                        "that need type information skipped them; the fix scripts cover what the build finds")
+                        f"that need type information skipped them; {tail}")
         log.warning("%s: rewrite parse problems in %d file(s): %s", step.id, len(files), shown)
+        if not self.reduced_scope or self.report is None:
+            return
+        # 변환만 하는 실행에서는 건너뛴 파일이 그대로 결과에 남으므로 요청 담당자가 볼 후속 조치로 남긴다
+        from sbmig.rewrite.runner import PARSE_PROBLEMS_UNKNOWN
+        lines: list[str] = []
+        new = [f for f in dict.fromkeys(files) if f != PARSE_PROBLEMS_UNKNOWN and f not in self._parse_problem_files]
+        if new:
+            self._parse_problem_files.update(new)
+            listed = ", ".join(new[:5]) + (f", … (+{len(new) - 5})" if len(new) > 5 else "")
+            lines.append(f"OpenRewrite could not read {len(new)} source file(s) ({listed}): the JDK 21 / Jakarta "
+                         "recipes skipped them, so they are not converted — check and convert them by hand")
+        # 로그에 요약 줄만 있으면 파일 이름을 모르므로 개수 없이 그 단계의 rewrite 로그를 가리킨다
+        if PARSE_PROBLEMS_UNKNOWN in files:
+            # 보고서를 읽는 사람이 실행 폴더에서 찾을 수 있도록 실행 폴더 기준 경로로 쓴다. 로그가 없으면 logs/를 가리킨다
+            where = str(getattr(res, "log_path", None) or "").replace("\\", "/")
+            base = str(getattr(self.ws, "run_dir", "") or "").replace("\\", "/").rstrip("/")
+            if base and where.startswith(base + "/"):
+                where = where[len(base) + 1:]
+            lines.append(f"OpenRewrite could not read some source files (their names are in the rewrite log "
+                         f"`{where or 'logs/'}`): the JDK 21 / Jakarta recipes skipped them, so they are not "
+                         "converted — check and convert them by hand")
+        for fu in lines:
+            if fu not in self.report.manual_followups:
+                self.report.manual_followups.append(fu)
 
     @staticmethod
     def _http_blocked_text(res: Any) -> bool:

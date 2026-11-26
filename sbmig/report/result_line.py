@@ -268,6 +268,77 @@ def conversion_only_failed(report: Any) -> bool:
     return run_scope(report) is not None
 
 
+HOLLOW_REACTOR = "hollow-reactor"
+
+
+def _field(obj: Any, name: str) -> Any:
+    # 보고서 객체(RunReport)와 report.json에서 읽은 dict에서 같은 이름의 값을 꺼낸다
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def conversion_complete(report: Any) -> bool:
+    """사내 프레임워크 실행이 JDK 21, Jakarta 변환을 끝냈는지 확인한다. 화면과 보고서가 이 실행을 완료로 표시하는 조건이다.
+    최종 빌드가 실패해도 True이고, 종료 코드와 ``build=`` 값은 이 함수와 무관하다. 아래를 모두 만족해야 True다.
+    - 줄인 범위(``jdk-jakarta``)로 계획한 이관 실행이다
+    - 중단되지 않았다
+    - 계획한 자동 변환 단계마다 실행 결과가 있고 실패한 변환이 없다
+    - 소스가 없는 reactor가 아니다
+    - 최종 빌드를 시도한 결과가 있다
+    RunReport와 report.json에서 읽은 dict를 모두 받는다. 읽을 수 없는 값은 조건을 만족하지 않은 것으로 보고 예외를 던지지 않는다.
+
+    One rule for every place that words the outcome of such a run: the page (`status()["conversion_complete"]`),
+    the admin page (result word `converted`), both report renderers and the console summary. A run with
+    `success` true satisfies it too; the readers use it only when the build failed. Derived from what a report
+    already stores (`flow`, `plan.scope`, `plan.steps`, `flags`, `phases[].rewrite_results[]`, `final_build`), so
+    a report written before this rule existed is judged the same way.
+    - "Every planned step": the number of rewrite results that are not dry runs must reach the number of planned
+      `openrewrite` steps that carry recipes (one result per executed step; a step skipped for the time budget
+      records none, which matters for an MSA plan with one step per service).
+    - Files OpenRewrite could not parse and JSP files the rename step could not change are follow-ups named in
+      the report, as in a successful full run; they do not make the rule false.
+    Contract: docs/INTERFACES.md "v2.1z-ck"."""
+    if _field(report, "flow") == "remediation":
+        return False
+    plan = _field(report, "plan")
+    if plan is None or _field(plan, "scope") != REDUCED_SCOPE:
+        return False
+    raw_flags = _field(report, "flags")
+    # 목록이 아닌 플래그 값은 읽을 수 없는 보고서다. 문자열을 글자 단위로 읽어 플래그가 없다고 판단하지 않는다
+    if not isinstance(raw_flags, (list, tuple)):
+        return False
+    flags = [f for f in raw_flags if isinstance(f, str)]
+    if any(f == "aborted" or f.startswith("aborted:") or f == "mvn-not-found" for f in flags):
+        return False
+    if REWRITE_FAILED in flags or HOLLOW_REACTOR in flags:
+        return False
+    # 최종 빌드는 성공 여부가 적힌 결과여야 한다. 통과했는지는 보지 않는다
+    if not isinstance(_field(_field(report, "final_build"), "ok"), bool):
+        return False
+    steps = _field(plan, "steps")
+    # 종류를 읽을 수 없는 단계가 있으면 계획한 변환 단계를 셀 수 없다
+    if not isinstance(steps, list) or any(not _kind(st) for st in steps):
+        return False
+    planned = sum(1 for st in steps if _kind(st) == "openrewrite" and _field(st, "recipes"))
+    phases = _field(report, "phases")
+    converted = 0
+    for pr in phases if isinstance(phases, list) else []:
+        results = _field(pr, "rewrite_results")
+        for res in results if isinstance(results, list) else []:
+            if _field(res, "dry_run"):
+                continue
+            if _field(res, "ok") is not True:
+                return False
+            converted += 1
+    # 서비스마다 변환 단계가 있는 계획에서 한 단계라도 결과가 없으면 변환을 끝낸 것이 아니다
+    return converted >= max(planned, 1)
+
+
+def _kind(step: Any) -> str:
+    # 계획 단계의 종류를 문자열로 반환한다. 객체에서는 StepKind, dict에서는 문자열이다
+    kind = _field(step, "kind")
+    return str(getattr(kind, "value", kind) or "")
+
+
 def run_scope(report: Any) -> Optional[str]:
     """실행 범위를 반환한다. JDK와 jakarta만 적용한 사내 프레임워크 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
     계획이 있으면 계획의 범위를 쓰고, 계획 전에 끝난 실행은 프로필의 검사 결과를 쓴다."""

@@ -25,6 +25,7 @@ from .errors import (
 )
 from .i18n import normalize
 from .markdown import BLOCKED_TITLE, blocked_count_line, converted_nothing, group_by_file, render_markdown
+from .result_line import conversion_complete
 
 log = logging.getLogger("sbmig.report")
 
@@ -118,6 +119,8 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     ok = "[bold green]BUILD SUCCESS[/]" if report.success else "[bold red]NOT BUILDING[/]"
     if converted_nothing(report):        # 빌드는 통과했지만 변환이 실패한 프레임워크 실행
         ok = "[bold red]NOT CONVERTED (the build passed)[/]"
+    elif not report.success and conversion_complete(report):    # 변환을 마친 프레임워크 실행은 빌드가 실패해도 변환 완료다
+        ok = "[bold yellow]CONVERTED (the build does not pass)[/]"
     # cp949 콘솔(Windows, 리다이렉트, 작업 스케줄러)은 em dash나 체크 표시를 출력하지 못하므로 콘솔 줄은 ASCII로 쓴다.
     # CLI도 stdout / stderr에 errors="replace"를 건다
     console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) - {ok}   run {report.run_id}")
