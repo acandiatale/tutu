@@ -1,19 +1,15 @@
-"""web.xml을 ``WebXmlModel``로 파싱하는 모듈.
-서블릿, 필터, 리스너, 세션 타임아웃, error-page, context-param 등을 읽는다.
-소스 스캐너가 호출해 개수를 ``SourceStats.web_xml_*``에 남기고, 재구성은 외장 Tomcat의 web.xml 설정이 Boot
-앱에서 빠지지 않도록 이 모델로 등록 코드(``WebXmlRegistrations``)를 만든다.
-- :func:`parse_web_xml`은 예외를 던지지 않고 문제를 ``warnings``에 남긴다
-- 버전과 상관없이 요소를 로컬 이름으로만 비교한다
-- 폐쇄망이고 XXE를 막아야 하므로 외부 DTD를 내려받지 않는다. 깨진 파일은 lxml 복구 파서로 한 번 더 읽는다
+"""web.xml을 읽어 서블릿, 필터, 리스너 같은 설정을 ``WebXmlModel``로 만드는 모듈.
 
 Namespace-agnostic (DTD 2.2 / 2.3 without a namespace, `java.sun.com` 2.4 / 2.5, `xmlns.jcp.org` 3.x / 4.0,
 `jakarta.ee` 5.0 / 6.x): every element is matched by its local name. The external DTD of a 2.2 / 2.3 descriptor is
 never fetched (lxml: `load_dtd=False`, `no_network=True`, entities not resolved); a malformed file is re-read with
 lxml's recovering parser and, if even that gives no `<web-app>`, a model with a warning is returned.
-`parse_web_xml` never raises.
+`parse_web_xml` never raises. The DTD is never fetched because the network is closed and XXE must be
+blocked.
 
 Used by `sbmig.analyze.source_scanner` (counts in `SourceStats.web_xml_*`) and by the restructure, which renders
-`WebXmlRegistrations` from the model (`layout.web_xml_registrations`).
+`WebXmlRegistrations` from the model (`layout.web_xml_registrations`). The registrations keep the external
+Tomcat's web.xml settings in the Boot app.
 """
 from __future__ import annotations
 
@@ -47,7 +43,7 @@ def _kids(el: Any, name: str) -> list[Any]:
 
 
 def _text(el: Any, name: str) -> Optional[str]:
-    """이름이 ``name``인 첫 자식의 텍스트를 공백을 정리해서 반환한다. 비어 있으면 None을 반환한다."""
+    """이름이 ``name``인 첫 자식의 텍스트를 앞뒤 공백을 빼고 반환한다. 비어 있으면 None이다."""
     for c in el:
         if _local(c) == name:
             t = "".join(c.itertext()).strip()
@@ -56,7 +52,7 @@ def _text(el: Any, name: str) -> Optional[str]:
 
 
 def _texts(el: Any, name: str) -> list[str]:
-    """이름이 ``name``인 모든 자식의 텍스트를 빈 것을 빼고 반환한다.
+    """이름이 ``name``인 자식마다 텍스트를 모아 반환한다. 빈 것은 뺀다.
     url-pattern처럼 여러 번 나오는 요소에 쓴다."""
     out = []
     for c in el:
@@ -91,8 +87,8 @@ def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
 
 
 def _parse_root(text: str, warnings: list[str]) -> Any:
-    """루트 요소를 반환한다. 엄격한 파서가 실패하면 복구 파서로 읽고, 그래도 안 되면 None을 반환한다."""
-    # 인코딩 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않도록 디코딩된 텍스트에서 XML 선언을 뗀다
+    """루트 요소를 반환한다. 엄격한 파서가 실패하면 복구 파서로 다시 읽는다. 그래도 안 되면 None이다."""
+    # 디코딩한 텍스트에서 XML 선언을 떼고 UTF-8로 넘긴다. 선언된 인코딩과 바이트가 어긋나면 파싱이 깨진다
     data = xml_without_declaration(text).encode("utf-8")
     strict = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
                              huge_tree=False)
@@ -112,7 +108,7 @@ def _parse_root(text: str, warnings: list[str]) -> Any:
 
 
 def _spec(root: Any, text: str) -> Optional[str]:
-    """서블릿 스펙 버전을 구한다.
+    """서블릿 스펙 버전을 반환한다. 찾지 못하면 None이다.
     ``<web-app version=…>`` 속성, 텍스트, DTD 파일 이름(``web-app_2_3.dtd``) 순으로 본다."""
     v = root.get("version") if root is not None else None
     if v:
@@ -128,7 +124,8 @@ def _spec(root: Any, text: str) -> Optional[str]:
 
 def parse_web_xml(text: str, path: str) -> WebXmlModel:
     """web.xml 하나를 파싱한다. ``path``는 모델에 기록만 한다.
-    잘못된 파일 하나로 분석과 재구성이 멈추면 안 되므로 예외를 던지지 않고 문제는 ``WebXmlModel.warnings``에 남긴다."""
+    예외를 던지지 않는다. 문제는 ``WebXmlModel.warnings``에 남긴다.
+    파일 하나 때문에 분석과 재구성이 멈추면 안 된다."""
     try:
         return _parse(text or "", path)
     except Exception as e:  # noqa: BLE001

@@ -1,10 +1,9 @@
-"""Maven 빌드 실행, 빌드 로그 파싱, 오류 서명(L1 / L2) 계산, 빌드 관련 정보 조회를 모은 패키지.
-검증 빌드, 수정 루프의 재빌드, 최종 빌드는 모두 ``MavenRunner``로 실행하고, ``parse_maven_log``가 로그를
-BuildError 목록으로 바꾼다. L2 서명 하나가 케이스 하나다.
-- 진입점: ``MavenRunner``, ``parse_maven_log``, ``signature_for``, ``normalize_message``, ``maven_available``
-- classpath, deptree, effective, repo_versions, depchanges는 패키지에서 다시 내보내지 않으므로 모듈 경로로 import한다
-- 빌드 실패는 예외가 아니라 BuildResult로 반환한다
-- 테스트는 항상 건너뛴다(``build.skip_test_compile``)
+"""Maven 빌드를 실행하고, 빌드 로그에서 오류를 뽑아 오류 서명(L1, L2)을 붙이는 패키지.
+
+The verify build, the fix loop's rebuilds and the final build all run through ``MavenRunner``;
+``parse_maven_log`` turns the log into a list of BuildError. One L2 signature is one case. classpath,
+deptree, effective, repo_versions and depchanges are not re-exported: import them by module path. A failed
+build is a BuildResult, not an exception. Tests are always skipped (``build.skip_test_compile``).
 
 Public API (docs/INTERFACES.md):
     MavenRunner(ws, cfg).run(goal, *, module=None, extra_args=(), label="", skip_test_compile=False,

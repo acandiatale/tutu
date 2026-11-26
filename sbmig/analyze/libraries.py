@@ -1,10 +1,8 @@
-"""규칙 표(``LIBRARY_RULES``)로 프로젝트가 쓰는 라이브러리를 찾아 ``LibraryUsage`` 목록을 만드는 모듈.
-분석기가 프로필의 ``libraries``를 만들 때 호출하고, MSA는 서비스마다 다시 호출한다.
-- 계획, 권고(``knowledge/libraries/advisories.yml``의 ``library`` 키), 수정 스크립트 프롬프트가 이 이름을 읽는다.
-  규칙 이름을 바꾸면 권고가 적용되지 않으므로 바꾸지 않는다
-- 규칙을 추가할 때는 advisories.yml의 ``library``와 이름을 맞춘다
-- 근거 문자열은 ``pom:``, ``pom-managed:``, ``pom-parent:``, ``import:``, ``file:`` 중 하나로 시작한다
+"""프로젝트가 어떤 라이브러리를 쓰는지 규칙 표로 찾는 모듈.
 
+The analyzer calls it for the profile's ``libraries``, and once more per service for MSA. The fix-script
+prompt reads the names too; renaming a rule silently stops its advisory, and a new rule takes the name of
+its ``library`` key in ``knowledge/libraries/advisories.yml``.
 The library *names* are a contract (planner, notes selection, advisories and KB tags rely on them):
 lombok, mapstruct, querydsl, spring-security, spring-data-jpa, spring-data-redis, spring-kafka, spring-batch,
 spring-cloud, hibernate, mybatis, jpa, springdoc, springfox, feign, jackson, junit4, junit5, mockito,
@@ -49,8 +47,8 @@ _SC = "org.springframework.cloud"
 
 @dataclass(frozen=True)
 class LibraryRule:
-    """라이브러리 탐지 규칙 하나를 담는 클래스.
-    근거로 볼 의존성, import, JSP, 설정 파일, dependencyManagement, 부모 패턴을 담는다."""
+    """라이브러리 하나를 알아보는 규칙을 담는 클래스.
+    의존성, import, JSP, 설정 파일, dependencyManagement, 부모 pom 중 무엇을 근거로 볼지 정한다."""
     name: str
     deps: tuple[str, ...] = ()        # "group:artifact-glob", 양쪽 모두 fnmatch로 비교한다
     imports: tuple[str, ...] = ()     # import 접두어, 패키지 경계에서만 비교한다
@@ -60,7 +58,7 @@ class LibraryRule:
     parents: tuple[str, ...] = ()     # 부모 pom 패턴
 
 
-# 규칙 표. 이 순서대로 결과가 나온다. import 접두어는 패키지 경계에서만 비교하므로 짧은 접두어도 안전하다
+# 규칙 표. 결과도 이 순서로 나온다. import 접두어는 패키지 경계에서만 비교해서 짧게 써도 된다
 LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("lombok", ("org.projectlombok:lombok",), ("lombok",)),
     LibraryRule("mapstruct", ("org.mapstruct:mapstruct", "org.mapstruct:mapstruct-*"), ("org.mapstruct",)),
@@ -162,22 +160,22 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
                 ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
     # JDK 내부 패키지나 JDK에서 빠진 패키지. import만 본다
     LibraryRule("jdk-removed-apis", (), ("sun.misc", "sun.security", "com.sun.image", "javax.activation")),
-    # JDK 9에서 javax.swing.tree가 제네릭으로 바뀌어 이전 코드가 javac 21에서 추론 오류를 낸다. import만 본다
+    # javax.swing.tree는 JDK 9에서 제네릭으로 바뀌었다. 이전 코드는 javac 21에서 추론 오류가 난다. import만 본다
     # javac 21: "inference variable T has incompatible equality constraints"
     LibraryRule("jdk-generified-apis", (), ("javax.swing.tree",)),
-    # iBATIS 2는 코드로 고칠 수 없는 경우가 많으므로 감지해서 인수인계에 남긴다
+    # iBATIS 2는 코드로 고치기 어려운 경우가 많다. 찾아서 인수인계에 남긴다
     # MyBatis 3과 달리 com.ibatis import와 ibatis-* 아티팩트로 본다. 스캔 결과에 XML 내용이 없어 빈 설정은 보지 않는다
     LibraryRule("ibatis2", ("org.apache.ibatis:ibatis-sqlmap", "org.apache.ibatis:ibatis-core",
                             "org.apache.ibatis:ibatis*", "ibatis:ibatis*", "com.ibatis:*"),
                 ("com.ibatis", "org.springframework.orm.ibatis")),
-    # hibernate-core 6.x까지 따라오던 jar라 pom 없이 컴파일됐지만 Hibernate ORM 7에서 빠져 패키지 없음 오류가 난다
-    # 같은 import로 `hibernate` 규칙도 맞는다. 이 규칙은 빠진 jar 이름을 알려 주기 위한 것이다
+    # hibernate-core 6.x까지는 따라오던 jar라 pom에 없어도 컴파일됐다. Hibernate ORM 7에서 빠져 패키지 없음 오류가 난다
+    # 같은 import로 `hibernate` 규칙도 맞는다. 이 규칙은 빠진 jar 이름을 알려 주려고 둔다
     LibraryRule("hibernate-commons-annotations", ("org.hibernate.common:hibernate-commons-annotations",
                                                   "org.hibernate:hibernate-commons-annotations"),
                 ("org.hibernate.annotations.common",)),
     # ---- 오래된 라이브러리 규칙: advisories.yml과 knowledge/notes/era-libraries.md에 같은 이름의 권고가 있다
-    # import는 패키지 경계로 비교하므로 collections는 collections4에, dbcp는 dbcp2에, axis는 axis2에 맞지 않는다
-    # spring-orm은 JPA 프로젝트마다 있으므로 hibernate-template은 import만 본다. Spring 7에서 HibernateTemplate이 빠졌다
+    # import는 패키지 경계로 비교한다. 그래서 collections는 collections4에, dbcp는 dbcp2에, axis는 axis2에 맞지 않는다
+    # hibernate-template은 import만 본다. spring-orm은 JPA 프로젝트마다 있다. HibernateTemplate은 Spring 7에서 빠졌다
     LibraryRule("hibernate-template", (), ("org.springframework.orm.hibernate3", "org.springframework.orm.hibernate4",
                                            "org.springframework.orm.hibernate5")),
     LibraryRule("commons-fileupload", ("commons-fileupload:commons-fileupload",),
@@ -202,7 +200,7 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
                 ("org.apache.struts2", "com.opensymphony.xwork2")),
     LibraryRule("egovframe", ("egovframework.rte:*", "org.egovframe.rte:*"), ("egovframework.rte", "org.egovframe.rte")),
     LibraryRule("dbcp1", ("commons-dbcp:commons-dbcp",), ("org.apache.commons.dbcp",)),
-    # QueryDSL의 Hibernate 전용 API는 Hibernate 6, 7과 맞지 않는다. 일반 JPAQueryFactory는 문제없으므로 import만 본다
+    # QueryDSL의 Hibernate 전용 API는 Hibernate 6, 7과 맞지 않는다. JPAQueryFactory는 괜찮아서 import만 본다
     LibraryRule("querydsl-hibernate-native", (), ("com.querydsl.jpa.hibernate",)),
 )
 
@@ -228,9 +226,9 @@ def _concrete(v: Optional[str]) -> Optional[str]:
 
 def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                      imports: Optional[Counter] = None) -> list[LibraryUsage]:
-    """pom, import, JSP, 설정 파일에서 규칙마다 근거를 모아 근거가 있는 라이브러리만 ``LibraryUsage``로 반환한다.
-    버전은 처음 맞은 의존성의 버전이고, 없으면 dependencyManagement의 버전이다.
-    ``scan``과 ``imports``가 모두 없으면 pom 근거만 본다."""
+    """프로젝트가 쓰는 라이브러리를 근거와 함께 반환한다. 근거가 하나도 없는 규칙은 빠진다.
+    버전은 처음 맞은 의존성의 버전이다. 의존성에 버전이 없으면 dependencyManagement의 버전을 쓴다.
+    ``scan``과 ``imports``가 모두 없으면 pom만 본다."""
     poms = list(poms)
     deps = [d for p in poms for d in p.dependencies]
     managed = [d for p in poms for d in p.dependency_management]
@@ -250,7 +248,7 @@ def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                         evidence.append(ev)
                     if version is None:
                         version = _concrete(d.version)
-        # 의존성에 버전이 없으면 부모나 BOM이 관리하는 것이므로 dependencyManagement의 버전을 쓴다
+        # 의존성에 버전이 없으면 부모나 BOM이 관리하는 버전이다. dependencyManagement에서 가져온다
         if evidence and version is None:
             for pattern in rule.deps:
                 for d in managed:

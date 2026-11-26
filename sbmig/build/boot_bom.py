@@ -1,11 +1,11 @@
-"""Maven 없이 ``spring-boot-dependencies:<대상 Boot 버전>`` pom을 읽어 관리 버전과 속성을 구하는 모듈.
-재구성이 effective pom을 얻지 못했을 때 대신 쓰고, 부모의 속성을 덮어쓰는 as-is 속성을 찾을 때도 쓴다.
-- 진입점은 ``load_boot_bom_facts(cfg, version=None)``와 ``BootBomFacts.as_capture()``다
-- 로컬 저장소를 먼저 보고, 없으면 ``RepositoryLookup(cfg).pom_text``로 원격에서 읽는다
-- import BOM은 한 단계만 따라가고, pom은 최대 ``MAX_POMS``개까지 읽는다
-- 예외를 던지지 않는다. 읽지 못하면 빈 결과를 반환하고 ``sources``에 이유를 남긴다
-- pom 파싱과 읽기 함수는 ``sbmig.build.parent_chain``도 같이 쓴다
+"""Maven 없이 Boot BOM(``spring-boot-dependencies``) pom을 읽어 관리 버전과 속성을 구하는 모듈.
 
+The restructure uses it when the effective pom cannot be captured, and to find as-is properties that
+override the parent's. Entry points: ``load_boot_bom_facts(cfg, version=None)`` and
+``BootBomFacts.as_capture()``. The local repository is read first, then ``RepositoryLookup(cfg).pom_text``.
+Import BOMs are followed one level deep; at most ``MAX_POMS`` poms are read. Never raises: an unreadable pom
+gives an empty result with the reason in ``sources``. The pom parsing and reading helpers are shared with
+``sbmig.build.parent_chain``.
 Contract: docs/INTERFACES.md "v2.1o (2)". Remote fetches use the configured repository / mirror / Central
 with `build.repository_timeout_seconds` each. Import BOMs (spring-framework-bom, spring-security-bom,
 jackson-bom, … about 46) have their `${…}` resolved from their own properties plus the Boot BOM's.
@@ -32,9 +32,9 @@ _CACHE: dict[tuple[str, str], BootBomFacts] = {}
 
 
 class BootBomFacts(BaseModel):
-    """Boot BOM 한 버전에서 읽은 정보를 담는 데이터 클래스.
-    ``managed``는 import BOM까지 포함한 g:a별 관리 버전, ``properties``는 치환한 Boot BOM 자신의 속성,
-    ``sources``는 pom마다 읽은 결과나 읽지 못한 이유다."""
+    """Boot BOM 한 버전에서 읽은 정보를 담는 클래스.
+    ``managed``는 g:a별 관리 버전이다. import BOM에서 온 것도 들어 있다.
+    ``properties``는 치환을 마친 Boot BOM 자신의 속성이다. ``sources``에는 pom마다 읽은 결과나 읽지 못한 이유가 있다."""
     version: str = ""
     managed: dict[str, str] = Field(default_factory=dict)
     properties: dict[str, str] = Field(default_factory=dict)
@@ -42,11 +42,11 @@ class BootBomFacts(BaseModel):
 
     @property
     def empty(self) -> bool:
-        """관리 버전과 속성을 하나도 읽지 못했는지 반환한다."""
+        """관리 버전과 속성을 하나도 읽지 못했으면 True를 반환한다."""
         return not self.managed and not self.properties
 
     def as_capture(self) -> dict[str, Any]:
-        """``sbmig.build.effective.load_effective``와 같은 형태의 dict로 바꿔 반환한다.
+        """``sbmig.build.effective.load_effective``와 같은 모양의 dict를 반환한다.
         재구성이 effective pom 대신 그대로 쓸 수 있다."""
         return {"managed": dict(self.managed), "direct": {}, "plugins": {}, "properties": dict(self.properties),
                 "parent": None, "modules": [], "by_module": {}}
@@ -79,8 +79,8 @@ def _text(el: Any, name: str) -> str:
 
 
 class PomSummary(BaseModel):
-    """BOM과 부모 체인 정보 계산에 쓰는 pom 하나의 값을 담는 클래스.
-    좌표, 치환 전 ``<parent>`` 좌표, 속성, dependencyManagement 항목을 담는다.
+    """pom 하나에서 BOM과 부모 체인 계산에 필요한 값을 담는 클래스.
+    좌표, 치환 전 ``<parent>`` 좌표, 속성, dependencyManagement 항목이다.
 
     `managed` rows are (groupId, artifactId, version, type, scope), unresolved."""
     group_id: str = ""
@@ -91,7 +91,7 @@ class PomSummary(BaseModel):
     parent_version: str = ""
     properties: dict[str, str] = Field(default_factory=dict)
     managed: list[tuple[str, str, str, str, str]] = Field(default_factory=list)
-    # <build><extensions>는 상속되어 부모 체인의 확장 하나가 모든 모듈의 빌드를 막을 수 있으므로 원래 좌표를 남긴다
+    # <build><extensions>는 상속된다. 부모 체인의 확장 하나가 모든 모듈의 빌드를 막을 수 있어서 원래 좌표를 남긴다
     extensions: list[tuple[str, str, str]] = Field(default_factory=list)
 
     @property
@@ -102,7 +102,7 @@ class PomSummary(BaseModel):
 
 def parse_pom(text: str) -> PomSummary | None:
     """pom 텍스트를 ``PomSummary``로 파싱한다.
-    ``<project>`` 문서가 아니면 None을 반환한다. 주석은 무시하고 엔티티와 네트워크 접근은 막는다."""
+    ``<project>`` 문서가 아니면 None을 반환한다. 주석은 무시한다. 엔티티 해석과 네트워크 접근은 막는다."""
     try:
         parser = etree.XMLParser(recover=True, remove_comments=True, resolve_entities=False, no_network=True,
                                  huge_tree=True)
@@ -134,8 +134,8 @@ def parse_pom(text: str) -> PomSummary | None:
 
 
 def make_resolver(*layers: dict[str, str]):
-    """``${…}``를 치환하는 함수를 만든다. 앞에 준 속성 묶음이 우선하고, 10단계 중첩까지 푼다.
-    만든 함수는 풀지 못한 값이 남으면 None을 반환한다."""
+    """``${…}``를 치환하는 함수를 만들어 반환한다. 앞에 준 속성 묶음이 우선한다. 중첩은 10단계까지 푼다.
+    그 함수는 다 풀지 못한 값이면 None을 반환한다."""
     merged: dict[str, str] = {}
     for layer in reversed(layers):
         merged.update(layer)
@@ -151,7 +151,7 @@ def make_resolver(*layers: dict[str, str]):
 
 
 def pom_builtins(pom: PomSummary) -> dict[str, str]:
-    """``${…}`` 치환에 쓸 pom 자신의 ``project.version`` / ``project.groupId`` / ``project.artifactId`` 값을 반환한다."""
+    """pom 자신의 ``project.version``, ``project.groupId``, ``project.artifactId`` 값을 반환한다. ``${…}`` 치환에 쓴다."""
     return {k: v for k, v in (("project.version", pom.version), ("project.groupId", pom.group_id),
                               ("project.artifactId", pom.artifact_id), ("version", pom.version)) if v}
 
@@ -160,8 +160,8 @@ def pom_builtins(pom: PomSummary) -> dict[str, str]:
 # pom 읽기
 # ---------------------------------------------------------------------------------------------------------------------
 class PomReader:
-    """로컬 저장소, 원격 저장소 순으로 pom을 최대 ``limit``개까지 읽는 클래스. 예외를 던지지 않는다.
-    원격 조회 객체(``RepositoryLookup``)는 처음 필요할 때 만든다."""
+    """pom을 로컬 저장소에서 먼저 찾고, 없으면 원격 저장소에서 읽는 클래스. 최대 ``limit``개까지 읽는다.
+    예외를 던지지 않는다. 원격 조회 객체(``RepositoryLookup``)는 처음 필요할 때 만든다."""
 
     def __init__(self, cfg: Any, local: Path | None, limit: int = MAX_POMS):
         self.cfg = cfg
@@ -206,7 +206,7 @@ class PomReader:
             log.debug("pom facts: pom_text(%s:%s:%s): %s", g, a, v, e)
             text = None
         if text:
-            # Maven이 settings 미러로 요청하는 URL과 다르면 sbmig는 읽어도 Maven은 404일 수 있으므로 응답한 URL도 남긴다
+            # 응답한 URL도 남긴다. Maven은 settings 미러의 URL로 요청해서, sbmig가 읽은 pom도 Maven에는 404일 수 있다
             source = getattr(lookup, "pom_source", None)
             src = source(g, a, v) if callable(source) else None
             return text, f"repository {src}" if src else "repository"
@@ -279,7 +279,7 @@ def _load(cfg: Any, version: str, local: Path | None) -> BootBomFacts:
 def load_boot_bom_facts(cfg: Any, version: str | None = None) -> BootBomFacts:
     """``spring-boot-dependencies:<version>`` pom에서 관리 버전과 속성을 읽는다.
     ``version``이 없으면 ``target.spring_boot_version``을 쓴다. 예외를 던지지 않는다.
-    성공한 결과만 프로세스 안에 캐시하므로 실패한 버전은 다음 호출에서 다시 읽는다."""
+    성공한 결과만 프로세스 안에 캐시한다. 실패한 버전은 다음 호출 때 다시 읽는다."""
     v = (version or str(getattr(getattr(cfg, "target", None), "spring_boot_version", "") or "")).strip()
     if not v:
         return BootBomFacts(sources=["no Spring Boot version configured (target.spring_boot_version)"])
@@ -297,7 +297,7 @@ def load_boot_bom_facts(cfg: Any, version: str | None = None) -> BootBomFacts:
         else:
             log.info("Boot BOM facts %s unavailable: %s", v, "; ".join(facts.sources) or "-")
         return facts
-    except Exception as e:  # 보조 정보라 재구성을 실패시키지 않는다
+    except Exception as e:  # 보조 정보라서 실패해도 재구성을 멈추지 않는다
         log.debug("Boot BOM facts %s failed: %s: %s", v, type(e).__name__, e, exc_info=True)
         return BootBomFacts(version=v, sources=[f"failed: {type(e).__name__}: {e}"[:200]])
 

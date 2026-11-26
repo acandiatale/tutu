@@ -1,7 +1,9 @@
-"""사내 코드나 에이전트 프레임워크에서 sbmig를 호출할 때 쓰는 진입점 ``migrate(...)`` 모듈(docs/ADAPTERS.md).
+"""사내 코드나 에이전트 프레임워크에서 sbmig를 호출할 때 쓰는 진입점 모듈.
 `sbmig run`과 같은 파이프라인을 실행한다.
-- 회사 쪽 통합이 의존하므로 `sbmig.api.migrate(...)`의 시그니처는 바꾸지 않는다
-- import는 함수 안에서 필요할 때 하므로 `import sbmig.api`는 가볍다
+
+The entry point is ``migrate(...)`` (docs/ADAPTERS.md). Company integrations depend on the signature of
+`sbmig.api.migrate(...)`: never change it. Imports happen inside the functions, so `import sbmig.api` stays
+light.
 
     from sbmig.api import migrate, exit_code
     report = migrate("path/to/project", configs=["config/artifacts.yml"], llm=MyGatewayAdapter())
@@ -16,14 +18,14 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
-# `kb=False`일 때 덧붙이는 kb 설정. 설정에 KB 스위치가 없어 비어 있고, KB는 NullKnowledgeBase로 끈다
-# 이때 저장 스크립트를 재사용하지 않고 KB에 기록하지도 않는다. 실행 디렉토리의 errors.jsonl / errors.md는 그대로 쓴다
+# `kb=False`일 때 덧붙이는 kb 설정. 설정에는 KB를 끄는 스위치가 없어서 비어 있다. KB는 NullKnowledgeBase로 끈다
+# 저장된 스크립트를 재사용하지 않고 KB에 기록하지도 않는다. 실행 디렉토리의 errors.jsonl, errors.md는 그대로 쓴다
 NO_KB_OVERRIDES: dict = {}
 _NO_KB_OVERRIDES = NO_KB_OVERRIDES          # 이전 이름으로 import하는 코드를 위해 남겨 둔다
 
 
 def _merge(base: dict, extra: Mapping) -> dict:
-    """overrides에 kb 설정을 더할 때 쓰기 위해 dict를 깊게 합친다."""
+    """dict를 안쪽까지 합친다. overrides에 kb 설정을 더할 때 쓴다."""
     out = dict(base)
     for k, v in extra.items():
         if isinstance(v, Mapping) and isinstance(out.get(k), dict):
@@ -49,9 +51,9 @@ def migrate(
     components: Optional[Mapping[str, Any]] = None,
     flow: str = "full",
 ) -> "RunReport":
-    """프로젝트 하나(디렉토리 또는 zip)를 `sbmig run`과 같은 파이프라인으로 끝까지 이관하고 RunReport를 반환한다.
+    """프로젝트 하나(디렉토리나 zip)를 `sbmig run`과 같은 파이프라인으로 이관하고 RunReport를 반환한다.
     - ``flow="remediation"``이면 이관 없이 취약점 조치만 한다
-    - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를, ``fixer``에는 사내 수정기(propose_script)를 줄 수 있다
+    - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를 줄 수 있다. ``fixer``에는 사내 수정기(propose_script)를 준다
     - ``stop_after``나 ``flow`` 값이 잘못되었으면 ValueError를 던진다
     - CLI 종료 코드는 ``exit_code(report)``로 얻는다
 
@@ -101,7 +103,7 @@ def migrate(
 
 def exit_code(report: "RunReport") -> int:
     """RunReport를 CLI 종료 코드로 바꾼다.
-    0은 최종 빌드가 성공하고 차단이 없을 때, 2는 차단되었거나 해결하지 못한 오류가 남았을 때, 3은 중단이다."""
+    0은 최종 빌드가 성공하고 차단이 없을 때다. 2는 차단됐거나 해결하지 못한 오류가 남았을 때, 3은 중단이다."""
     from sbmig.cli import run_exit_code
 
     return run_exit_code(report)

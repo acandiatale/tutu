@@ -1,12 +1,11 @@
-r"""as-is 코드가 읽는 설정 키마다 패키지된 리소스가 그 값을 정의하는지 확인하는 모듈.
-외장 Tomcat 앱은 catalina.properties, ``-D``, JNDI ``<Resource>``, web.xml ``<context-param>``,
-``file:`` 속성 파일로 값을 받았다. 실행 jar로 바꾸면 빌드는 통과해도 실행할 때 값이 없어 실패한다.
-``analyze_project``가 ``externalized.enabled``일 때 호출한다. MSA는 서비스별로 검사한다.
-결과 ``profile.properties``는 재구성과 인수인계 보고서에서 쓴다.
-- :func:`scan_properties`: 키마다 ``defined`` / ``defaulted`` / ``external``로 분류한다
-- :func:`load_rules`: 규칙은 코드가 아니라 ``knowledge/config/externalized.yml``에 둔다
-- :func:`filtered_binary_resources`: 필터링되는 리소스 아래의 바이너리 파일을 찾는다
-- 정규식으로 검사한다. 깨지거나 너무 큰 파일은 메모로 남기고 예외를 던지지 않는다
+r"""코드가 읽는 설정 값이 프로젝트 안에 정의돼 있는지 키마다 확인하는 모듈.
+외장 Tomcat이 넣어 주던 값은 실행 jar에 없다. 빌드는 통과해도 실행하면 실패하는 경우를 찾는다.
+
+An external-Tomcat app received values from catalina.properties, ``-D``, JNDI ``<Resource>``, web.xml
+``<context-param>`` and ``file:`` property files. ``analyze_project`` calls :func:`scan_properties` when
+``externalized.enabled``; the result ``profile.properties`` feeds the restructure and the handover report.
+:func:`filtered_binary_resources` finds binary files under filtered resources. Regex-based: a broken or
+oversized file becomes a note, never an exception.
 
 Classification: `defined` (a packaged resource defines it), `defaulted` (every reference carries a code
 default), `external` (nowhere). Container-only keys map to the Boot keys sbmig writes as sentinel placeholders
@@ -88,7 +87,7 @@ _KEY_OK = re.compile(r"^[A-Za-z0-9_.\-\[\]]+$")
 # ---------------------------------------------------------------------------
 @dataclass
 class JndiRule:
-    """JNDI 이름 규칙을 담는 클래스. ``match``(fnmatch)에 맞는 이름의 Boot 키와 안내 문구를 담는다."""
+    """JNDI 이름 규칙을 담는 클래스. ``match``(fnmatch)에 맞는 이름에 쓸 Boot 키와 안내 문구를 담는다."""
     match: str
     boot_keys: list[str] = field(default_factory=list)
     note: str = ""
@@ -96,7 +95,7 @@ class JndiRule:
 
 @dataclass
 class ContextParamRule:
-    """알려진 web.xml context-param 하나의 규칙을 담는 클래스. 건너뛸지 여부, Boot 키, 안내 문구를 담는다."""
+    """web.xml context-param 하나의 규칙을 담는 클래스. 건너뛸지, 어떤 Boot 키로 옮길지, 안내 문구를 담는다."""
     skip: bool = False
     boot_keys: Optional[list[str]] = None
     note: str = ""
@@ -161,18 +160,18 @@ def load_rules(path: Path) -> ExternalizedRules:
 # 보조 함수
 # ---------------------------------------------------------------------------
 def norm_key(key: str) -> str:
-    """Spring 완화 바인딩으로 비교할 수 있게 키를 소문자로 바꾸고 ``-``, ``_``, ``.``를 없앤다.
+    """Spring 완화 바인딩처럼 비교할 수 있게 키를 정규화한다. 소문자로 바꾸고 ``-``, ``_``, ``.``를 없앤다.
     ``db.url``, ``DB_URL``, ``db-url``은 같은 값이 된다."""
     return re.sub(r"[-_.]", "", key.lower())
 
 
 def _segments(key: str) -> list[str]:
-    """``@ConfigurationProperties`` 접두어를 비교하기 위해 키를 점 단위 조각 목록으로 나눈다."""
+    """키를 점 단위로 나눠 반환한다. ``@ConfigurationProperties`` 접두어와 비교할 때 쓴다."""
     return [re.sub(r"[-_]", "", s.lower()) for s in key.split(".") if s]
 
 
 def _strip_java_comments(text: str) -> str:
-    """Java 주석을 지운다. 위치를 줄 번호로 바꿀 수 있도록 주석 안의 줄바꿈은 남긴다.
+    """Java 주석을 지운다. 줄 번호가 바뀌지 않게 주석 안의 줄바꿈은 남긴다.
 
     Same regex as source_scanner's `strip_comments`."""
     return _COMMENT_RE.sub(lambda m: m.group(1) or "\n" * m.group(0).count("\n"), text)
@@ -195,19 +194,19 @@ class _Lines:
         return bisect.bisect_right(self.starts, offset)
 
 
-# 보고서와 KB에 남는 원문에 비밀번호가 드러나지 않도록 password, secret 같은 키의 값을 별표로 가린다
+# password, secret 같은 키의 값은 별표로 가린다. 보고서와 KB에 남는 원문에 비밀번호가 보이면 안 된다
 _SECRET_RE = re.compile(r"(?i)((?:password|passwd|pwd|secret|credential)\w*\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|\S+)")
 
 
 def _raw(text: str) -> str:
-    """``PropertyRef.raw``에 넣을 참조 원문을 만든다. 공백을 정리하고 비밀 값을 가린 뒤 200자까지 남긴다."""
+    """``PropertyRef.raw``에 넣을 원문을 만든다. 공백을 정리하고 비밀 값을 가린 뒤 200자까지만 남긴다."""
     s = re.sub(r"\s+", " ", text).strip()
     s = _SECRET_RE.sub(lambda m: m.group(1) + ('"***"' if m.group(2).startswith(('"', "'")) else "***"), s)
     return s[:200]
 
 
 def _skipped(rel: str) -> bool:
-    """node_modules, .git, Maven 빌드 출력 아래 경로이면 True를 반환한다.
+    """node_modules, .git, 빌드 출력 아래 경로면 True를 반환한다.
     ``target``이라는 자바 패키지는 건너뛰지 않는다."""
     return any(p in SKIP_PARTS for p in rel.replace("\\", "/").split("/")) or is_build_output_path(rel)
 
@@ -222,8 +221,8 @@ def _unescape_java(s: str) -> str:
 
 
 def iter_placeholders(s: str, base: int = 0) -> Iterable[tuple[str, Optional[str], int]]:
-    """``s`` 안의 ``${key[:default]}``마다 (키, 기본값, 위치)를 반환한다. 기본값 안에 중첩된 것도 포함한다.
-    역슬래시로 이스케이프된 ``${x}``는 제외한다. 괄호가 닫히지 않으면 거기서 멈춘다."""
+    """``s`` 안의 ``${key[:default]}``마다 (키, 기본값, 위치)를 반환한다. 기본값 안에 든 것도 반환한다.
+    역슬래시로 이스케이프한 ``${x}``는 뺀다. 괄호가 닫히지 않으면 거기서 멈춘다."""
     i = 0
     n = len(s)
     while True:
@@ -283,10 +282,10 @@ class _Collector:
         self.notes: list[str] = list(rules.notes)
         self.file_locations: list[str] = []          # 외부에서 값을 받는 file:, ${…} 속성 파일 위치
         self.classpath_locations: list[str] = []     # @PropertySource나 플레이스홀더가 가리키는 classpath: 파일
-        # `/WEB-INF/x.properties` 위치의 WEB-INF/ 뒷부분. 재구성이 이 파일을 boot 모듈로 옮기므로 그 키는 정의로 본다
+        # `/WEB-INF/x.properties` 위치의 WEB-INF/ 뒷부분. 재구성이 이 파일을 boot 모듈로 옮겨서 그 키는 정의로 본다
         self.webinf_locations: list[str] = []
         self.profiles: set[str] = set()
-        # @SpringBootTest(properties=…), DynamicPropertyRegistry로 넣은 정의
+        # 테스트 코드가 @SpringBootTest(properties=…), DynamicPropertyRegistry로 넣은 정의
         self.inline_defs: list[tuple[str, str]] = []
         self.container_props: dict[str, set[str]] = defaultdict(set)
         # `log.dir=${LOG_DIR}` 같은 자기 참조의 (정규화 키, 파일). 완화 바인딩으로 LOG_DIR이 log.dir로
@@ -295,13 +294,13 @@ class _Collector:
         self.sys_skip = set(rules.system_property_skip)
 
     def in_filtered(self, rel: str) -> bool:
-        """Maven 리소스 필터링(``<filtering>true``)이 걸린 디렉토리 아래 파일인지 확인한다."""
+        """Maven 리소스 필터링(``<filtering>true``)이 걸린 폴더 아래 파일이면 True를 반환한다."""
         return any(rel == d or rel.startswith(d.rstrip("/") + "/") for d in self.filtered)
 
     def add(self, key: str, source: str, file: str, line: Optional[int], raw: str,
             default: Optional[str] = None) -> None:
         """참조 하나를 기록한다. 같은 참조는 한 번만 기록한다.
-        형식이 맞지 않는 키, 건너뛸 시스템 속성, ``project.*`` 같은 내장 키는 버린다."""
+        키 형식이 맞지 않거나, 건너뛸 시스템 속성이거나, ``project.*`` 같은 내장 키면 버린다."""
         key = key.strip()
         if not key:
             return
@@ -324,7 +323,7 @@ class _Collector:
     def placeholder(self, key: str, default: Optional[str], source: str, file: str, line: int, raw: str,
                     filtered: bool = False) -> None:
         """``${key}`` 하나를 기록한다. ``env.X``는 환경 변수 X로 기록한다.
-        필터링되는 파일의 pom 속성은 빌드 때 Maven이 치환하므로 무시한다."""
+        필터링되는 파일에 있는 pom 속성은 빌드 때 Maven이 치환해서 무시한다."""
         if filtered and (key in self.maven_props or _MAVEN_BUILTIN.match(key)):
             return
         if key.startswith("env."):
@@ -408,7 +407,7 @@ def _lit_or_expr(arg: str) -> str:
 
 def _location(col: _Collector, loc: str, file: str, line: int, raw: str, source: str) -> None:
     """속성 파일 위치 하나를 기록한다.
-    안의 ``${…}``는 참조로, ``classpath:``는 정의 파일 후보로, ``file:``은 외부 경로로 기록한다."""
+    위치 안의 ``${…}``는 참조로 기록한다. ``classpath:``면 정의 파일 후보로, ``file:``이면 외부 경로로 기록한다."""
     loc = loc.strip()
     if not loc:
         return
@@ -424,7 +423,8 @@ def _location(col: _Collector, loc: str, file: str, line: int, raw: str, source:
 
 
 def profile_glob(path: str) -> str:
-    """위치 안의 ``${…}``를 ``*``로 바꾼다. ``config/${env}/app.properties``는 ``config/*/app.properties``가 된다."""
+    """위치 안의 ``${…}``를 ``*``로 바꾼다.
+    ``config/${env}/app.properties``는 ``config/*/app.properties``가 된다."""
     return re.sub(r"\$\{[^}]*\}", "*", path)
 
 
@@ -435,10 +435,11 @@ def _webinf_sub(loc: str) -> Optional[str]:
 
 
 def scan_java(col: _Collector, rel: str, text: str) -> None:
-    """자바 파일 하나에서 설정 참조를 모은다.
-    어노테이션 인자의 ``${…}``, @PropertySource, @ConfigurationProperties, Environment.getProperty,
-    System.getProperty / getenv, JNDI 이름, 프로필을 본다. 테스트의 인라인 속성은 정의로 센다."""
-    # 파일이 수천 개인 프로젝트를 위해 힌트 문자열이 하나도 없으면 정규식 검사를 건너뛴다
+    """자바 파일 하나에서 설정을 읽는 곳을 모은다.
+    어노테이션 인자의 ``${…}``, @PropertySource, @ConfigurationProperties를 본다.
+    Environment.getProperty, System.getProperty / getenv, JNDI 이름, 프로필도 본다.
+    테스트 코드가 직접 넣은 속성은 정의로 센다."""
+    # 힌트 문자열이 하나도 없는 파일은 정규식 검사를 건너뛴다. 파일이 수천 개인 프로젝트도 빨리 끝난다
     if not any(h in text for h in _JAVA_HINTS):
         return
     src = _strip_java_comments(text)
@@ -485,8 +486,8 @@ def scan_java(col: _Collector, rel: str, text: str) -> None:
         ln = lines.line(m.start())
         if recv == "System":
             col.add(key, "system-property", rel, ln, m.group(0), default)
-        # Properties.getProperty 같은 다른 객체의 호출을 세지 않도록 Environment 타입 변수이거나 이름에
-        # env가 들어갈 때만 설정 참조로 센다
+        # Environment 타입 변수이거나 이름에 env가 들어간 변수의 호출만 센다
+        # Properties.getProperty 같은 다른 객체의 호출은 설정 참조가 아니다
         elif recv is None or recv in env_vars or "env" in recv.lower():
             col.add(key, "environment", rel, ln, m.group(0), default)
         if key == "spring.profiles.active":
@@ -522,8 +523,8 @@ def _strings(arg: str) -> list[str]:
 
 
 def _conditional(col: _Collector, rel: str, line: int, body: str, raw: str) -> None:
-    """@ConditionalOnProperty의 ``prefix.name``마다 읽기 참조를 하나씩 기록한다.
-    키가 없어도 정상 상태이므로 기본값이 있는 참조로 기록한다.
+    """@ConditionalOnProperty의 ``prefix.name``마다 참조를 하나씩 기록한다.
+    키가 없는 것도 정상 상태라서 기본값이 있는 참조로 기록한다.
     값을 넣으면 조건이 뒤집히므로 플레이스홀더는 만들지 않는다.
 
     Attributes read: prefix=, name=|value=, matchIfMissing= (only for the pseudo-default text).
@@ -583,9 +584,10 @@ def _jndi_name(name: str) -> str:
 
 
 def scan_xml(col: _Collector, rel: str, text: str, *, web_xml: bool = False, context_xml: bool = False) -> None:
-    """XML 파일 하나에서 설정 참조를 모은다.
-    모든 ``${…}``, web.xml의 context-param / resource-ref / env-entry, context.xml의 ``<Resource>`` /
-    ``<Environment>``, Spring의 JNDI 조회를 본다."""
+    """XML 파일 하나에서 설정을 읽는 곳을 모은다.
+    모든 ``${…}``와 Spring의 JNDI 조회를 본다.
+    web.xml이면 context-param, resource-ref, env-entry도 본다.
+    context.xml이면 ``<Resource>``, ``<Environment>``도 본다."""
     src = _strip_xml_comments(text)
     lines = _Lines(src)
     filtered = col.in_filtered(rel)
@@ -644,7 +646,7 @@ def scan_xml(col: _Collector, rel: str, text: str, *, web_xml: bool = False, con
 # 정의 파일
 # ---------------------------------------------------------------------------
 def parse_properties(text: str) -> list[tuple[str, str, int]]:
-    """.properties 파일을 읽어 (키, 값, 줄) 목록을 반환한다. 구분자, 줄 이음, 주석을 처리한다.
+    """.properties 텍스트를 읽어 (키, 값, 줄 번호) 목록을 반환한다. 역슬래시로 이어 쓴 값은 한 줄로 합치고, 주석 줄은 건너뛴다.
 
     Separators `=`, `:` or whitespace; `\\` continuations; `#` / `!` comments."""
     out: list[tuple[str, str, int]] = []
@@ -680,7 +682,7 @@ def parse_properties(text: str) -> list[tuple[str, str, int]]:
 
 
 def _odd_backslashes(s: str) -> bool:
-    """줄 끝 역슬래시가 홀수 개이면 다음 줄로 이어지는 것으로 보고 True를 반환한다."""
+    """줄 끝 역슬래시가 홀수 개면 다음 줄로 이어지는 줄이다. 그때 True를 반환한다."""
     n = len(s) - len(s.rstrip("\\"))
     return n % 2 == 1
 
@@ -723,10 +725,10 @@ class _Definitions:
     main_segs: list[tuple[list[str], str]] = field(default_factory=list)
     test_segs: list[tuple[list[str], str]] = field(default_factory=list)
     packaged: list[str] = field(default_factory=list)
-    log: list[tuple[str, str, bool]] = field(default_factory=list)    # 추가한 순서대로 (키, 파일, test 여부)
+    log: list[tuple[str, str, bool]] = field(default_factory=list)    # 추가한 순서대로 (키, 파일, test 리소스인지)
 
     def add(self, key: str, file: str, test: bool) -> None:
-        """정의 하나를 추가한다. MSA 서비스별 색인을 다시 만들 수 있도록 ``log``에도 남긴다."""
+        """정의 하나를 추가한다. MSA 서비스별 색인을 다시 만들 수 있게 ``log``에도 남긴다."""
         self.log.append((key, file, test))
         d, segs = (self.test, self.test_segs) if test else (self.main, self.main_segs)
         files = d[norm_key(key)]
@@ -737,7 +739,7 @@ class _Definitions:
     def lookup(self, key: str, include_test: bool) -> list[str]:
         """키를 정의한 파일 목록을 반환한다.
         ``p.*`` 접두어는 그 아래 키가 하나라도 있으면 정의된 것으로 본다.
-        ``include_test``가 True이면 test 리소스도 본다."""
+        ``include_test``가 True면 test 리소스도 본다."""
         if key.endswith(".*"):
             want = _segments(key[:-2])
             pools = [self.main_segs] + ([self.test_segs] if include_test else [])
@@ -757,9 +759,10 @@ class _Definitions:
 
 def _definition_files(ws: Any, col: _Collector) -> tuple[list[str], list[str]]:
     """정의 파일을 (main, test)로 나눠 모은다.
-    resources 바로 아래, ``config/``와 ``META-INF/`` 한 단계, 설정이 이름으로 지정한 ``classpath:`` 위치를 본다.
-    위치가 지정한 WEB-INF 속성 파일도 main 정의로 본다.
-    이름으로 지정했는데 패키지에 없는 파일은 메모로 남긴다."""
+    resources 바로 아래와 그 안의 ``config/``, ``META-INF/`` 바로 아래 파일을 본다.
+    Java나 XML이 ``classpath:``로 지정한 파일도 본다.
+    그렇게 지정된 WEB-INF 속성 파일도 main 정의로 본다.
+    지정했는데 패키지에 없는 파일은 메모로 남긴다."""
     main: list[str] = []
     test: list[str] = []
     all_res: list[str] = []
@@ -769,7 +772,7 @@ def _definition_files(ws: Any, col: _Collector) -> tuple[list[str], list[str]]:
             if not _skipped(rel) and ("src/main/resources/" in rel or "src/test/resources/" in rel):
                 all_res.append(rel)
     located = set(col.classpath_locations)
-    # 위치가 지정한 WEB-INF 속성 파일은 웹 앱과 함께 패키지되므로 그 키는 정의로 본다. `__SET_ME__`로 채우지 않는다
+    # 위치로 지정된 WEB-INF 속성 파일은 웹 앱과 함께 패키지된다. 그 키는 정의로 보고 `__SET_ME__`로 채우지 않는다
     if col.webinf_locations:
         for ext in ("*.properties", "*.yml", "*.yaml"):
             for rel in ws.glob(ext):
@@ -873,8 +876,8 @@ _RESOURCE_RE = re.compile(r"<resource>(.*?)</resource>", re.S)
 
 
 def filtered_resource_dirs(ws: Any, poms: list[PomInfo], col: Optional[_Collector] = None) -> list[str]:
-    """``<build><resources>`` 중 ``<filtering>true``인 디렉토리 목록을 반환한다.
-    그 안의 pom 속성은 빌드 때 Maven이 치환하므로 외부 설정 참조로 보지 않는다."""
+    """``<build><resources>`` 중 ``<filtering>true``인 폴더 목록을 반환한다.
+    그 안에 있는 pom 속성은 빌드 때 Maven이 치환한다. 그래서 외부 설정 참조로 보지 않는다."""
     out: list[str] = []
     for p in poms:
         try:
@@ -901,7 +904,7 @@ def filtered_resource_dirs(ws: Any, poms: list[PomInfo], col: Optional[_Collecto
 # ---------------------------------------------------------------------------
 # 필터링되는 리소스 아래의 바이너리 파일
 # ---------------------------------------------------------------------------
-# 플러그인은 jpg, jpeg, gif, bmp, png만 필터링 없이 복사한다. 나머지 바이너리는 텍스트로 읽혀 빌드가 깨진다
+# 플러그인은 jpg, jpeg, gif, bmp, png만 필터링 없이 복사한다. 나머지 바이너리는 텍스트로 읽혀서 빌드가 깨진다
 # maven-resources-plugin >= 3.2 fails the copy with `MalformedInputException: Input length = 1`;
 # 2.x silently corrupts the file (broken webfonts). The restructure writes these as
 # `<nonFilteredFileExtension>` entries (sbmig/restructure/resources_filtering.py);
@@ -927,8 +930,8 @@ SNIFF_BYTES = 8192
 
 
 def looks_binary(path: Any) -> bool:
-    """확장자를 모르는 리소스가 바이너리인지 내용으로 판단한다.
-    앞 8 KB에 NUL 바이트가 있거나 UTF-8로도 cp949로도 읽히지 않으면 바이너리다.
+    """확장자로 알 수 없는 리소스가 바이너리인지 내용을 보고 정한다.
+    앞 8 KB에 NUL 바이트가 있거나, UTF-8로도 cp949로도 읽히지 않으면 바이너리다.
     읽지 못하면 False를 반환한다. 예외는 던지지 않는다.
 
     Needed for company formats such as `.dmdb` that no extension table lists."""
@@ -953,8 +956,8 @@ PLUGIN_UNFILTERED_DEFAULTS = frozenset({"jpg", "jpeg", "gif", "bmp", "png"})   #
 
 
 def _binary_by_content(name: str) -> bool:
-    """내용을 검사해야 하는 파일이면 True를 반환한다.
-    텍스트 확장자도 아니고 플러그인이 원래 그대로 복사하는 이미지도 아닌 파일이다."""
+    """내용을 열어 봐야 하는 파일이면 True를 반환한다.
+    텍스트 확장자도 아니고, 플러그인이 원래 그대로 복사하는 이미지도 아닌 파일이다."""
     ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
     return ext not in TEXT_RESOURCE_EXTENSIONS and ext not in PLUGIN_UNFILTERED_DEFAULTS
 _RESOURCE_SETS_RE = re.compile(r"<(resources|testResources|webResources)>(.*?)</\1>", re.S)
@@ -991,9 +994,9 @@ def _ant_re(pattern: str) -> "re.Pattern[str]":
 
 
 def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, list, list]]:
-    """``<filtering>true`` 리소스마다 (디렉토리, include 정규식, exclude 정규식)을 반환한다.
-    war의 webResources, copy-resources 실행, profile 안의 리소스도 포함한다.
-    profile이 켜졌을 때 빌드가 깨지는 것보다 확장자 목록이 하나 더 있는 편이 낫기 때문이다.
+    """``<filtering>true`` 리소스마다 (폴더, include 정규식, exclude 정규식)을 반환한다.
+    war의 webResources, copy-resources 실행, profile 안의 리소스도 넣는다.
+    profile이 켜졌을 때 빌드가 깨지는 것보다 확장자가 하나 더 들어가는 편이 낫다.
 
     Unlike `filtered_resource_dirs`, plugins blocks are NOT skipped here. Dirs are root-relative."""
     specs: list[tuple[str, list, list]] = []
@@ -1029,9 +1032,9 @@ def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, li
 def filtered_binary_resources(ws: Any, poms: list[PomInfo],
                               extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS, *,
                               limit: int | None = MAX_BINARY_RESOURCES) -> list[str]:
-    """필터링되는 리소스 아래의 바이너리 파일 목록을 정렬해서 반환한다. 예외를 던지지 않는다.
-    알려진 바이너리 확장자이거나 :func:`looks_binary`가 True인 파일이 대상이다.
-    목록은 ``limit``개까지 자른다. ``limit``이 None이면 전부 반환한다.
+    """필터링되는 리소스 아래의 바이너리 파일을 정렬해서 반환한다. 예외를 던지지 않는다.
+    바이너리 확장자이거나 :func:`looks_binary`가 True인 파일이 대상이다.
+    ``limit``개까지만 반환한다. ``limit``이 None이면 전부 반환한다.
 
     includes / excludes of each resource are honoured. The restructure passes `limit=None` because it plans
     the extensions over the whole set; only the list kept for reporting is capped at MAX_BINARY_RESOURCES."""
@@ -1080,9 +1083,8 @@ def _fmt(tpl: str, name: str, leaf: str) -> str:
 def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: ExternalizedRules,
               file_routes: bool, self_defs: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset()
               ) -> PropertyFinding:
-    """키 하나의 공급 경로, 재구성이 플레이스홀더로 쓸 Boot 키, 안내 문구, 상태를 정한다.
-    상태는 ``defined``, ``defaulted``, ``external`` 중 하나다.
-    패키지에 정의가 있으면 ``defined``, 모든 참조에 코드 기본값이 있으면 ``defaulted``다."""
+    """키 하나의 상태를 정한다. 값이 어디서 오는지, 재구성이 어떤 Boot 키로 플레이스홀더를 쓸지, 안내 문구도 정한다.
+    패키지 안에 정의가 있으면 ``defined``다. 모든 참조에 코드 기본값이 있으면 ``defaulted``, 아니면 ``external``이다."""
     sources = {r.source for r in refs}
     test_only = all(r.scope == "test" for r in refs)
     boot_keys: list[str] = [key]
@@ -1133,7 +1135,7 @@ def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: Exte
         supplied_by = "property-source:file"
 
     nk = norm_key(key)
-    # 완화 바인딩으로는 ``log.dir=${LOG_DIR}``가 LOG_DIR을 정의한 것처럼 보이므로 자기 참조는 정의로 보지 않는다
+    # 자기 참조는 정의로 보지 않는다. 완화 바인딩으로는 ``log.dir=${LOG_DIR}``가 LOG_DIR을 정의한 것처럼 보인다
     defined_in = [f for f in defs.lookup(key, include_test=test_only) if (nk, f) not in self_defs]
     if not defined_in and boot_keys and boot_keys != [key]:
         per = [defs.lookup(b, include_test=test_only) for b in boot_keys]
@@ -1159,7 +1161,8 @@ def _is_context_xml(rel: str) -> bool:
 
 def scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
                     cfg: Any = None, *, services: Optional[list[ServiceInfo]] = None) -> PropertyInventory:
-    """외부 설정 목록을 만든다. ``services``를 주면 MSA 서비스별로, 없으면 프로젝트 전체로 만든다.
+    """코드가 읽는 설정 키 목록과 각 키의 상태를 만든다.
+    ``services``를 주면 MSA 서비스별로 만들고, 없으면 프로젝트 전체로 만든다.
     예외를 던지지 않는다. 실패하면 ``notes``에 이유를 남긴 빈 목록을 반환한다."""
     try:
         return _scan_properties(ws, poms, scan, rules, cfg, services or [])
@@ -1176,7 +1179,7 @@ def _service_dirs(services: list[ServiceInfo]) -> list[tuple[str, str]]:
 
 def _owner(rel: str, dirs: list[tuple[str, str]]) -> Optional[str]:
     """``rel``이 속한 서비스를 반환한다. 가장 깊은 서비스가 우선한다.
-    어느 서비스에도 속하지 않는 공유 코드이면 None을 반환한다."""
+    어느 서비스에도 속하지 않는 공유 코드면 None을 반환한다."""
     for d, name in dirs:
         if d == "" or rel == d or rel.startswith(d + "/"):
             return name
@@ -1185,7 +1188,7 @@ def _owner(rel: str, dirs: list[tuple[str, str]]) -> Optional[str]:
 
 def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
                      cfg: Any, services: list[ServiceInfo]) -> PropertyInventory:
-    """:func:`scan_properties`의 본체. 자바, XML, 정의 파일 순으로 읽은 뒤 키마다 상태를 정한다."""
+    """:func:`scan_properties`의 본체. 자바, XML, 정의 파일 순서로 읽고 키마다 상태를 정한다."""
     maven_props: set[str] = set()
     for p in poms:
         maven_props.update(p.properties)
@@ -1213,7 +1216,7 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
             continue
         if "src/main/resources/" in rel or "src/main/webapp/WEB-INF/" in rel:
             text = _read(ws, rel, col)
-            # mybatis 매퍼, logback, ehcache는 ${…}를 자체 치환에 쓰므로 Spring XML만 본다
+            # Spring XML만 본다. mybatis 매퍼, logback, ehcache는 ${…}를 자기 방식으로 치환한다
             if text is not None and "springframework.org/schema" in text:
                 xml_files[rel] = (False, False)
     for rel in sorted(xml_files):
@@ -1233,7 +1236,7 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
     _bootstrap_note(col, main_files, poms)
 
     dirs = _service_dirs(services)
-    # 다른 서비스의 application.yml은 이 서비스에 적용되지 않으므로 서비스 안의 참조는 그 서비스의 정의로만 판단한다
+    # 서비스 안의 참조는 그 서비스의 정의로만 판단한다. 다른 서비스의 application.yml은 적용되지 않는다
     svc_defs: dict[Optional[str], _Definitions] = {None: defs}     # 공유 코드는 모든 서비스의 정의로 판단한다
     if dirs:
         for _, name in dirs:
@@ -1275,7 +1278,7 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
 
 
 def _bootstrap_note(col: _Collector, main_files: list[str], poms: list[PomInfo]) -> None:
-    """bootstrap.* 정의 파일이 있는데 spring-cloud-starter-bootstrap이 없으면 메모를 남긴다.
+    """bootstrap.* 파일이 있는데 spring-cloud-starter-bootstrap 의존성이 없으면 메모를 남긴다.
     Boot 4는 이 의존성 없이는 bootstrap.* 파일을 읽지 않는다."""
     boot = [f for f in main_files if re.match(r"bootstrap(-[\w.-]+)?\.(properties|ya?ml)$", posixpath.basename(f))]
     if boot and not any(d.artifact_id == "spring-cloud-starter-bootstrap" for p in poms for d in p.dependencies):

@@ -1,13 +1,9 @@
-"""시도나 구조 검토 커밋이 pom에서 실제로 바꾼 의존성 좌표를 찾아내는 모듈.
-의존성 버전 정책이 지켜졌는지 확인하는 장치다.
-LLM에게 메이저 업그레이드를 금지해도 실제로는 바뀔 수 있으므로, 빌드는 막지 않고 운영자에게 확인할 내용을 알린다.
-- 수정 루프의 각 시도 뒤와 구조 검토 커밋 뒤에 ``changes_in_commit``을 호출한다
-- major, replaced 변경은 ``major_upgrades``와 운영자 확인 사항이 되어 인수인계 맨 위와 ``SBMIG-RESULT … major=N``에 나온다
-- 메이저 숫자가 바뀌면 ``major``, 라이브러리가 빠지고 대체 라이브러리가 들어오면 ``replaced``, 그 밖은
-  ``minor``, ``added``, ``removed``로 분류한다
-- 이 결과로 무언가를 막거나 되돌리지는 않는다. 보고할 때 되돌려진 시도의 변경은 ``still_applied``로 뺀다
-- 텍스트만 받고 예외를 던지지 않는다. 파싱되지 않는 pom이면 빈 목록을 반환한다
+"""수정 시도나 구조 검토 커밋이 pom에서 실제로 바꾼 의존성 좌표를 찾는 모듈.
+LLM이 금지된 메이저 업그레이드를 했는지 운영자가 확인할 수 있게 알린다.
 
+``changes_in_commit`` runs after every fix-loop try and after the structure review commit. ``major`` and
+``replaced`` changes become ``major_upgrades`` and operator check lines, shown first in the handover and as
+``SBMIG-RESULT … major=N``. Nothing is blocked, reverted or failed because of them.
 docs/INTERFACES.md "v2.1d". The prompt carries the policy (no major upgrade on the LLM's own); this module is
 the read-back guard that notices what really changed, e.g. SiteMesh 2 (`opensymphony:sitemesh:2.4.2`) replaced
 by `org.sitemesh:sitemesh:3.2.1`.
@@ -47,7 +43,7 @@ GUIDE_LINE_MAX = 160
 
 def major_of(version: Optional[str]) -> Optional[int]:
     """Maven 버전의 메이저 숫자를 반환한다.
-    ``${x}``, 빈 값, None, ``RELEASE``, ``LATEST``는 비교할 수 없으므로 None을 반환한다.
+    ``${x}``, 빈 값, None, ``RELEASE``, ``LATEST``처럼 비교할 수 없는 값이면 None이다.
 
     `2.4.2` is 2, `3.3.0-RC1` is 3, `v2.1` is 2."""
     if version is None:
@@ -84,9 +80,8 @@ class _Coord:
 
 
 def _resolver(ed: Any):
-    """``${prop}``을 같은 pom의 ``<properties>``와 ``${project.version}`` 등으로 푸는 함수를 만든다.
-    풀지 못하는 값은 그대로 둔다.
-    버전을 속성으로만 바꾼 시도도 잡아내기 위해 속성을 푼다.
+    """``${prop}``을 푸는 함수를 만들어 반환한다. 같은 pom의 ``<properties>``와 ``${project.version}`` 같은 값을 쓴다.
+    풀지 못하는 값은 그대로 둔다. 속성 값만 바꿔서 버전을 올린 시도도 잡으려고 속성을 푼다.
 
     Nested references are followed up to five levels; `${project.version}` / `${pom.version}` is the pom's
     version or its parent's."""
@@ -137,8 +132,8 @@ def _coords(ed: Any) -> dict[str, list[_Coord]]:
 
 
 def _parse(text: str, path: str) -> Any:
-    """텍스트를 PomEditor로 파싱한다.
-    비어 있거나 pom이 아니면 None을 반환하므로 새로 생긴 pom이나 지운 pom은 비교하지 않는다."""
+    """텍스트를 PomEditor로 파싱한다. 비어 있거나 pom이 아니면 None이다.
+    그래서 새로 생긴 pom과 지운 pom은 비교하지 않는다."""
     if not text or not text.strip():
         return None
     from sbmig.restructure.pom_editor import PomEditor
@@ -178,9 +173,9 @@ def _contains_word(longer: str, shorter: str) -> bool:
 
 
 def _pair_rank(old: _Coord, new: _Coord) -> Optional[int]:
-    """빠진 ``old``를 새 ``new``가 대신한다고 볼 수 있는 정도를 반환한다.
-    0은 같은 artifactId, 1은 단어 포함, 2는 이전 artifactId가 새 groupId의 마지막 부분인 경우다.
-    작을수록 더 가깝고, 관계가 없으면 None을 반환한다."""
+    """빠진 ``old``를 들어온 ``new``가 대신한다고 볼 수 있는 정도를 반환한다. 작을수록 가깝다.
+    0은 같은 artifactId, 1은 한쪽 이름이 다른 쪽을 단어로 포함할 때, 2는 이전 artifactId가 새 groupId의 끝일 때다.
+    관계가 없으면 None이다."""
     oa, na = old.artifact_id.lower(), new.artifact_id.lower()
     if oa == na:
         return 0
@@ -199,8 +194,8 @@ def _note_for(c: _Coord) -> str:
 def _section_changes(section: str, before: list[_Coord], after: list[_Coord], path: str) -> list[DependencyChange]:
     """한 구역의 변경 전후 좌표를 비교한다.
     - 같은 (g, a, classifier)의 버전 변경은 major, minor로 나눈다. classifier만 바뀐 것도 버전 변경으로 본다
-    - 남은 빠진 항목과 들어온 항목은 ``_pair_rank``로 짝지어 replaced로 묶고, 나머지는 removed, added로 둔다
-    - parent는 하나뿐이므로 g:a가 바뀌면 replaced다"""
+    - 남은 빠진 항목과 들어온 항목은 ``_pair_rank``로 짝지어 replaced로 묶는다. 짝이 없으면 removed, added다
+    - parent는 하나뿐이라서 g:a가 바뀌면 replaced다"""
     out: list[DependencyChange] = []
     b_by: dict[tuple, _Coord] = {}
     for c in before:
@@ -209,7 +204,7 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
     for c in after:
         a_by.setdefault(c.ident, c)
 
-    if section == "parent":                               # parent는 하나뿐이므로 g:a가 바뀌면 교체다
+    if section == "parent":                               # parent는 하나뿐이라서 g:a가 바뀌면 교체다
         ob, oa = next(iter(b_by.values()), None), next(iter(a_by.values()), None)
         if ob and oa:
             if ob.key != oa.key:
@@ -276,8 +271,8 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
 
 def dependency_changes(before: str, after: str, path: str) -> list[DependencyChange]:
     """pom 하나의 변경 전후 텍스트를 비교해 좌표 변경 목록을 반환한다.
-    예외를 던지지 않으며, 한쪽이 비었거나 파싱되지 않으면 빈 목록을 반환한다.
-    ``path``는 프로젝트 기준 상대경로이고 결과에 그대로 들어간다."""
+    예외를 던지지 않는다. 한쪽이 비었거나 파싱되지 않으면 빈 목록을 반환한다.
+    ``path``는 프로젝트 기준 상대 경로이고 결과에 그대로 들어간다."""
     try:
         path = (path or "pom.xml").replace("\\", "/")
         eb, ea = _parse(before, path), _parse(after, path)
@@ -294,8 +289,8 @@ def dependency_changes(before: str, after: str, path: str) -> list[DependencyCha
 
 
 def changes_in_commit(ws: Any, pre: str, sha: str) -> list[DependencyChange]:
-    """두 커밋 사이에 바뀐 모든 ``pom.xml``에 ``dependency_changes``를 적용한다.
-    git 조회가 실패하면 빈 목록을 반환하고, 예외를 던지지 않는다."""
+    """두 커밋 사이에 바뀐 모든 ``pom.xml``의 좌표 변경을 반환한다.
+    예외를 던지지 않는다. git 조회가 실패하면 빈 목록이다."""
     try:
         if not pre or not sha or pre == sha:
             return []
@@ -344,9 +339,9 @@ def _first_sentence(text: str) -> str:
 
 
 def apply_table(changes: Iterable[DependencyChange], libraries: Iterable[Any]) -> None:
-    """라이브러리 표(``JakartaLibrary``)가 허락한 변경에 ``approved``, ``note``를 표시한다. 예외를 던지지 않는다.
-    항목에 ``allow_major``가 있거나, 같은 메이저 안에서 항목의 ``version``이 ``after``와 같을 때만 승인한다.
-    메이저를 건너는 표의 버전은 참고 정보일 뿐 승인이 아니므로 note만 달고 운영자 확인 항목으로 남긴다.
+    """라이브러리 표(``JakartaLibrary``)가 허락한 변경에 ``approved``와 ``note``를 표시한다. 예외를 던지지 않는다.
+    항목에 ``allow_major``가 있거나, 같은 메이저 안에서 표의 ``version``이 ``after``와 같을 때만 승인한다.
+    메이저를 건너는 표의 버전은 참고 정보다. note만 달고 운영자 확인 항목으로 남긴다.
 
     Approval rules:
     * `allow_major` on the entry of `key` or `replaced_by`: a person allowed the move to the entry's `version`
@@ -378,7 +373,7 @@ def _apply_one(ch: DependencyChange, libs: list[Any]) -> None:
         on_line = ch.after is None or ch.after == version or (
             major_of(ch.after) is not None and major_of(ch.after) == major_of(version))
         covers = target_key in keys and (ch.kind != "replaced" or ch.key in keys)
-        # 표의 고정 버전은 같은 메이저 안에서만 승인으로 본다. 메이저를 건너는 이동은 사람이 지정한 allow_major가 있어야 한다
+        # 표의 고정 버전은 같은 메이저 안에서만 승인이다. 메이저를 건너려면 사람이 지정한 allow_major가 있어야 한다
         # 기본 표의 메이저를 건너는 버전은 정보일 뿐 승인이 아니다(프롬프트 규칙 14)
         same_line = major_of(ch.before) is None or major_of(ch.after) is None or \
             major_of(ch.before) == major_of(ch.after)
@@ -399,7 +394,7 @@ def _apply_one(ch: DependencyChange, libs: list[Any]) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# 최종 트리 확인
+# 최종 pom 확인
 # ---------------------------------------------------------------------------------------------------------------------
 def _read(ws: Any, rel: str) -> Optional[str]:
     if hasattr(ws, "read"):
@@ -416,8 +411,8 @@ def _read(ws: Any, rel: str) -> Optional[str]:
 
 
 def still_applied(ws: Any, change: DependencyChange) -> bool:
-    """최종 작업 트리의 pom에 그 변경이 아직 남아 있는지 반환한다.
-    보고할 때 되돌려진 시도를 빼는 데 쓴다. 읽지 못하면 False를 반환하고 예외를 던지지 않는다.
+    """최종 프로젝트의 pom에 그 변경이 아직 남아 있으면 True를 반환한다.
+    보고할 때 되돌려진 시도를 빼는 데 쓴다. 읽지 못하면 False다. 예외를 던지지 않는다.
 
     "Still there" = `key` (or `replaced_by`) at the `after` version; a removal = the key is gone."""
     try:

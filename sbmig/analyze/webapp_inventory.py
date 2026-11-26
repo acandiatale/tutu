@@ -1,10 +1,11 @@
-"""pom이 없는 Tomcat 웹앱 트리(풀어 놓은 WAR)에 무엇이 들어 있는지 정리하는 모듈. 아무것도 바꾸지 않는다.
-pom이 없는 트리는 접수에서 거부한다. 담당 팀에 보낼 거부 안내에 트리 내용을 설명하기 위해 쓴다.
-CLI ``sbmig inventory <dir>``가 :func:`scan_webapp_tree`를 호출하고 ``sbmig.report.inventory``가 보고서로 만든다.
-이관 실행 흐름에는 포함되지 않는다. jar 이름 표(:func:`jar_names`)는 Ant pom 생성도 쓴다.
-- web.xml, JNDI 이름, JSP와 정적 파일 수, jar 좌표 추정, class 파일의 Java 버전, 소스 루트, 중복 클래스,
-  웹앱 루트별 Maven 모듈 제안을 모은다
-- 파일 하나가 깨져도 경고만 남기고 예외를 던지지 않는다
+"""pom이 없는 Tomcat 웹앱(풀어 놓은 WAR)에 무엇이 들어 있는지 정리하는 모듈. 파일은 바꾸지 않는다.
+
+A tree without a pom is refused at intake; this inventory describes it for the rejection note to the owning
+team. The CLI ``sbmig inventory <dir>`` calls :func:`scan_webapp_tree` and ``sbmig.report.inventory`` renders
+it. Not part of the migration flow; the jar name table (:func:`jar_names`) is also used by the Ant pom
+synthesis. Collected: web.xml, JNDI names, JSP and static file counts, guessed jar coordinates, the Java
+level of the class files, source roots, duplicate classes and one proposed Maven module per webapp root. A
+broken file leaves a warning, never an exception.
 
 Typical tree: JSPs, Java sources somewhere (often `WEB-INF/src`), `WEB-INF/lib` jars (plus `*.jar.old`
 backups), `WEB-INF/classes`. Source roots = where `package a.b;` matches the path.
@@ -83,7 +84,7 @@ def jar_names(path: Optional[str] = None) -> dict[str, tuple[str, str]]:
 
 
 def _jar_base(name: str) -> Optional[str]:
-    """jar 파일 이름을 반환한다. 백업 파일 ``x-1.0.jar.old``는 ``x-1.0.jar``로 바꾼다.
+    """jar 파일이면 이름을 그대로 반환한다. 백업 파일 ``x-1.0.jar.old``면 ``x-1.0.jar``를 반환한다.
     jar가 아니면 None을 반환한다."""
     low = name.lower()
     if low.endswith(".jar"):
@@ -93,7 +94,7 @@ def _jar_base(name: str) -> Optional[str]:
 
 
 def guess_jar(name: str) -> tuple[Optional[str], Optional[str], str]:
-    """jar 파일 이름에서 (추정 좌표, 추정 버전, stem)을 구한다.
+    """jar 파일 이름으로 (좌표, 버전, stem)을 추정한다.
     표가 아는 가장 긴 stem을 쓴다. 모르는 이름은 정규식으로 이름과 버전을 나눈다.
     그것도 안 되면 ``.jar``를 뗀 이름 전체를 stem으로 쓴다.
 
@@ -198,8 +199,8 @@ def _walk(root: Path) -> tuple[list[str], set[str]]:
 
 # ------------------------------------------------------------------------------------------------ 웹앱 루트
 def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
-    """web.xml을 정규식으로 검사해 스펙, 서블릿, 필터, 리스너, taglib 수, 프레임워크, JNDI 참조를 모은다.
-    :mod:`sbmig.analyze.webxml`의 완전한 파싱이 아니라 목록용 대략적인 값이다."""
+    """web.xml에서 스펙, 서블릿, 필터, 리스너, taglib 수, 프레임워크, JNDI 참조를 모은다.
+    목록에 쓸 대략적인 값이다. 정확한 파싱은 :mod:`sbmig.analyze.webxml`이 한다."""
     if not wr.web_xml:
         return
     text = _XML_COMMENT_RE.sub("", _read_text(root / wr.web_xml, MAX_XML_BYTES, warnings, wr.web_xml))
@@ -234,8 +235,8 @@ def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
 
 
 def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[str]) -> None:
-    """``WEB-INF/lib``의 jar마다 크기, sha1, 추정 좌표를 기록한다. ``*.jar.old`` 백업은 무시 표시를 한다.
-    같은 라이브러리가 여러 버전이면 Tomcat이 모두 로드하므로 경고를 남긴다."""
+    """``WEB-INF/lib``의 jar마다 크기, sha1, 추정 좌표를 기록한다. ``*.jar.old`` 백업은 무시한 파일로 표시한다.
+    같은 라이브러리가 여러 버전 있으면 경고를 남긴다. Tomcat은 그 jar를 모두 로드한다."""
     lib = _join(wr.dir, "WEB-INF", "lib")
     by_stem: dict[str, list[str]] = defaultdict(list)
     for rel in lib_files:
@@ -269,8 +270,8 @@ def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[s
 
 
 def _scan_classes(root: Path, wr: WebappRoot, class_files: list[str]) -> dict[str, str]:
-    """``WEB-INF/classes``의 class 파일 Java 버전(최소, 최대)을 기록하고 ``{바깥 클래스 FQCN: 경로}``를 반환한다.
-    반환값은 소스 없는 클래스를 찾는 데 쓴다."""
+    """``WEB-INF/classes``의 class 파일에서 Java 버전 범위(최소, 최대)를 기록한다.
+    ``{바깥 클래스 FQCN: 경로}``를 반환한다. 소스가 없는 클래스를 찾는 데 쓴다."""
     base = _join(wr.dir, "WEB-INF", "classes") + "/"
     majors: list[int] = []
     fqcns: dict[str, str] = {}
@@ -315,7 +316,7 @@ def _inside(d: str, webapp_dirs: list[str]) -> Optional[str]:
 
 # ------------------------------------------------------------------------------------------------ 진입점
 def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = None) -> WebappInventory:
-    """pom 없는 웹앱 트리를 읽어 ``WebappInventory``를 반환한다. 파일은 바꾸지 않는다.
+    """pom 없는 웹앱 폴더를 읽어 ``WebappInventory``를 반환한다. 파일은 바꾸지 않는다.
     ``name``은 모듈 제안에서 루트 폴더 이름 대신 쓸 이름이다. zip을 임시 폴더에 풀었을 때 넘긴다."""
     root = Path(root).resolve()
     inv = WebappInventory(root=str(root))
@@ -470,7 +471,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
 
     # 4. 모듈 제안
     inv.proposals = _proposals(name or root.name, inv, max_sample, jsp_javax_by_dir)
-    # inventory 도구도 ADF 프로젝트를 알아보도록 ADF이면 규모 요약을 함께 담는다
+    # ADF 프로젝트면 규모 요약도 담는다. inventory 도구로도 ADF인지 알 수 있다
     try:
         from .adf import detect_adf
         _adf = detect_adf(root)
