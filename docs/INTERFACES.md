@@ -14,7 +14,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
 | intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope); v2.1z-aw (framework projects: conversion only, the framework's name) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
-| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed); v2.1z-ci (OpenRewrite reads mirrors differently from Maven: a translated settings copy for its call, the failed pom named, no retry for a warning) |
+| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed); v2.1z-ci (OpenRewrite reads mirrors differently from Maven: a translated settings copy for its call, the failed pom named, no retry for a warning); v2.1z-cj (a classifier-only library without a pom: a minimal pom with packaging `pom` in the local repository, then the same call again) |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l; v2.1z-cc (annotation processor paths without a version) |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`); v2.1z-by (the earlier fix in the prompt), v2.1z-bz (trade-back), v2.1z-cb (an error's place: file, else module) |
@@ -4959,7 +4959,7 @@ descriptor and downloads the jar from the repository that has it, in either repo
 모르겠네. 이거는 해결 방법이 없어?"); a system-scoped jar in the project pom was rejected (such a jar is not packaged into
 the WAR, and the project would change).
 
-**What.** `build.pomless_stub` (default `true`), `build.pomless_stub_max` (default 20 per run). `sbmig/build/pomless.py`.
+**What.** `build.pomless_stub` (default `true`), `build.pomless_stub_max` (default 20 per run; 60 since v2.1z-cj). `sbmig/build/pomless.py`.
 - *Detection* in the log of a failed Maven command: a descriptor failure of a `jar` dependency without classifier whose
   cause is a transfer error on its `pom` (the first form above and the cached repeat of it). Never: a parent pom
   (`Non-resolvable parent POM`), an imported BOM (`Non-resolvable import POM`), a plugin or build extension, a plain
@@ -8519,3 +8519,92 @@ it is not reachable and not mirrored (about a minute per pom that falls through 
 **The rule for operators** (`deploy/README.md`): mirrors as `*`, `external:*`, explicit ids or `!id` only; an
 exact-id mirror before a `*` mirror; no `external:http:*`, no `<blocked>`. One `*` mirror at the repository group
 is the simplest form for a closed network.
+
+## v2.1z-cj — a library that exists only as a jar with a classifier, without a pom, stops OpenRewrite
+
+**Why.** The user's cluster (2026-11-25 / 26): a framework project declares each module of the in-house framework as
+`<dependency>… <version>V</version><classifier>C</classifier></dependency>`. The repository holds `<a>-<V>-<C>.jar`
+and nothing else for that version: no pom, no main jar. Maven warns (`The POM for … is missing, no dependency
+information available`) and builds. OpenRewrite stopped the conversion: `Unable to download POM: <g>:<a>:<V>. Tried
+repositories:` with `HTTP 404` from every repository, for a dozen modules, on every run. Read in the plugin
+(`MavenPomDownloader.download`, rewrite-maven 8.89.0) and measured (rewrite-maven-plugin 6.46.1, Maven 3.9.10; scratch
+`out/scratch/classifier-pom/`): a pom that is found nowhere is accepted only when a non-empty `<a>-<V>.jar` (exactly
+that name, no classifier) lies in the local repository or a repository answers HEAD for it; a pom in the local
+repository whose packaging is `jar` (or absent) counts only with that jar beside it; a local pom whose packaging is
+`pom` is taken as it is.
+
+| measured | result |
+|---|---|
+| classifier-only library, no pom anywhere, empty local repository: recipe run | fails, the text above |
+| the same: `mvn clean package` | passes (the warning) |
+| recipe run again, `<a>-<V>-<C>.jar` now in the local repository | fails again |
+| a minimal pom with `packaging` jar in the local repository (the stub of v2.1z-ax) | fails again |
+| a minimal pom with `packaging` pom in the local repository | passes; the recipes change the pom and the sources |
+| `mvn clean package` with that pom present | passes |
+
+**What.** The stub loop of v2.1z-ax (`sbmig/build/pomless.py`, behind every Maven call that resolves dependencies)
+learns a second form. Nothing else changes: same switch `build.pomless_stub`, same memo, same cap, same rerun of the
+same command, same flag `pomless-library`, same hand-over line.
+
+1. **Detection** in the log of a failed command: `Unable to download POM: <g>:<a>:<v>. Tried repositories:` (only
+   OpenRewrite prints it). Each coordinate once, in log order. The answers printed under it are not read: a later
+   block of the same library says `Did not attempt to download because of a previous failure …`, and the proof
+   below asks the repositories itself. The sentence `Unable to download POM <gav>. Version contains unresolved
+   property placeholder.` is another failure and is not matched.
+   OpenRewrite stops at the first module whose pom it cannot resolve and names only that module's libraries
+   (measured with two modules and the sentence alone: three recipe runs for two libraries; with the warnings
+   below: two). So every library of Maven's own warning in the same log, `The POM for
+   <g>:<a>:jar:<classifier>:<v> is missing` (exactly five parts, type `jar`), is a further candidate, each once:
+   Maven resolves the dependencies of every module before the plugin's goal ends, and prints that warning on
+   every build. The warnings are read only in a round in which at least one library of the sentence got its stub:
+   without the sentence the warning alone starts nothing, and when every library of the sentence is refused the
+   next run would fail on it again, so nothing is written for the others and nothing runs again (measured: a
+   refused snapshot beside two healthy classified libraries cost one useless recipe run before this rule). All
+   candidates go through the same proof.
+2. **Proof before anything is written**, cheapest first; the first that fails ends it with one journal line
+   `pomless_check {ga, version, reason}`:
+   - the coordinate is a plain one (`bad-coordinate`), the cap is not reached (`cap`), the local repository is
+     known (`no-repository`);
+   - the version is not a snapshot (`snapshot`): it does not end in `-SNAPSHOT` and is not the dated form
+     `<base>-<yyyymmdd.hhmmss>-<n>` (Maven's warning names a snapshot that way, so one snapshot library can leave
+     two such lines). OpenRewrite asks for the dated file name of a snapshot, which a file named `<a>-<v>.pom`
+     does not answer (measured: the stub was written and the rerun failed the same way);
+   - no file at `<local repository>/<g path>/<a>/<v>/<a>-<v>.pom` (`pom-present`: a pom is there and OpenRewrite
+     failed all the same, so the cause is another one; no rerun for this library);
+   - no file `<a>-<v>.jar` in that folder (`main-jar-available`);
+   - a regular, non-empty file `<a>-<v>-<classifier>.jar` in that folder (not a link), the classifier one or
+     more of `[A-Za-z0-9_.-]`, `sources` and `javadoc` in any case not counted, a name holding `--` not counted
+     (it goes into an XML comment) (`jar-unavailable` when there is none, also when the folder cannot be listed). Maven resolves
+     the project's dependencies before the plugin's goal runs, so the jar is there after the failed call; no
+     repository is asked for it and the project's poms are not read for the classifier. With several such files
+     the first by name is the one recorded;
+   - `RepositoryLookup.file_answers`: no repository returns the pom (`pom-available`), and none answers `ok` for
+     the main jar (`main-jar-available`). A lookup without `file_answers` or without repositories: `no-repository`.
+   A parent pom or an imported BOM never gets a stub: Maven needs it before the plugin's goal starts, so its pom
+   is normally in the local repository already (`pom-present`), and when it is not, no jar with a classifier lies
+   in its folder (`jar-unavailable`).
+3. **The stub**: the same path, written by the same routine (temp file, hard link, never over an existing file).
+   It starts with the comment of `STUB_MARKER` (so `is_stub` and the later-run check recognise it) and says that
+   only a jar with a classifier exists for this version (the file's name), that OpenRewrite needs a pom for a
+   library without a main jar, and that it must be deleted when the real pom is uploaded. `modelVersion`,
+   `groupId`, `artifactId`, `version`, `packaging` **pom** (this version has no main artifact), no dependencies.
+4. **Records.** Journal `pomless_stub {ga, version, path, jar_from: "local repository", created, form:
+   "classified", jar: "<file name>"}`; the form of v2.1z-ax carries no `form` key. One INFO line per stub that says
+   "only a jar with a classifier". New `pomless_check` reasons: `snapshot`, `pom-present`, `main-jar-available`.
+5. **The cap.** `build.pomless_stub_max` default 20 → 60: a framework has more than twenty modules, and a run that
+   stops at the cap fails the conversion once more than needed.
+6. **A later run is told too.** `known_coordinates` no longer leaves out a jar dependency that has a classifier, so
+   `stubs_used` finds these stubs and the report of a later run names the libraries.
+
+**Not covered.** A repository that answers the pom of such a library with a transfer error (5xx, refused) stops
+Maven itself (`Failed to read artifact descriptor for G:A:jar:C:V`): v2.1z-ax still reads only the form without a
+classifier. Once a stub of this section lies in the local repository Maven no longer asks for that pom. A
+classifier-only library whose jar is not yet in the local repository when OpenRewrite fails (a goal that resolved
+nothing) gets no stub. A zero-length `<a>-<v>.jar` in the local folder ends at `main-jar-available` although
+OpenRewrite does not count an empty jar. A snapshot version. A warning does not say who asked: a plugin's own
+dependency that has only a jar with a classifier gets a stub too when it stands in such a log (measured;
+unnecessary, harmless, named in the hand-over line, not seen by a later run's check). As in v2.1z-ax, nothing removes a stub: with the file
+in place Maven no longer asks a repository for that pom, so a pom uploaded later is used only after the file is
+deleted (the file and the hand-over line say so). Measured with a stub in place: a dependency on the same
+coordinate without a classifier, with another classifier or with another `<type>` fails as it did before (`Could
+not find artifact`); `dependency:tree` prints the same line; only the warning `The POM for … is missing` is gone.

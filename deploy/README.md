@@ -446,10 +446,13 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 **pom 없이 jar만 있는 라이브러리 — sbmig가 쓰는 최소 pom.** 저장소에 jar만 올라와 있고 pom이 없는 라이브러리(대개 사내 라이브러리)는
 Maven Central 프록시가 그 pom 경로에 502 같은 전송 오류를 내면 빌드를 멈추게 한다(`Could not transfer artifact …:pom:… from/to …`).
 sbmig는 jar는 저장소에 있고 pom은 어디에도 없다는 것을 확인한 경우에만 그 파드의 로컬 저장소에 최소 pom 하나를 쓰고 같은 Maven 명령을
-한 번 더 실행한다(`build.pomless_stub`, 기본 켬, 한 실행에 `build.pomless_stub_max` 20개까지). 프로젝트 파일은 바꾸지 않는다. 보고서에는
+한 번 더 실행한다(`build.pomless_stub`, 기본 켬, 한 실행에 `build.pomless_stub_max` 60개까지). 프로젝트 파일은 바꾸지 않는다. 보고서에는
 플래그 `pomless-library`와 인수인계 한 줄(「저장소에 jar만 있고 pom이 없는 라이브러리가 있습니다: … 근본적인 해결은 라이브러리 담당자가
 저장소에 pom을 올리는 것입니다.」)이, 저널에는 `pomless_stub`이 남는다. 앞선 실행이 만든 최소 pom을 쓴 실행도 같은 플래그와 줄, 저널
 `pomless_stub_used`로 알린다(진단은 `docs/RUNBOOK.md`).
+classifier가 붙은 jar만 있고 pom도 기본 jar도 없는 라이브러리(사내 프레임워크 모듈 등)는 Maven 빌드는 되지만 OpenRewrite 변환을 멈추게
+한다(`Unable to download POM: … Tried repositories:`). 이때는 그 jar가 로컬 저장소에 있고 pom과 기본 jar가 어디에도 없을 때만 `packaging`이
+pom인 최소 pom을 같은 위치에 쓰고 같은 명령을 다시 실행한다(저널 `pomless_stub`에 `form: "classified"`). SNAPSHOT 버전은 다루지 않는다.
 
 * 위치: `/data/.m2/repository/<그룹 경로>/<아티팩트>/<버전>/<아티팩트>-<버전>.pom`. 자리 2 · 3 의 파드는 자기 저장소
   (`/data/.m2/repository-slot<k>/…`)에 쓴다. 데이터 볼륨에 남으므로 같은 저장소를 쓰는 다음 빌드 파드도 그 파일을 쓴다.

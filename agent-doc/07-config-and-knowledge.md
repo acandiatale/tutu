@@ -56,7 +56,7 @@
 | `intake` | 접수 규칙: 올린 ZIP의 풀기 한도, Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200; 셋 다 0 = 없음), `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
 | `framework` | 사내 프레임워크 프로젝트 판정과 줄인 실행(범위 `jdk-jakarta`). 비우면 검사하지 않는다([13](13-framework-projects.md)) | `framework.artifacts`(회사 좌표, 회사 yml에만), `framework.name`(화면·보고서의 이름), `framework.fix_loop`(기본 false = 빌드 1회, true = 수정 루프), `framework.scope`, `framework.transitive`, `framework.recipe_sets` |
 | `openrewrite` | OpenRewrite 1회 실행: 플러그인·레시피 BOM 버전, 레시피 세트, JVM 옵션, 제외 파일 | `openrewrite.recipes.jakarta`, `openrewrite.recipes.extra`, `openrewrite.jvm_args`, `openrewrite.timeout_minutes`, `openrewrite.recipe_bom_version` |
-| `build` | Maven 호출: `mvn` 경로, settings.xml, JDK, 테스트 건너뛰기, 타임아웃, 저장소 조회 주소, 파일 잠금 재시도, 실행 전후 훅 | `build.mvn`, `build.settings_file`, `build.ignore_project_settings`(기본 true: `-s`와 함께 설치본 전역 settings를 `-gs`로 넘겨 프로젝트 `.mvn/maven.config`의 settings를 무시), `build.ignore_project_mvn`(기본 true: 환경 변수 `MAVEN_BASEDIR`에 빈 폴더를 줘 Maven이 프로젝트 `.mvn/`의 jvm.config·maven.config·extensions.xml을 읽지 않고, maven.config의 `-D`·`-P`와 `-Dmaven.multiModuleProjectDirectory=<루트>`를 명령줄로 넘김. 폴더는 그대로 결과물에), `build.java_home`, `build.repository_url`, `build.local_repo`, `build.non_filtered_extensions`, `build.pomless_stub` / `build.pomless_stub_max`(아래 "pom 없는 라이브러리") |
+| `build` | Maven 호출: `mvn` 경로, settings.xml, JDK, 테스트 건너뛰기, 타임아웃, 저장소 조회 주소, 파일 잠금 재시도, 실행 전후 훅 | `build.mvn`, `build.settings_file`, `build.ignore_project_settings`(기본 true: `-s`와 함께 설치본 전역 settings를 `-gs`로 넘겨 프로젝트 `.mvn/maven.config`의 settings를 무시), `build.ignore_project_mvn`(기본 true: `MAVEN_BASEDIR`에 빈 폴더를 줘 Maven이 프로젝트 `.mvn/`의 jvm.config·maven.config·extensions.xml을 읽지 않고, maven.config의 `-D`·`-P`와 `-Dmaven.multiModuleProjectDirectory=<루트>`를 명령줄로 넘김. 폴더는 그대로 결과물에), `build.java_home`, `build.repository_url`, `build.local_repo`, `build.non_filtered_extensions`, `build.pomless_stub` / `build.pomless_stub_max`(아래) |
 | `loop` | 수정 루프: 단계별 라운드 수(`loop.phases.verify`), LLM 총 호출 상한, 시간 상한, 차단 정책, 진동 감지 | `loop.phases.verify.max_iterations`, `loop.max_llm_calls`, `loop.max_total_minutes`, `loop.blocked_policy`, `loop.oscillation_limit` |
 | `llm` | LLM 게이트웨이: provider, URL, 모델, 게이트웨이 모양(legacy / agent), 토큰 교환, 케이스 스레드, 기록 폴더, 가격표(`llm.pricing`: 요청한 이름(role) 먼저, 다음 실제 모델 이름, [05](05-llm-gateway-and-prompts.md) 9.1) | `llm.provider`, `llm.gateway`, `llm.model`, `llm.escalation_model`, `llm.record_dir`, `llm.case_thread` |
 | `fix` | 어댑터 2단: 수정기 전체를 사내 코딩 에이전트로 바꾸는 플러그인 | `fix.plugin`, `fix.plugin_options` |
@@ -82,41 +82,43 @@
 - `llm.case_thread: false`: 케이스 스레드는 기본 꺼짐.
 - `openrewrite.recipe_bom_version`은 3.37.0으로 고정(아래 4절).
 
-`load_config`는 지워진 옛 키(`fix.mode` 등)가 회사 yml에 남아 있으면 경고 로그를 남긴다. 조용히 무시되면 회사 설정의 뜻이 바뀐 줄 모르기 때문이다.
+`load_config`는 지워진 옛 키(`fix.mode` 등)가 회사 yml에 남아 있으면 경고한다(조용히 무시하면 설정의 뜻이 바뀐 줄 모른다).
 
-### pom 없는 라이브러리 — `build.pomless_stub`(기본 true), `build.pomless_stub_max`(실행당 20)
+### pom 없는 라이브러리 — `build.pomless_stub`(기본 true), `build.pomless_stub_max`(실행당 60)
 
-저장소에 jar만 있고 pom이 없는 라이브러리(사내 라이브러리에서 본다). Maven은 의존성의 pom을 모든 저장소에 묻는다. 모두 "없음"이면
-경고(`The POM for … is missing, no dependency information available`)하고 jar를 쓰지만, 하나라도 전송 오류(닫힌 망의 Maven Central
-프록시가 캐시하지 않은 경로에 내는 502, 연결 거부)를 내면 `Failed to read artifact descriptor for G:A:jar:V`, 원인
-`Could not transfer artifact G:A:pom:V from/to <id> (<url>): …`로 멈춘다. Maven 3.9는 전송 오류를 캐시하지 않아 매번 같은 두 줄이다.
-로컬 저장소에 `<그룹 경로>/<a>/<v>/<a>-<v>.pom`이 있으면 pom을 묻지 않고 jar를 받는다(저장소 순서, 남은 `.pom.lastUpdated`와 상관없음).
+두 경우다(사내 라이브러리). (1) jar만 있고 pom이 없다: Maven은 pom을 모든 저장소에 묻고, 모두 "없음"이면 경고(`The POM for … is
+missing`)만 하지만, 한 곳이라도 전송 오류(닫힌 망 Central 프록시의 502, 연결 거부)면 `Failed to read artifact descriptor for
+G:A:jar:V`(원인 `Could not transfer artifact G:A:pom:V from/to …`)로 멈춘다. Maven 3.9는 전송 오류를 캐시하지 않는다.
+최소 pom은 `packaging` jar(pom이 없을 때 Maven의 가정). (2) classifier 붙은 jar만 있고 pom도 기본 jar도 없다: Maven은 경고만 하지만
+OpenRewrite가 `Unable to download POM: G:A:V. Tried repositories:`로 멈춘다. 최소 pom은 `packaging` pom(기본 jar 없이 OpenRewrite가
+받는 것). 로컬 저장소에 `<그룹 경로>/<a>/<v>/<a>-<v>.pom`이 있으면 pom을 묻지 않는다(저장소 순서, 남은 `.pom.lastUpdated` 무관).
 
-- 찾기(`sbmig/build/pomless.py`): descriptor 줄이 정확히 `G:A:jar:V`(classifier 없음)이고 같은 `G:A:pom:V`의 전송 문구가 그 줄이나 다음
-  세 줄에 있을 때(Maven 3.8의 한 줄 형식, "during a previous attempt" 형식도). 부모 pom(`Non-resolvable parent POM`), 가져온 BOM
-  (`Non-resolvable import POM`), 플러그인·빌드 확장, 단순 `Could not find artifact`는 아니다.
-- 쓰기 전 증명(`RepositoryLookup.file_answers`: 저장소 집합·미러·자격증명 + 프로젝트 pom의 `<repositories>`): pom은 GET, jar는 HEAD(HEAD를
-  거부하면 1바이트 범위 GET, jar를 내려받지 않음). 200/206 = 있음, 404/410 = 없음, 401/403 = 거부(pom은 "받지 못함", jar는 "받을 수 없음"),
-  그 밖 = 실패. jar는 한 저장소 이상(또는 로컬)에 있고 pom은 어디에도 없을 때만 쓴다. 아니면 원래대로 처리하고 저널
-  `pomless_check {ga, version, reason}`: `pom-available`(진짜 전송 문제: 저장소·네트워크), `jar-unavailable`(저장소가 내려갔거나 라이브러리가
-  없음), `no-repository`(물을 저장소 없음, 로컬 저장소 경로를 못 정함), `bad-coordinate`(좌표가 아님), `cap`(상한), `off`(꺼짐).
+- 찾기(`sbmig/build/pomless.py`): (1) descriptor 줄이 정확히 `G:A:jar:V`이고 같은 `G:A:pom:V`의 전송 문구가 그 줄이나 다음 세 줄에 있을 때
+  (Maven 3.8 한 줄 형식, "during a previous attempt" 형식도). 부모 pom·가져온 BOM(`Non-resolvable parent / import POM`), 플러그인·빌드 확장,
+  단순 `Could not find artifact`는 아니다. (2) 그 OpenRewrite 문장의 좌표. 그중 하나가 최소 pom을 얻은 라운드에만 같은 로그의
+  경고 `The POM for G:A:jar:C:V is missing`의 좌표도 본다(OpenRewrite는 첫 실패 모듈 것만 적는다).
+- 쓰기 전 증명(`RepositoryLookup.file_answers`: 저장소 집합·미러·자격증명 + 프로젝트 pom의 `<repositories>`): pom은 GET, jar는 HEAD(거부되면
+  1바이트 범위 GET, 내려받지 않음). 200/206 있음, 404/410 없음, 401/403 거부(둘 다 못 받는 것으로 침), 그 밖 실패. (1)은 jar가
+  한 저장소 이상(또는 로컬)에 있고 pom은 어디에도 없을 때, (2)는 로컬 폴더에 `<a>-<v>-<classifier>.jar`(링크 아닌 비지 않은 파일,
+  sources·javadoc 제외)가 있고 pom도 `<a>-<v>.jar`도 어디에도 없을 때만 쓴다. 아니면 저널 `pomless_check {ga, version, reason}`:
+  `pom-available`(진짜 전송 문제), `jar-unavailable`((1) 저장소 장애나 라이브러리 없음, (2) 로컬 폴더에 그 jar 없음), `no-repository`(저장소나
+  로컬 경로 없음), `bad-coordinate`, `cap`, `off`, (2)만 `snapshot`(SNAPSHOT 버전), `pom-present`(pom이 있는데도 실패),
+  `main-jar-available`.
 - 로컬 저장소(`pomless.maven_local_repo`): `build.local_repo` → `build.extra_args`의 `-Dmaven.repo.local` → Maven이 쓰는 settings의
-  `<localRepository>` → 전역 settings → `~/.m2/repository`. 클러스터에서는 자리마다 다르다(`/data/.m2/repository`, `repository-slot2`,
-  `repository-slot3`): 실패를 만난 파드의 저장소에 쓴다.
-- 파일: `<그룹 경로>/<a>/<v>/<a>-<v>.pom`, 첫 줄 주석이 `Written by sbmig: the repository has a jar but no pom for …`(`pomless.STUB_MARKER`).
-  임시 파일 + 하드 링크라 있는 파일을 바꾸지 않는다(다른 파드가 쓴 것도 된 것). `modelVersion`, `groupId`, `artifactId`, `version`,
-  `packaging` jar뿐, 의존성 없음(pom이 없을 때 Maven이 가정하는 것과 같다).
-- 그 뒤 같은 Maven 명령을 한 번 더(로그 이름 `-pomless<k>`). 라이브러리는 실행당 한 번, 한 명령은 상한까지 여러 번. `MavenRunner.run`의 재시도
-  순서: HTTP 차단(재시도 없음) → Windows 파일 잠금 → 최소 pom → `-U`(최소 pom을 쓴 뒤에는 건너뜀).
-- 자리: `MavenRunner.run`, `sbmig/rewrite/runner.py`, `sbmig/build/effective.py`, `sbmig/build/deptree.py`, `sbmig/build/classpath.py`,
-  `sbmig/plan/jarcheck.py`, `sbmig/remediations/maven.py`(`package`, `resolve`). `sbmig/rewrite/versions.py`(레시피 BOM)는 감싸지 않는다.
-  환경 수리라서 프로젝트 파일 변경·LLM이 없고, 프레임워크 프로젝트에서도, 차단 분류(`repository_unreachable`) 전에 돈다.
-- 남는 것: 저널 `pomless_stub {ga, version, path, jar_from, created}`(`created` false = 이미 있던 파일), 플래그 `pomless-library`, 최소
-  pom마다 INFO 한 줄, 라이브러리를 적은 인수인계 한 줄(`pomless.handover_line`; 한국어는 `docs/RUNBOOK.md`).
-- 나중 실행도 알린다: 마무리에서 실행이 아는 의존성(필터 없는 의존성 트리가 있으면 그것, 없으면 effective-pom 캡처의 직접 의존성과 선언된
-  것, 300개까지)을 로컬 저장소와 맞춰 보고, 표식으로 시작하는 pom이면 같은 플래그와 줄, 저널 `pomless_stub_used {ga, version, path}`. 필터
-  없는 트리가 없으면 간접으로만 닿는 라이브러리는 놓칠 수 있다. 취약점 해결만 하는 실행은 저널과 로그에만 남긴다(열린 과제, 10).
-- 파일을 찾고 지우는 법: `deploy/README.md` §3, 진단: `docs/RUNBOOK.md`.
+  `<localRepository>` → 전역 settings → `~/.m2/repository`. 클러스터는 실패를 만난 파드(자리)의 저장소에 쓴다.
+- 파일: 첫 줄 주석 `Written by sbmig: the repository has a jar but no pom for …`(`pomless.STUB_MARKER`). 임시 파일 + 하드 링크라 있는 파일을
+  바꾸지 않는다(다른 파드가 쓴 것도 된 것). 좌표·`modelVersion`·`packaging`뿐, 의존성 없음.
+- 그 뒤 같은 명령을 한 번 더(로그 `-pomless<k>`). 라이브러리는 실행당 한 번, 명령은 상한까지 여러 번. `MavenRunner.run` 재시도 순서: HTTP
+  차단(없음) → Windows 파일 잠금 → 최소 pom → `-U`(최소 pom을 쓴 뒤엔 건너뜀).
+- 자리: `MavenRunner.run`, `sbmig/rewrite/runner.py`, `sbmig/build/`의 `effective.py`·`deptree.py`·`classpath.py`, `sbmig/plan/jarcheck.py`,
+  `sbmig/remediations/maven.py`(`package`, `resolve`). `sbmig/rewrite/versions.py`(레시피 BOM) 제외. 프로젝트 파일 변경·LLM
+  없음. 프레임워크 프로젝트에도, 차단 분류(`repository_unreachable`) 전에 돈다.
+- 남는 것: 저널 `pomless_stub {ga, version, path, jar_from, created}`(`created` false = 이미 있던 파일, (2)는 `form: "classified"`, `jar` 더),
+  플래그 `pomless-library`, 최소 pom마다 INFO 한 줄, 라이브러리를 적은 인수인계 한 줄(`pomless.handover_line`).
+- 나중 실행: 마무리에서 아는 의존성(필터 없는 의존성 트리, 없으면 effective-pom 캡처의 직접 의존성과 선언, classifier jar 포함, 300개까지)의
+  로컬 pom이 표식으로 시작하면 같은 플래그와 줄, 저널 `pomless_stub_used {ga, version, path}`. 트리가 없으면 간접 의존성은 놓칠 수 있다.
+  취약점 해결만 하는 실행은 저널과 로그에만 남긴다(10).
+- 파일을 찾고 지우는 법: `deploy/README.md` §3, 진단·한국어 문구: `docs/RUNBOOK.md`.
 
 ### 변환 전 pom 인코딩 맞추기 — `layout.legacy_context.correct_pom_encoding`(기본 true)
 
@@ -126,7 +128,7 @@ EUC-KR로 못 쓰는 음절이 있으면 한글 위에 대체 문자를 쓴다. 
 처음(소스 인코딩 단계 앞)에 `src/` 밖의 프로젝트 pom을 맞춘다(`sbmig/restructure/pom_charset.py`, `Orchestrator._correct_pom_encodings`):
 
 - 바이트가 엄격한 EUC-KR이면 선언만 `EUC-KR`로(선언이 없으면 파일의 줄바꿈으로 더함), 아니면(MS949에만 있는 음절) UTF-8 선언과 함께 UTF-8로
-  다시 저장. 쓰기 전에 결과가 엄격히 파싱되고 선언을 뺀 글이 같은지 본다. 한글은 바뀌지 않는다.
+  다시 저장. 쓰기 전에 결과가 엄격히 파싱되고 선언을 뺀 글(한글 포함)이 같은지 본다.
 - 건드리지 않음: BOM이 있는 파일, 엄격히 파싱되고 한국어 계열 선언에 EUC-KR 바이트만 있는 pom, 올바른 XML이 아닌 것, latin-1이나 shift_jis로만
   설명되는 바이트, 이미 맞는 pom.
 - 남는 것: 커밋 `transform: pom encodings corrected`, 저널 `pom_encodings {step, entries: [{pom, declared, actual, how}]}`(`how` =

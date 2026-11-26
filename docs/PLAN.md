@@ -1587,3 +1587,24 @@ contract pointer and loses history).
 | Left alone | docstrings shown to people at run time (the help texts of the CLI commands: `sbmig --help` prints the same text) and every string literal (prompts, report text, the helper API table the LLM sees) | compared output | done |
 | Corrected on the way | Korean or English notes that said something the code does not do (a dozen places: where an underscore is put, what is returned when nothing is found, the order in which settings sources are merged, "sources are never modified" in the remediation, which store implements an interface) now say what the code does | read against the code by each worker | done |
 | Not done | the comments of the page (HTML / JS), of `config/*.yml` and of `deploy/`; whether the reviewers accept the result | — | open |
+
+## Status — 2026-11-26, a library that has only a jar with a classifier, and no pom, no longer stops the conversion (v2.1z-cj)
+
+The cluster's failed conversion of a framework project (2026-11-25) was not the mirror difference of v2.1z-ci. The
+facts of 2026-11-26: every tried repository answered `HTTP 404` and none was unreachable; the project declares each
+framework module with a `<classifier>`, and the repository holds only `<a>-<v>-<classifier>.jar` for that version.
+OpenRewrite accepts a missing pom only with a main jar `<a>-<v>.jar`; Maven only warns. Every framework project on the
+cluster is hit, on every run. Contract: `docs/INTERFACES.md` "v2.1z-cj".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Cause | reproduced with rewrite-maven-plugin 6.46.1 and Maven 3.9.10: the recipe run fails on an empty local repository and again after the jar was downloaded; a minimal pom with `packaging` jar does not help; one with `packaging` pom makes the run pass, and Maven still builds | real runs, scratch `out/scratch/classifier-pom/` | done |
+| The stub loop's second form | `sbmig/build/pomless.py`: the sentence `Unable to download POM: G:A:V. Tried repositories:`; proof (not a snapshot, no pom and no main jar in the local folder, a regular non-empty `<a>-<v>-<classifier>.jar` there, no repository returns the pom or the main jar); a minimal pom with `packaging` pom; the same call again | `tests/build/test_v21zcj_classified_pomless.py` (43 tests); the real loop through `run_logged_with_stubs`: round 0 fails, two stubs, round 1 BUILD SUCCESS with changed files, then `clean package` passes | done |
+| One rerun per log | OpenRewrite names only the first failing module's libraries; the libraries of Maven's `The POM for G:A:jar:C:V is missing` warnings in the same log are handled in the same round, only when a library of the sentence got its stub | real two-module project: three recipe runs before, two after; a refused snapshot beside healthy libraries: one run, no stub | done |
+| Cap | `build.pomless_stub_max` 20 to 60 (a framework has more than twenty modules) | defaults test | done |
+| A later run is told | `known_coordinates` keeps jar dependencies with a classifier | unit test | done |
+| Review | three rounds by one independent reviewer with real Maven runs: round one found the snapshot case and the rerun per module, round two the useless rerun behind a refused library, round three nothing. Measured with a stub in place: a dependency on the same coordinate without a classifier, with another classifier or another type fails as before; `dependency:tree` prints the same line | reviewer's runs | done |
+| Whole suite | 10,242 passed | `pytest` | done |
+| Documents | `agent-doc/07` (both cases, within its size limit), `deploy/README.md`, `docs/migration-agent/README.md`, RUNBOOK symptom row | `tests/docs` | done |
+| Not covered | a transfer error on the pom of such a library stops Maven itself (v2.1z-ax reads only the form without a classifier); snapshots; a zero-length main jar; a plugin's own dependency in such a log gets an unnecessary stub; nothing removes a stub when the real pom is uploaded | — | known |
+| Not checked | the company cluster (the user's hand-made poms of the same form are the first check there) | — | open |
