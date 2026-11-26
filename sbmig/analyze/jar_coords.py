@@ -1,14 +1,11 @@
 """Ant 프로젝트의 lib 폴더에 있는 jar 하나에 맞는 Maven 좌표를 찾는 모듈.
-접수 단계에서 :func:`sbmig.analyze.ant.synthesize_pom`이 jar마다 :func:`resolve_jar`를 호출한다.
-소스가 그 jar의 패키지를 쓰는지는 :func:`mark_used`로 확인한다.
-좌표는 아래 순서로 찾는다.
-- jar 안의 ``pom.properties``
-- 이름 표. ``knowledge/libraries/jar_names.yml``에 회사 표 ``<kb>/jar_names.yml``을 합친 것이다
-- ``intake.jar_lookup``이 켜져 있으면 sha1로 저장소를 조회한다
-- MANIFEST는 메모로만 남긴다
-예외를 던지지 않는다. 좌표를 못 찾으면 source를 unknown으로 두고 메모를 남긴다.
-조회가 두 번 연속 실패하면 그 실행에서는 더 조회하지 않는다.
-테스트가 ``RepositoryLookup``을 가짜 구현으로 바꾸므로 이 클래스는 호출할 때마다 모듈에서 찾는다.
+jar 안의 ``pom.properties``, jar 이름 표, sha1 저장소 조회 순서로 찾는다.
+
+Intake's :func:`sbmig.analyze.ant.synthesize_pom` calls :func:`resolve_jar` per jar; :func:`mark_used` tells
+whether the sources use the jar's packages. Name table: ``knowledge/libraries/jar_names.yml`` merged with the
+company table ``<kb>/jar_names.yml``. The sha1 lookup runs only with ``intake.jar_lookup`` on; MANIFEST only
+feeds a note. Nothing raises: a jar without coordinates gets source unknown and a note. Tests replace
+``RepositoryLookup`` with a fake, so the class is looked up in the module on every call.
 
 Contract: docs/INTERFACES.md "v2.1j". The stem table gives g:a; the version comes from the file name.
 The sha1 lookup uses the repository `sbmig.build.repo_versions.RepositoryLookup` picks
@@ -45,15 +42,15 @@ from .webapp_inventory import JAR_NAMES_FILE, SKIP_DIRS, jar_names
 log = logging.getLogger("sbmig.analyze.jar_coords")
 
 DEFAULT_MAX_JAR_BYTES = 64 * 1024 * 1024
-MAX_PACKAGES = 40                       # 화면용 JarCoordinate.packages 상한. 사용 여부 검사는 전부 본다
+MAX_PACKAGES = 40                       # 화면용 JarCoordinate.packages 상한. 사용 중인지 검사할 때는 전부 본다
 MAX_REF_FILE_BYTES = 1_000_000           # 이보다 큰 텍스트 파일은 참조 검사를 건너뛴다
 LOOKUP_FAILURE_LIMIT = 2                 # sha1 조회가 연속으로 이만큼 실패하면 이 실행에서는 더 조회하지 않는다
 CENTRAL_HOSTS = ("repo1.maven.org", "repo.maven.apache.org", "central.maven.org")
 CENTRAL_SEARCH = "https://search.maven.org/solrsearch/select?q=1:%22{sha1}%22&rows=1&wt=json"
 NEXUS_SEARCH = "{base}service/rest/v1/search/assets?sha1={sha1}"
 
-# Tomcat이 제공하는 API는 WAR에 넣으면 안 되므로 provided로 둔다.
-# JSTL은 Tomcat이 제공하지 않아 WAR에 포함해야 하므로 여기 없다
+# Tomcat이 제공하는 API는 WAR에 넣으면 안 된다. 그래서 provided로 둔다.
+# JSTL은 Tomcat이 제공하지 않아 WAR에 넣어야 한다. 그래서 여기 없다
 PROVIDED_KEYS = frozenset({
     "javax.servlet:servlet-api", "javax.servlet:javax.servlet-api", "jakarta.servlet:jakarta.servlet-api",
     "javax.servlet.jsp:jsp-api", "javax.servlet.jsp:javax.servlet.jsp-api", "jakarta.servlet.jsp:jakarta.servlet.jsp-api",
@@ -143,7 +140,7 @@ def _table_hit(filename: str, table: dict[str, tuple[str, str]]) -> tuple[str, s
 # ------------------------------------------------------------------------------------------------ 이름 표
 @lru_cache(maxsize=8)
 def _company_rows(path: str, mtime_ns: int, size: int) -> dict[str, tuple[str, str]]:
-    """회사 이름 표를 읽는다. (mtime_ns, size)를 캐시 키로 쓰므로 파일을 고치면 다시 읽는다."""
+    """회사 이름 표를 읽는다. 파일을 고치면 다시 읽는다. 캐시 키는 (mtime_ns, size)다."""
     return jar_names.__wrapped__(path)
 
 
@@ -308,7 +305,7 @@ def is_container_api(packages: Iterable[str]) -> bool:
 
 
 def provided_scope(group_id: str, artifact_id: str) -> bool:
-    """Tomcat이 제공하는 API의 좌표라서 scope를 provided로 둘 때 True를 반환한다. JSTL은 제외한다."""
+    """Tomcat이 제공하는 API의 좌표면 True를 반환한다. 이 jar는 scope를 provided로 둔다. JSTL은 제외한다."""
     key = f"{group_id}:{artifact_id}"
     return key in PROVIDED_KEYS or any(group_id == g or group_id.startswith(g + ".") for g in PROVIDED_GROUP_PREFIXES)
 
@@ -387,7 +384,7 @@ def parse_central_search(text: str) -> tuple[str, str, str] | None:
 class Sha1Lookup:
     """sha1로 저장소에서 Maven 좌표를 조회하는 클래스.
     저장소 URL, 자격 증명, HTTP 요청은 ``RepositoryLookup``의 것을 쓴다.
-    ``LOOKUP_FAILURE_LIMIT``번 연속 실패하면 더 조회하지 않는다. 예외는 던지지 않는다.
+    ``LOOKUP_FAILURE_LIMIT``번 연속 실패하면 더 조회하지 않는다. 예외를 던지지 않는다.
 
     Tests inject `fetch(url, credentials, timeout) -> text | None` and `repo`."""
 
@@ -466,7 +463,7 @@ class Sha1Lookup:
         hit: tuple[str, str, str] | None = None
         failed = ""
         if text is None:
-            # 404는 검색 API가 없는 저장소(Nexus 2, Artifactory)라는 뜻이므로 실패로 센다.
+            # 404는 검색 API가 없는 저장소(Nexus 2, Artifactory)라는 뜻이다. 실패로 센다.
             # Central과 Nexus 3는 결과가 없으면 빈 목록을 준다
             failed = f"sha1 lookup {url} failed ({err})"
         else:
@@ -525,7 +522,7 @@ def _pick_pom_properties(found: list[tuple[str, str, str]], stem: str) -> tuple[
 
 def resolve_jar_scan(path: str, data: JarData, cfg: Any = None, lookup: Any = None, *,
                      table: dict[str, tuple[str, str]] | None = None) -> tuple[JarCoordinate, JarScan]:
-    """:func:`resolve_jar`와 같은 일을 하고, jar를 검사한 :class:`JarScan`도 함께 반환한다.
+    """:func:`resolve_jar`와 같지만, jar를 검사한 :class:`JarScan`도 함께 반환한다.
     ``table``은 미리 합친 이름 표다. jar마다 표를 다시 읽지 않도록 넘긴다.
 
     The synthesis needs the JarScan for the full package set and the plug-in markers."""
@@ -545,7 +542,7 @@ def resolve_jar_scan(path: str, data: JarData, cfg: Any = None, lookup: Any = No
             notes.append(js.error)
     jc.packages = top_packages(js.packages)[:MAX_PACKAGES]
     stem, _file_version = stem_and_version(path)
-    # jar를 만든 Maven 빌드가 남긴 pom.properties의 좌표가 가장 믿을 만하므로 먼저 본다
+    # pom.properties 좌표를 먼저 본다. jar를 만든 Maven 빌드가 남긴 값이라 가장 믿을 만하다
     picked = _pick_pom_properties(js.pom_properties, stem)
     if picked:
         jc.group_id, jc.artifact_id, jc.version = picked
@@ -579,7 +576,7 @@ def resolve_jar_scan(path: str, data: JarData, cfg: Any = None, lookup: Any = No
                     notes.append(why)
         if jc.source == "name_table" and not jc.version:
             notes.append("no version in the file name")
-    # MANIFEST는 좌표가 아니므로 사람이 찾아볼 단서로만 메모에 남긴다
+    # MANIFEST는 좌표가 아니다. 사람이 찾아볼 단서로만 메모에 남긴다
     if jc.source == "unknown" or not jc.version:
         mf = js.manifest
         bits = [f"{k}={mf[k]}" for k in ("Implementation-Title", "Implementation-Version", "Implementation-Vendor",

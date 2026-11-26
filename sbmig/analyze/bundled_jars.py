@@ -1,10 +1,11 @@
-"""트리에 있지만 어떤 pom도 선언하지 않은 jar(동봉 jar)를 찾아 좌표와 패키지 목록을 기록하는 모듈.
-as-is 프로젝트는 IDE의 웹앱 라이브러리로 컴파일했으므로 Maven은 이 jar를 모른다.
-- 폴더 이름과 상관없이 트리의 모든 ``*.jar``를 보고, pom의 system 의존성이 가리키는 jar는 뺀다
-- :func:`providers`는 수정 루프의 ``sbmig-bundled`` 사전 시도가 패키지를 가진 jar를 찾을 때 쓴다
+"""프로젝트 안에 있지만 어떤 pom도 선언하지 않은 jar(동봉 jar)를 찾아 좌표와 패키지 목록을 기록하는 모듈.
+as-is 프로젝트는 IDE의 웹앱 라이브러리로 컴파일해서 Maven은 이 jar를 모른다.
 
 Coordinates come from `resolve_jar` (pom.properties, then the jar name table, then a sha1 lookup);
 `JarCoordinate.provides` lists EVERY class-holding package.
+Every ``*.jar`` of the project is looked at whatever its folder; a jar a pom's system dependency points at is
+left out. :func:`providers` serves the fix loop's ``sbmig-bundled`` pre-try, which looks for the jar holding a
+package.
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ def declared_system_jars(ws: Any, poms: Iterable[PomInfo]) -> set[str]:
 
     `systemPath` is resolved against the pom's directory for `${project.basedir}` / `${basedir}`."""
     try:
-        # edges.system_dependencies가 같은 규칙으로 systemPath를 해석하므로 해석 코드를 따로 만들지 않는다
+        # systemPath는 edges.system_dependencies와 같은 규칙으로 해석한다. 해석 코드를 따로 두지 않는다
         deps = system_dependencies(ws, list(poms))
     except Exception as e:  # noqa: BLE001
         log.warning("bundled jars: system dependencies not read: %s: %s", type(e).__name__, e)
@@ -40,7 +41,7 @@ def declared_system_jars(ws: Any, poms: Iterable[PomInfo]) -> set[str]:
 
 def _skipped(ws: Any, rel: str) -> bool:
     """경로가 빌드 산출물, ``.git``, 접수가 무시한 폴더 안에 있는지 확인한다.
-    ``ws.glob``이 이미 거르지만 가짜 구현을 위해 한 번 더 확인한다."""
+    ``ws.glob``이 이미 거른다. 가짜 구현을 위해 한 번 더 확인한다."""
     if ".git" in rel.split("/") or is_build_output_path(rel, Path(ws.root)):
         return True
     is_ignored = getattr(ws, "is_ignored", None)
@@ -48,7 +49,7 @@ def _skipped(ws: Any, rel: str) -> bool:
 
 
 def scan_bundled_jars(ws: Any, cfg: Any, poms: Iterable[PomInfo], *, lookup: Any = None) -> list[JarCoordinate]:
-    """트리의 동봉 jar를 모두 찾아 좌표와 클래스가 들어 있는 패키지 목록을 채워 경로순으로 반환한다.
+    """프로젝트의 동봉 jar를 모두 찾아 경로순으로 반환한다. 각 jar에 좌표와 클래스가 든 패키지 목록을 채운다.
     - sha1이 같은 jar도 남기고 note를 붙인다
     - 읽지 못한 jar는 WARNING을 남기고 건너뛴다. 예외를 던지지 않는다
     - ``cfg.intake.bundled_jars``가 False면 빈 목록을 반환한다
@@ -94,7 +95,7 @@ def scan_bundled_jars(ws: Any, cfg: Any, poms: Iterable[PomInfo], *, lookup: Any
                 jc.note = "; ".join(n for n in (jc.note, f"same jar as {first}") if n)
         out.append(jc)
     if out:
-        # Java 소스가 jar의 패키지를 쓰는지 표시한다. 동봉 jar가 있을 때만 검사하므로 비용이 작다
+        # Java 소스가 jar의 패키지를 쓰는지 표시한다. 동봉 jar가 있을 때만 검사해서 비용이 작다
         try:
             mark_used(out, [""], ws)
         except Exception as e:  # noqa: BLE001 - 실패하면 `used`는 None으로 남는다
@@ -106,7 +107,7 @@ def providers(jars: Iterable[JarCoordinate], package: str) -> list[JarCoordinate
     """``package``를 제공하는 동봉 jar 목록을 반환한다.
     ``provides``에 그 패키지가 정확히 있는 jar가 먼저, 하위 패키지만 가진 jar가 다음이다.
     javac가 상위 패키지 이름으로 오류를 내는 경우가 있어 하위 패키지도 본다. 같은 그룹 안은 경로순이다.
-    예외를 던지지 않고, 문제가 있으면 빈 목록을 반환한다."""
+    예외를 던지지 않는다. 문제가 있으면 빈 목록을 반환한다."""
     try:
         pkg = (package or "").strip().strip(".")
         if not pkg:

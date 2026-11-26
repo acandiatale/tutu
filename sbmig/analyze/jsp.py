@@ -1,10 +1,10 @@
 """JSP와 태그 파일에서 자바 타입 이름이 나올 수 있는 영역만 골라내는 모듈.
 소스 스캐너가 javax EE 타입을 쓰는 JSP를 셀 때 쓴다(``SourceStats.jsp_javax_files``).
-JSP는 Maven 빌드가 아니라 서블릿 컨테이너가 실행 시에 컴파일하고 OpenRewrite도 건너뛰므로, 빌드가 통과해도
-Tomcat 10 이상에서 실행 시 실패할 수 있다.
-- 진입점: :func:`jsp_code_spans`, :func:`jsp_javax_refs`, :func:`javax_ee_token`
-- javax에서 jakarta로 바꿀 패키지 표는 이 모듈 옆의 ``jakarta_packages.yml``이다
-- HTML, EL ``${…}``, taglib uri, JSP 주석, include는 자바 참조가 아니므로 영역에 넣지 않는다
+
+A JSP is compiled by the servlet container at run time, not by the Maven build, and OpenRewrite skips it, so a
+build can pass while the JSP fails on Tomcat 10 or later. Entry points: :func:`jsp_code_spans`,
+:func:`jsp_javax_refs`, :func:`javax_ee_token`. The javax -> jakarta package table is ``jakarta_packages.yml``
+beside this module.
 
 Pure, dependency-free. OpenRewrite does not parse JSPs (`openrewrite.exclusions` lists `**/*.jsp`). The only
 places where a JSP names Java types are:
@@ -91,7 +91,7 @@ _JAKARTA_TABLE = Path(__file__).resolve().with_name("jakarta_packages.yml")
 
 @lru_cache(maxsize=1)
 def jakarta_rules() -> tuple[tuple[str, bool], ...]:
-    """javax에서 jakarta로 바꿀 패키지 표를 (원래 패키지, 하위 포함 여부) 목록으로 반환한다.
+    """javax에서 jakarta로 바꿀 패키지 표를 (원래 패키지, 하위 패키지도 바꾸는지) 목록으로 반환한다.
     한 번만 읽어 캐시한다. 파일이 없으면 빈 목록을 반환한다."""
     try:
         doc = yaml.safe_load(_JAKARTA_TABLE.read_text(encoding="utf-8")) or {}
@@ -102,7 +102,7 @@ def jakarta_rules() -> tuple[tuple[str, bool], ...]:
 
 def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
     """``token``(예: ``javax.servlet.http.Cookie``)이 표에 있는 javax EE 이름인지 확인한다.
-    가장 긴 접두어 규칙을 따르고, 하위를 포함하지 않는 규칙은 ``*``나 대문자로 시작하는 클래스 이름만 받는다."""
+    가장 긴 접두어 규칙을 따른다. 하위를 포함하지 않는 규칙은 ``*``나 대문자로 시작하는 클래스 이름만 받는다."""
     by_from = dict(rules)
     parts = token.split(".")
     for i in range(len(parts) - 1, 1, -1):
@@ -121,7 +121,7 @@ def jsp_javax_refs(text: str, rules: Optional[Iterable[tuple[str, bool]]] = None
     out: list[str] = []
     for s, e, kind in jsp_code_spans(text):
         chunk = text[s:e]
-        # 문자열 안의 "javax.servlet"은 참조가 아니므로 문자열과 주석을 같은 길이의 공백으로 가린다
+        # 문자열 안의 "javax.servlet"은 참조가 아니다. 문자열과 주석을 같은 길이의 공백으로 가린다
         if kind == "code":
             chunk = _JAVA_LIT_RE.sub(lambda m: " " * len(m.group(0)), chunk)
         out += [m.group(0) for m in _JAVAX_TOKEN_RE.finditer(chunk) if javax_ee_token(m.group(0), rules)]

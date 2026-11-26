@@ -1,10 +1,8 @@
-"""프로젝트를 분석해 ProjectProfile을 만드는 패키지.
-pom 구조, 소스, 사용 라이브러리를 살펴 프로젝트 유형을 분류한다.
-접수 직후 오케스트레이터의 ``step_analyze``가 :func:`analyze_project`를 호출하고, 접수 단계에서도
-:func:`detect_build_tool`과 ``aggregator``를 쓴다.
-- 주요 함수는 ``analyze_project`` / ``analyze_path``, ``classify``, ``detect_libraries``,
-  ``scan_properties``, ``scan_webapp_tree``, ``describe_ant`` / ``synthesize_pom``, ``resolve_jar``다
-- 분석은 파일을 읽기만 한다. 접수 단계에서 호출하는 ``write_aggregator``와 ``synthesize_pom``만 파일을 기록한다
+"""프로젝트의 pom, 소스, 사용 라이브러리를 살펴 프로젝트 유형을 분류하는 패키지.
+
+The orchestrator's ``step_analyze`` calls :func:`analyze_project` right after intake; intake itself uses
+:func:`detect_build_tool` and ``aggregator``. Analysis only reads files: ``write_aggregator`` and
+``synthesize_pom`` (both called at intake) are the only writers.
 """
 from .analyzer import PathView, analyze_path, analyze_project
 from .adf import ADF_FLAG, TRACES_FLAG, AdfInventory, adf_followup, adf_sizing_lines, detect_adf, traces_followup

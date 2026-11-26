@@ -1,11 +1,12 @@
-"""분석 단계에서 주의할 점을 찾아 기록하는 모듈. ``analyze_project``가 호출한다.
-실행을 막지 않고 ``profile.warnings``와 ``LibraryUsage``에만 남긴다. 보고서, 구조 검토, 수정 프롬프트가 이것을 읽는다.
-재구성도 :func:`resolve_system_path`를 쓴다.
-- :func:`system_dependencies`, :func:`system_dep_findings`: system scope jar를 사내 Nexus로 옮기라고 안내한다
-- :func:`language_findings`: Kotlin, Groovy, Scala 소스와 소스 생성 플러그인을 찾는다
-- :func:`java_level_findings`: Java 1.7 이하 프로젝트도 거부하지 않고 ``UpgradeToJava21``과 수정 루프에 맡긴다
-- :func:`encoding_findings`: ``sourceEncoding`` 선언 없이 cp949, euc-kr로 저장된 소스를 찾는다
-모두 파일을 읽기만 한다. 읽지 못하는 파일이 있어도 예외를 던지지 않는다.
+"""system scope jar, 다른 JVM 언어, 낮은 Java 버전, 소스 인코딩처럼 분석 단계에서 주의할 점을 찾는 모듈.
+실행을 막지 않는다. ``profile.warnings``와 ``LibraryUsage``에만 남긴다.
+
+Called by ``analyze_project``; the report, the structure review and the fix prompt read the findings, and the
+restructure uses :func:`resolve_system_path`. :func:`system_dependencies` / :func:`system_dep_findings` advise
+moving system-scope jars to the in-house Nexus; :func:`language_findings` finds Kotlin, Groovy and Scala
+sources and source-generating plugins; :func:`java_level_findings` does not reject a Java 1.7 or lower project
+but leaves it to ``UpgradeToJava21`` and the fix loop; :func:`encoding_findings` finds sources saved as cp949
+or euc-kr without a ``sourceEncoding`` declaration. Files are only read; an unreadable file never raises.
 
 Background: docs/ERROR-HANDLING.md E7, S3–S6, X6.
 """
@@ -56,7 +57,7 @@ CODEGEN_HINTS = {
 LANGUAGES = (("kotlin", "*.kt", "Kotlin"), ("groovy", "*.groovy", "Groovy"), ("scala", "*.scala", "Scala"))
 LANGUAGE_PLUGINS = {"kotlin": ("kotlin-maven-plugin",), "groovy": ("gmavenplus-plugin", "gmaven-plugin"),
                     "scala": ("scala-maven-plugin", "maven-scala-plugin")}
-# 이 순서로 엄격하게 디코딩해 본다. ASCII만 있으면 utf-8이 되고, 그다음이 한국 레거시 코드에 많은 cp949다
+# 이 순서로 엄격하게 디코딩해 본다. ASCII만 있으면 utf-8이다. 그다음은 한국 레거시 코드에 많은 cp949다
 ENCODING_CANDIDATES = ("utf-8", "cp949", "euc-kr")
 _BASEDIR_RE = re.compile(r"\$\{(?:project\.)?basedir\}")
 # 최상위 pom 디렉토리. sbmig는 항상 프로젝트 루트에서 mvn을 실행하므로 프로젝트 루트와 같다
@@ -132,7 +133,7 @@ def _dep_elements(root: ET.Element) -> Iterable[ET.Element]:
 
 def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDep]:
     """모든 pom의 system scope 의존성을 찾아 경로를 해석하고 파일이 있는지 확인한다.
-    속성은 저장소 안의 부모 체인에서 모은다. 읽을 수 없는 pom은 건너뛴다."""
+    속성은 프로젝트 안의 부모 체인에서 모은다. 읽을 수 없는 pom은 건너뛴다."""
     root = Path(ws.root)
     out: list[SystemDep] = []
     for p in poms:
@@ -145,7 +146,7 @@ def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDe
         props: dict[str, str] = {}
         chain: list[PomInfo] = []
         cur: Optional[PomInfo] = p
-        while cur is not None and cur not in chain:   # 저장소 안 부모 체인. artifactId로만 대략 찾는다
+        while cur is not None and cur not in chain:   # 프로젝트 안의 부모 체인. artifactId로만 대략 찾는다
             chain.append(cur)
             nxt = None
             if cur.parent_in_repo and cur.parent is not None:
@@ -208,7 +209,7 @@ def _files(ws: WorkspaceView, pattern: str) -> list[str]:
 def language_findings(ws: WorkspaceView, poms: list[PomInfo]) -> tuple[list[str], list[LibraryUsage]]:
     """Java가 아닌 JVM 언어와 소스 생성 플러그인을 찾아 경고와 LibraryUsage로 남긴다.
     sbmig는 Java 코드만 고친다.
-    생성 코드는 생성기가 jakarta, Java 21용 코드를 만들어야 하므로 플러그인 버전은 사람이 확인해야 한다."""
+    생성 코드는 생성기가 jakarta, Java 21용으로 만들어야 한다. 그래서 플러그인 버전은 사람이 확인해야 한다."""
     warnings: list[str] = []
     libs: list[LibraryUsage] = []
     plugin_ids = {pl.artifact_id: p.path for p in poms for pl in p.plugins}
@@ -315,7 +316,7 @@ def encoding_findings(ws: WorkspaceView, poms: list[PomInfo],
     JDK 21은 기본 인코딩이 UTF-8이라 cp949 소스의 한글이 빌드 오류 없이 깨진 채 컴파일된다.
 
     The warning text names `convert-utf8`, a handler that no longer exists."""
-    # 인코딩 선언이 있으면 javac가 그 인코딩으로 읽으므로 파일을 열어 보지 않는다
+    # 인코딩 선언이 있으면 파일을 열어 보지 않는다. javac가 그 인코딩으로 읽는다
     if declared_source_encoding(poms):
         return [], None
     root = Path(ws.root)

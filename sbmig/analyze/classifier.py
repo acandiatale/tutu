@@ -1,12 +1,12 @@
-"""프로젝트 유형을 분류하는 모듈. 분석기(``analyze_project``)가 호출한다.
-pom과 소스의 단서로 pure_java, servlet_tomcat, spring_legacy, spring_boot, MSA 중 하나를 고른다.
+"""pom과 소스를 보고 프로젝트 유형(pure_java, servlet_tomcat, spring_legacy, spring_boot, MSA)을 정하는 모듈.
 MSA면 서비스 루트와 공유 라이브러리 루트도 찾는다.
-결과 ``case_type``에 따라 계획 단계의 레시피 세트와 재구성 방식이 정해진다.
-- :func:`classify`: 저장소 전체를 분류한다
-- :func:`classify_single`: MSA가 아닌 프로젝트를 Boot > Spring > servlet > 순수 Java 순으로 분류한다
-- :func:`msa_deployables`, :func:`service_roots`, :func:`library_roots`: MSA 서비스와 공유 모듈을 찾는다
-- :func:`boot_module_findings`: ``layout.boot_module_pattern``에 맞는 boot 모듈을 찾는다
-- 라이브러리 루트는 Boot 레시피를 받으면 안 되므로 SPRING_BOOT로 분류하지 않는다(``LIBRARY_CASE_MAP``)
+
+Called by ``analyze_project``. The resulting ``case_type`` decides the plan's recipe sets and the restructure
+mode. :func:`classify` covers the whole project; :func:`classify_single` (non-MSA) picks Boot > Spring >
+servlet > pure Java; :func:`msa_deployables`, :func:`service_roots` and :func:`library_roots` find the MSA
+services and shared modules; :func:`boot_module_findings` finds the boot modules by
+``layout.boot_module_pattern``. A library root is never classified SPRING_BOOT (``LIBRARY_CASE_MAP``): it must
+not get the Boot recipes.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def _signals(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
 
 
 def _conf(n: int, base: float) -> float:
-    """신뢰도를 계산한다. 기본값에 첫 근거 뒤로 하나마다 0.1을 더하고 0.99에서 멈춘다."""
+    """신뢰도를 계산한다. 근거가 하나면 기본값이고, 하나 늘 때마다 0.1을 더한다. 0.99를 넘지 않는다."""
     return round(min(0.99, base + 0.1 * max(0, n - 1)), 2)
 
 
@@ -147,7 +147,7 @@ def _looks_deployable(p: PomInfo, poms: list[PomInfo], app_modules: dict[str, li
 
 
 def msa_deployables(poms: list[PomInfo], scan: Optional[ScanResult]) -> tuple[list[PomInfo], list[str]]:
-    """저장소가 MSA로 보이면 (배포 pom 목록, 근거)를, 아니면 ([], [])를 반환한다. 아래 순서로 판단한다.
+    """프로젝트가 MSA로 보이면 (배포 pom 목록, 근거)를, 아니면 ([], [])를 반환한다. 아래 순서로 판단한다.
     - Boot 플러그인이 있는 pom이 2개 이상
     - 서로 다른 모듈에 @SpringBootApplication이 2개 이상
     - 배포 단위로 보이는 독립 루트 pom이 2개 이상"""
@@ -225,14 +225,14 @@ def build_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult) 
 # ---------------------------------------------------------------------------
 # MSA 공유 라이브러리 루트
 # ---------------------------------------------------------------------------
-# 라이브러리는 배포 단위가 아니므로 Boot 레시피와 웹 모듈 분리가 적용되지 않도록 Boot나 servlet 유형으로 두지 않는다
+# 라이브러리는 배포 단위가 아니다. Boot 레시피와 웹 모듈 분리가 적용되지 않도록 Boot나 servlet 유형으로 두지 않는다
 LIBRARY_CASE_MAP = {CaseType.SPRING_BOOT: CaseType.SPRING_LEGACY, CaseType.SERVLET_TOMCAT: CaseType.PURE_JAVA,
                     CaseType.UNKNOWN: CaseType.PURE_JAVA, CaseType.MSA: CaseType.SPRING_LEGACY}
 
 
 def library_roots(poms: list[PomInfo], service_root_poms: list[str], scan: Optional[ScanResult]) -> list[PomInfo]:
     """어느 서비스에도 속하지 않는 공유 모듈(예: ``common/``)의 최상위 pom 목록을 반환한다.
-    후보는 서비스 밖에 있는 jar 패키징 pom 중 Boot 플러그인과 Boot 앱 클래스가 없는 것이다.
+    후보는 서비스 밖의 jar 패키징 pom 중 Boot 플러그인도 Boot 앱 클래스도 없는 pom이다.
     후보에서 위로 올라가며 서비스를 포함하지 않는 가장 높은 조상 pom을 쓴다."""
     svc_dirs = [pom_dir(p) for p in service_root_poms]
     app_modules = _boot_app_modules(poms, scan)
@@ -304,7 +304,7 @@ def is_library_root(svc: ServiceInfo, profile: Optional["ProjectProfile"] = None
         return True
     by_path = {p.path: p for p in profile.poms}
     sub = [by_path[x] for x in (svc.poms or [svc.root_pom]) if x in by_path]
-    if not sub:          # 프로필이 모르는 pom이면 라이브러리라고 증명할 수 없으므로 배포 단위로 본다
+    if not sub:          # 프로필이 모르는 pom이면 라이브러리인지 확인할 수 없다. 배포 단위로 본다
         return False
     return not any(p.packaging == "war" or p.has_spring_boot_plugin for p in sub)
 
@@ -321,7 +321,7 @@ def deployable_services(profile: "ProjectProfile") -> list[ServiceInfo]:
 
 def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUsage],
              scan: Optional[ScanResult] = None) -> tuple[CaseType, float, list[str]]:
-    """저장소 전체의 유형을 분류해 (유형, 신뢰도, 근거)를 반환한다.
+    """프로젝트 전체의 유형을 분류해 (유형, 신뢰도, 근거)를 반환한다.
     배포 단위와 서비스 루트가 둘 이상이면 MSA로, 아니면 :func:`classify_single`로 분류한다.
     모듈별 @SpringBootApplication 규칙은 ``scan``이 있어야 적용된다."""
     deployables, reasons = msa_deployables(poms, scan)
@@ -338,7 +338,7 @@ def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
 # 회사 이름 규칙에 맞는 boot 모듈
 # ---------------------------------------------------------------------------
 def _pom_module_path(p: PomInfo, m: str) -> str:
-    """``<module>`` 값을 루트 기준 pom 경로로 바꾼다. 디렉토리면 ``/pom.xml``을 붙인다."""
+    """``<module>`` 값을 프로젝트 루트 기준의 pom 경로로 바꾼다. 디렉토리면 ``/pom.xml``을 붙인다."""
     target = posixpath.normpath(posixpath.join(pom_dir(p.path) or ".", m))
     if not target.endswith(".xml"):
         target = posixpath.join(target, "pom.xml")

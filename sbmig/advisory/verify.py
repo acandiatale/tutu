@@ -1,7 +1,8 @@
-"""권고 대상 라이브러리를 최종 트리에서 다시 찾아 권고마다 결과(outcome)를 정하는 모듈.
-최종 빌드 뒤 마무리 단계가 ``verify_advisories``를 호출한다.
-인수인계 섹션은 결과에 따라 문장을 고른다. replaced는 확인 요청, still-present는 담당팀 후속 작업이다.
-다시 검사하지 못하면 unknown으로 두고 예외를 던지지 않는다.
+"""이관이 끝난 프로젝트에서 권고 라이브러리를 다시 찾아, 권고마다 교체됐는지 결과를 정하는 모듈.
+
+Finalize calls ``verify_advisories`` after the final build. The Handover picks its sentence by the outcome:
+replaced asks for a check, still-present is a follow-up for the owning team. A failed re-scan leaves unknown
+and never raises.
 
 replaced      — library (and its as-is artifacts) no longer detected, or still detected but at/above the entry's
                 `resolved_min_version` (release-train bumps)
@@ -22,8 +23,8 @@ log = logging.getLogger("sbmig.advisory")
 
 
 def _entries(cfg: Config) -> dict[str, LibraryAdvisory]:
-    """id별 권고 항목을 반환한다.
-    카탈로그를 읽지 못하면 빈 dict를 반환한다. 이때 검증은 권고 결과에 담긴 정보로만 한다."""
+    """권고 항목을 id별 dict로 반환한다.
+    권고 파일을 읽지 못하면 빈 dict다. 그때는 권고 결과에 담긴 정보만으로 확인한다."""
     try:
         from .catalog import load_advisories
 
@@ -36,8 +37,8 @@ def _entries(cfg: Config) -> dict[str, LibraryAdvisory]:
 def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
                 entry: Optional[LibraryAdvisory]) -> None:
     """권고 하나의 결과를 정하고 근거를 notes에 남긴다.
-    라이브러리와 아티팩트가 더 이상 보이지 않거나, 보여도 ``resolved_min_version`` 이상이면 replaced다.
-    그 밖은 still-present다."""
+    라이브러리와 아티팩트가 더 이상 없으면 replaced다. 남아 있어도 ``resolved_min_version`` 이상이면 replaced다.
+    그 밖에는 still-present다."""
     lib = libs.get(f.library)
     patterns = list(entry.artifacts) if entry is not None and entry.artifacts else []
     patterns += [k for k in f.artifacts if k not in patterns]
@@ -61,8 +62,8 @@ def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
 
 
 def verify_advisories(findings: list[AdvisoryFinding], view: Any, cfg: Config) -> list[AdvisoryFinding]:
-    """``view``(Workspace 또는 PathView)를 다시 검사해 모든 권고의 ``outcome``을 정한다.
-    받은 리스트를 직접 고쳐서 그대로 반환한다. 예외를 던지지 않는다."""
+    """이관된 프로젝트(``view``: Workspace 또는 PathView)를 다시 검사해 모든 권고의 ``outcome``을 정한다.
+    받은 리스트를 직접 고쳐서 그대로 반환한다. 예외를 던지지 않는다. 검사에 실패하면 모두 unknown이다."""
     if not findings:
         return findings
     try:

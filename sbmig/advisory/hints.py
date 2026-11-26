@@ -1,8 +1,7 @@
-"""지금 고치는 오류에 맞는 권고를 찾아 수정 프롬프트에 넣을 짧은 안내 줄(``FixContext.advisory_hints``)로 만드는 모듈.
-수정 루프가 케이스마다 LLM 프롬프트를 만들 때 ``hints_for``를 호출한다.
-- 오류가 권고 라이브러리의 패키지, as-is 아티팩트, 대체 아티팩트를 언급하면 그 권고가 맞는 것으로 본다
-- 맞는 권고마다 힌트 한 줄을 만들고, 권고에 노트 파일이 있으면 그 발췌를 붙인다
-- 노트 파일만 읽고 예외를 던지지 않는다. 문제가 생기면 그 권고의 힌트만 빠진다
+"""고치는 중인 빌드 오류와 관련된 권고를 찾아, 수정 프롬프트에 넣을 짧은 안내 줄로 만드는 모듈.
+
+The fix loop calls ``hints_for`` per case while it builds the LLM prompt (``FixContext.advisory_hints``).
+Only the note files are read and nothing raises; a problem drops that advisory's hint only.
 
     hints_for(errors, findings, profile=None, *, notes_root=None) -> (hints, advisory_ids)
 
@@ -34,7 +33,7 @@ log = logging.getLogger("sbmig.advisory.hints")
 
 HINT_MAX = 500
 NOTE_EXCERPT_MAX = 600
-RAW_MAX = 4000                      # javac 오류 블록은 담고, 큰 의존성 출력은 잘리도록 오류당 길이를 제한한다
+RAW_MAX = 4000                      # 오류 원문의 길이 상한. javac 오류 블록은 다 담고 긴 의존성 출력은 자른다
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
@@ -58,14 +57,14 @@ def library_packages(library: str) -> tuple[str, ...]:
 
 
 def _pkg_re(prefix: str) -> re.Pattern:
-    # 이름이 비슷한 다른 패키지에 엉뚱한 힌트가 붙지 않도록 패키지 경계에서만 맞춘다
+    # 패키지 경계에서만 맞춘다. 이름이 비슷한 다른 패키지에 힌트가 붙으면 안 된다
     # segment boundary on both sides: `com.netflix.hystrix` matches `com.netflix.hystrix.HystrixCommand` and
     # "package com.netflix.hystrix does not exist", not `com.netflix.hystrixfoo` or `x.com.netflix.hystrix`
     return re.compile(r"(?<![\w.])" + re.escape(prefix) + r"(?![\w])")
 
 
 def _error_text(e: BuildError) -> str:
-    """매칭에 쓸 오류 텍스트(메시지, 심볼, 위치, 원문, 아티팩트)를 만든다.
+    """권고와 맞춰 볼 오류 텍스트를 만든다. 메시지, 심볼, 위치, 원문, 아티팩트를 이어 붙인다.
     원문은 오류당 RAW_MAX자까지만 쓴다."""
     parts = [e.message or "", e.symbol or "", e.location or "", (e.raw or "")[:RAW_MAX]]
     if e.artifact is not None:
@@ -74,7 +73,8 @@ def _error_text(e: BuildError) -> str:
 
 
 def _replacement_keys(replacement: Optional[str]) -> list[str]:
-    """대체 아티팩트로 매칭할 키를 만든다. ``g:a``와, 대시가 있어 충분히 구별되는 artifactId를 쓴다."""
+    """대체 아티팩트로 맞춰 볼 키를 만든다. ``g:a``와 artifactId를 쓴다.
+    artifactId는 대시가 들어 있어 다른 단어와 헷갈리지 않을 때만 쓴다."""
     if not replacement:
         return []
     r = replacement.strip()
@@ -86,8 +86,8 @@ def _replacement_keys(replacement: Optional[str]) -> list[str]:
 
 
 def _matches(f: AdvisoryFinding, text: str) -> bool:
-    """권고가 이 오류 텍스트에 맞는지 확인한다.
-    라이브러리 import 패키지, as-is 아티팩트, 대체 아티팩트 중 하나가 나오면 맞는 것으로 본다."""
+    """오류 텍스트가 이 권고와 관련 있는지 확인한다.
+    라이브러리의 import 패키지, as-is 아티팩트, 대체 아티팩트 중 하나라도 나오면 관련 있다고 본다."""
     for prefix in library_packages(f.library):
         if prefix and _pkg_re(prefix).search(text):
             return True
@@ -104,7 +104,7 @@ def _matches(f: AdvisoryFinding, text: str) -> bool:
 # 힌트 문구
 # ---------------------------------------------------------------------------
 def _cut(text: str, limit: int) -> str:
-    """공백을 정리하고 ``limit``자로 자른다. 가능하면 문장 끝(". ")에서 자르고, 아니면 …을 붙인다."""
+    """공백을 정리하고 ``limit``자로 자른다. 되도록 문장 끝(". ")에서 자르고, 그럴 수 없으면 끝에 …을 붙인다."""
     text = " ".join(text.split())
     if len(text) <= limit:
         return text
@@ -126,7 +126,8 @@ def _note_paths(f: AdvisoryFinding) -> list[str]:
 
 
 def _resolve(path: str, notes_root: Optional[Path]) -> Optional[Path]:
-    """노트 경로를 찾는다. 절대 경로가 아니면 ``notes_root``, 이 체크아웃 루트, 현재 디렉토리 순서로 찾는다."""
+    """노트 파일을 찾는다. 상대 경로면 ``notes_root``, 이 저장소 루트, 현재 디렉토리 순서로 찾는다.
+    못 찾으면 None을 반환한다."""
     p = Path(path)
     if p.is_absolute():
         cands = [p]
@@ -136,8 +137,8 @@ def _resolve(path: str, notes_root: Optional[Path]) -> Optional[Path]:
 
 
 def note_section(text: str, library: str) -> tuple[str, str]:
-    """노트에서 ``library``의 절을 (제목, 본문)으로 반환한다.
-    ``## fix-loop: <library>`` 절을 먼저 찾고, 없으면 라이브러리 이름이 들어간 첫 소제목을 쓴다.
+    """노트에서 ``library``에 관한 절을 찾아 (제목, 본문)으로 반환한다.
+    ``## fix-loop: <library>`` 절이 있으면 그 절이고, 없으면 라이브러리 이름이 들어간 첫 소제목이다.
     둘 다 없으면 ("", "")를 반환한다.
 
     The name must appear as a whole word; a level-1 heading is never picked by name."""
@@ -173,7 +174,7 @@ def _note_excerpt(f: AdvisoryFinding, notes_root: Optional[Path]) -> str:
 
 
 def hint_text(f: AdvisoryFinding, notes_root: Optional[Path] = None) -> str:
-    """권고 하나의 힌트 줄을 만든다. 본문은 HINT_MAX자까지 자르고 노트 발췌를 뒤에 붙인다.
+    """권고 하나의 힌트 줄을 만든다. 본문은 HINT_MAX자에서 자르고, 뒤에 노트 발췌를 붙인다.
     형식은 ``<라이브러리> (<상태>): replace with <대체품> (<버전>). <후속 작업>``이다."""
     head = f"{f.library} ({f.status})"
     if f.replacement:
@@ -191,8 +192,8 @@ def hint_text(f: AdvisoryFinding, notes_root: Optional[Path] = None) -> str:
 # ---------------------------------------------------------------------------
 def hints_for(errors: Iterable[BuildError], findings: Optional[Iterable[AdvisoryFinding]], profile: Any = None, *,
               notes_root: Optional[Path] = None) -> tuple[list[str], list[str]]:
-    """이 오류들에 맞는 권고의 (힌트 줄 목록, 권고 id 목록)을 ``findings`` 순서로 반환한다.
-    예외를 던지지 않는다. 문제가 생기면 그 권고만 빠지거나 빈 목록을 반환한다.
+    """이 오류들과 관련된 권고를 찾아 (힌트 줄 목록, 권고 id 목록)을 반환한다. 순서는 ``findings`` 순서다.
+    예외를 던지지 않는다. 권고 하나가 실패하면 그 권고만 빠지고, 전체가 실패하면 빈 목록이다.
 
     `profile` is accepted for the contract and unused; `notes_root` = base directory of the advisories'
     `notes` paths (the config's repo root; defaults to this checkout)."""

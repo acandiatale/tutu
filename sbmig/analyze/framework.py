@@ -1,13 +1,15 @@
 """사내 프레임워크 아티팩트를 쓰는 프로젝트를 찾는 모듈. 분석 단계에서 호출한다.
 찾으면 이관 범위를 JDK 21과 jakarta로 줄인다(``jdk-jakarta``). 재구성과 구조 검토는 하지 않는다.
-- ``detect_framework``: 프로젝트 pom 선언, 부모 pom에서 상속한 의존성(as-is effective pom), 트리의 jar를 검사한다
-- ``transitive_evidence``: 다른 라이브러리가 가져오는지 ``mvn dependency:tree``로 한 번 확인한다
-- ``decide_scope``: 찾은 근거와 ``framework.*`` 설정으로 실행 범위를 정한다
-- 예외를 던지지 않는다. 확인하지 못한 곳은 ``unchecked``에 남긴다
 
 Reduced scope `jdk-jakarta`: Java 21 + jakarta recipes, the verify build (the fix loop only with
 `framework.fix_loop: true`), the chained remediation; parents and the framework version kept.
 Contract: docs/INTERFACES.md "v2.1z-ak".
+
+Called at analyze. ``detect_framework`` checks the project poms' declarations, dependencies inherited from a
+parent (the as-is effective pom) and the jars in the project. ``transitive_evidence`` asks
+``mvn dependency:tree`` once whether another library brings the artifact. ``decide_scope`` sets the run's
+scope from the evidence and the ``framework.*`` settings. Nothing raises; a source that could not be checked
+is kept in ``unchecked``.
 
 Evidence sources, in this order: `direct` (a project pom's `<dependencies>`; a `<dependencyManagement>` entry alone is
 no evidence), `parent` (a module's effective `<dependencies>` in the as-is capture `logs/effective-depmgmt.json` lists
@@ -66,8 +68,8 @@ def _load_capture(ws: Any) -> Optional[dict]:
 
 def detect_framework(ws: Any, cfg: Any, poms: list, bundled_jars: list,
                      effective: Optional[dict] = None) -> Optional[FrameworkUse]:
-    """프로젝트 pom, 부모 pom 상속, 트리의 jar에서 사내 프레임워크 아티팩트를 찾는다.
-    ``framework.artifacts``가 비어 있으면 None을 반환한다. Maven은 실행하지 않고 예외를 던지지 않는다.
+    """프로젝트 pom, 부모 pom 상속, 프로젝트 안의 jar에서 사내 프레임워크 아티팩트를 찾는다.
+    ``framework.artifacts``가 비어 있으면 None을 반환한다. Maven은 실행하지 않는다. 예외를 던지지 않는다.
     읽지 못한 출처는 ``unchecked``에 ``"<출처>: <이유>"``로 남긴다.
 
     `effective` = the as-is depmgmt dict (tests); None reads the run's capture."""
@@ -119,7 +121,7 @@ def detect_framework(ws: Any, cfg: Any, poms: list, bundled_jars: list,
     except Exception as e:  # noqa: BLE001
         use.unchecked.append(f"parent: {type(e).__name__}: {e}")
 
-    # bundled: 어떤 pom도 선언하지 않은 트리의 jar
+    # bundled: 어떤 pom도 선언하지 않은 프로젝트 안의 jar
     try:
         if not getattr(getattr(cfg, "intake", None), "bundled_jars", True):
             use.unchecked.append("bundled: intake.bundled_jars is off")
@@ -178,7 +180,7 @@ def _tree_targets(ws: Any, profile: Any) -> Optional[list[tuple[Optional[str], b
 
 def transitive_evidence(ws: Any, cfg: Any, profile: Any) -> tuple[list[FrameworkEvidence], Optional[str]]:
     """``mvn dependency:tree``로 다른 라이브러리가 프레임워크 아티팩트를 가져오는지 확인한다.
-    트리를 읽었으면 ``(근거, None)``을, 읽지 못했으면 ``([], 이유)``를 반환한다. 예외를 던지지 않는다.
+    의존성 트리를 읽었으면 ``(근거, None)``을, 읽지 못했으면 ``([], 이유)``를 반환한다. 예외를 던지지 않는다.
 
     One `dependency:tree -Dincludes=<framework patterns>` per target. A matching node at depth 1 is
     reported as `direct` (a profile or property the static parse missed), deeper nodes as `transitive` with
@@ -315,7 +317,7 @@ NO_FIX_LOOP_NOTE = "not tried: framework project — build errors are not fixed 
 
 def no_fix_loop_followup(errors: int) -> str:
     """수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 첫 줄을 영어로 만든다.
-    ``errors``는 빌드가 남긴 오류 수다. 0이면 오류를 파싱하지 못한 실패로 보고 빌드 로그를 보라고 쓴다."""
+    ``errors``는 빌드가 남긴 오류 수다. 0이면 오류를 읽지 못한 실패로 보고, 빌드 로그를 보라고 안내한다."""
     if errors > 0:
         return f"{NO_FIX_LOOP_PREFIX} — {errors} error(s) remain after the JDK 21 + jakarta conversion; see the error list"
     return f"{NO_FIX_LOOP_PREFIX} — the build failed after the JDK 21 + jakarta conversion; see the build log"

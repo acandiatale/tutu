@@ -1,10 +1,10 @@
-"""Maven 모듈에는 소스가 없고 실제 소스는 트리의 다른 곳에 있는 프로젝트(hollow reactor)를 찾는 모듈.
-분석 단계가 프로필을 만든 직후 ``detect_hollow``를 호출하고, 오케스트레이터가 결과에 따라 플래그를 단다.
-- ``hollow-reactor``: 빌드할 소스가 없으므로 성공으로 보지 않는다(exit 2, 인수인계 첫 줄)
-- ``sources-outside-reactor``: 알림만 남긴다
-- 폴더 이름으로 판단하지 않는다. pom이 선언한 소스, 리소스, 웹 루트의 안과 밖에서 java, jsp, 웹 파일 수를 센다
-- 치환하지 못한 ``${…}``는 unresolved로 남긴다
-- 파일을 읽기만 하고 예외를 던지지 않는다
+"""Maven 모듈에는 소스가 없고 실제 소스는 프로젝트의 다른 곳에 있는 경우(hollow reactor)를 찾는 모듈.
+
+Analyze calls ``detect_hollow`` right after the profile is built; the orchestrator sets the flags.
+``hollow-reactor``: nothing to build, so the run is not a success (exit 2, first Handover line);
+``sources-outside-reactor``: a notice only. Folder names decide nothing: java, jsp and web files are counted
+inside and outside the sources, resources and web roots the poms declare. An unresolved ``${…}`` is kept as
+unresolved. Files are only read; nothing raises.
 
 Roots = defaults plus `<sourceDirectory>`, `<resources>`, `warSourceDirectory`, `<webResources>`, `${…}`
 interpolated from the pom's and its in-repo parents' properties. Test roots and build output are ignored.
@@ -48,7 +48,7 @@ _MAX_FILES = 200_000
 class HollowResult:
     """hollow reactor 판단 결과를 담는 클래스.
     모듈 안과 밖의 종류별 파일 수, 밖에 있는 파일의 최상위 폴더별 개수, 검사한 루트,
-    치환하지 못한 ``${…}``, WAR 모듈 여부를 담는다.
+    치환하지 못한 ``${…}``, WAR 모듈인지를 담는다.
 
     Kinds: `java`, `jsp`, `web`. Roots are root-relative."""
     inside: dict[str, int] = field(default_factory=lambda: {"java": 0, "jsp": 0, "web": 0})
@@ -107,7 +107,7 @@ class HollowResult:
 
 def hollow_followup(res: HollowResult) -> str:
     """소스가 reactor 밖에 있어 이관되지 않았다는 인수인계 첫 줄을 영어로 만든다.
-    ``sbmig.report.i18n.PATTERNS``가 한국어로 바꾸므로 문장을 바꾸면 패턴도 함께 고친다."""
+    ``sbmig.report.i18n.PATTERNS``가 이 문장을 한국어로 바꾼다. 문장을 바꾸면 패턴도 함께 고친다."""
     return (f"{HOLLOW_PREFIX} {res.counts_text()} lie outside its modules ({res.by_dir_text()}) and were NOT migrated — "
             f"the as-is build only packaged files produced elsewhere{res.unresolved_text()}; the sources must be mapped "
             "into the modules first (sbmig: tree profile, next increment)")
@@ -127,7 +127,7 @@ def _norm(rel: str) -> str:
 
 
 def _chain(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> list[PomInfo]:
-    """pom과 저장소 안 부모 pom들을 자식부터 순서대로 반환한다."""
+    """pom과 프로젝트 안의 부모 pom들을 자식부터 순서대로 반환한다."""
     chain: list[PomInfo] = []
     cur: PomInfo | None = pom
     seen: set[str] = set()
@@ -140,7 +140,7 @@ def _chain(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> list[PomInfo
 
 
 def _chain_props(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> dict[str, str]:
-    """pom의 ``<properties>``에 저장소 안 부모 pom의 속성을 합쳐 실제로 적용되는 속성을 만든다.
+    """pom의 ``<properties>``에 프로젝트 안 부모 pom의 속성을 합쳐 실제로 적용되는 속성을 만든다.
     자식 값이 우선한다. ``basedir`` 계열은 ``.``으로 둔다."""
     chain = _chain(pom, by_key)
     props: dict[str, str] = {}
@@ -161,7 +161,7 @@ def _interpolate(value: str, props: dict[str, str], depth: int = 6) -> str:
 
 
 def _resolve_dir(raw: str | None, base: str, props: dict[str, str], unresolved: list[str]) -> str | None:
-    """pom의 디렉토리 값을 루트 기준 posix 경로로 바꾼다.
+    """pom의 디렉토리 값을 프로젝트 루트 기준 posix 경로로 바꾼다.
     ``${…}``가 남으면 ``unresolved``에 기록하고 None을 반환한다. 프로젝트 밖 경로도 None을 반환한다."""
     if not raw or not raw.strip():
         return None
@@ -179,8 +179,8 @@ def _resolve_dir(raw: str | None, base: str, props: dict[str, str], unresolved: 
 
 
 def module_roots(ws: Any, poms: Iterable[PomInfo]) -> tuple[list[str], list[str], list[str], bool]:
-    """pom이 컴파일하고 패키징하는 루트, 무시할 테스트 루트, 치환하지 못한 ``${…}``, WAR 모듈 여부를
-    반환한다.
+    """pom이 컴파일하고 패키징하는 루트를 반환한다.
+    무시할 테스트 루트, 치환하지 못한 ``${…}``, WAR 모듈인지도 함께 반환한다.
     기본 ``src/main/*`` 루트에 pom이 선언한 소스, 리소스, 웹 루트를 더한다.
 
     Paths are root-relative. The defaults are listed whether or not they exist (a missing one holds
@@ -219,7 +219,7 @@ def module_roots(ws: Any, poms: Iterable[PomInfo]) -> tuple[list[str], list[str]
         base = posixpath.dirname(p.path.replace("\\", "/"))
         war = war or (p.packaging or "").lower() == "war"
         props = _chain_props(p, by_key)
-        # 저장소 안 부모 pom의 <build> 디렉토리도 상속되므로 자식부터 부모 순으로 보고 먼저 나온 값을 쓴다
+        # 프로젝트 안 부모 pom의 <build> 디렉토리도 상속된다. 자식부터 부모 순으로 보고 먼저 나온 값을 쓴다
         chain = [b for b in (build_of(q) for q in _chain(p, by_key)) if b is not None]
 
         def first(name: str) -> str | None:
@@ -241,7 +241,7 @@ def module_roots(ws: Any, poms: Iterable[PomInfo]) -> tuple[list[str], list[str]
                 d = _resolve_dir(_ktext(r, "directory"), base, props, unresolved) if _kid(r, "directory") is not None \
                     else _norm(posixpath.join(base, "src/main/resources"))
                 add(roots, d)
-            # war 플러그인 설정도 항목마다 자식 값이 이기므로 그 항목을 가진 가장 가까운 pom의 값만 쓴다
+            # war 플러그인 설정도 항목마다 자식 값이 이긴다. 그 항목이 있는 가장 가까운 pom의 값만 쓴다
             for b in chain:
                 confs = [cf for cf in war_confs(b) if _kid(cf, "warSourceDirectory") is not None]
                 if confs:
@@ -292,12 +292,12 @@ def detect_hollow(ws: Any, poms: Iterable[PomInfo]) -> HollowResult:
         res.roots, res.ignored, res.unresolved, res.war = roots, ignored, unresolved, war
         root = Path(ws.root)
         pom_dirs = {posixpath.dirname(p.path.replace("\\", "/")) for p in pom_list}
-        # 접수가 무시한 모듈 복사본 폴더의 java가 reactor 밖 소스로 잡히지 않도록 세지 않는다
+        # 접수가 무시한 모듈 복사본 폴더는 세지 않는다. 그 안의 java가 reactor 밖 소스로 잡히면 안 된다
         is_ignored = getattr(ws, "is_ignored", None)
         seen = 0
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = _norm(os.path.relpath(dirpath, root))
-            # pom 옆의 target만 뺀다. pom이 없는 곳의 target은 소스 폴더일 수 있기 때문이다
+            # pom 옆의 target만 뺀다. pom이 없는 곳의 target은 소스 폴더일 수 있다
             dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE and not (
                 d == "target" and (rel_dir in pom_dirs or "pom.xml" in filenames))
                 and not (callable(is_ignored) and is_ignored(f"{rel_dir}/{d}" if rel_dir else d)))

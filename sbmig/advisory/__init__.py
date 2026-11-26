@@ -1,10 +1,9 @@
-"""EOL이거나 더 이상 관리되지 않는 라이브러리(springfox, hystrix, sleuth, 오래된 Spring Cloud 등)를 안내하는 권고 패키지.
-- 분석 뒤 ``evaluate_advisories``가 프로젝트에 맞는 권고를 찾는다
-- 수정 루프는 ``hints_for``로 오류에 맞는 권고를 프롬프트 힌트로 넣는다
-- 마무리 단계의 ``verify_advisories``가 최종 트리를 다시 검사해 결과(replaced / still-present / unknown)를 정한다
-- 보고서의 인수인계 섹션이 그 결과를 담당팀에 보여 준다
-- 권고는 안내만 한다. 레시피를 더하지 않고 차단("block")도 없으며 실행 결과나 종료 코드를 바꾸지 않는다
-- 권고 파일이 없거나 비어도 안전해야 한다. 하위 모듈을 import하지 못하면 아래의 대체 정의로 동작한다
+"""EOL이거나 더 이상 관리되지 않는 라이브러리(springfox, hystrix 등)를 찾아 안내하는 권고 패키지.
+권고는 안내만 한다. 빌드를 막거나 실행 결과를 바꾸지 않는다.
+
+Advisories are guide-only: they add no recipe, never block, and never change a run's verdict or exit code.
+The report's Handover section shows each finding's outcome to the owners. A missing or empty advisories file
+must be safe; when a submodule cannot be imported the fallback definitions below stand in (no advisories).
 
 The orchestrator, the planner, the report and the fleet depend on exactly these names:
 
@@ -40,7 +39,7 @@ try:
     from .evaluate import evaluate_advisories, followups_for
     from .verify import verify_advisories
 except ImportError as _e:  # pragma: no cover - 하위 모듈을 import하지 못한 경우
-    # 권고 때문에 실행이 멈추지 않도록 하위 모듈을 읽지 못하면 권고가 없는 것으로 동작하는 대체 정의를 쓴다
+    # 하위 모듈을 읽지 못하면 권고가 없는 것으로 동작한다. 권고 때문에 실행이 멈추면 안 된다
     log.debug("sbmig.advisory not fully available yet: %s", _e)
 
     class AdvisoryCatalog:  # type: ignore[no-redef]

@@ -1,9 +1,8 @@
-"""권고 파일을 보여 주고 검사하는 ``sbmig advisories`` 명령(list | show | check) 모듈.
-대상은 knowledge/libraries/advisories.yml과 ``advisories.extra_files``다.
-- 이관 실행과 상관없는 읽기 전용 도구다. 항목 상태는 guide 또는 off뿐이다
-- typer가 명령 함수의 docstring을 ``--help`` 화면에 쓰므로 명령 함수의 docstring은 도움말 문구다
+"""``sbmig advisories`` 명령(list, show, check)으로 권고 파일을 보여 주고 검사하는 모듈.
 
-See docs/ADVISORIES.md."""
+Reads knowledge/libraries/advisories.yml and ``advisories.extra_files``. A read-only tool, unrelated to
+migration runs; an entry's state is guide or off only. Typer shows the command functions' docstrings as
+``--help`` text, so those docstrings are help text. See docs/ADVISORIES.md."""
 from __future__ import annotations
 
 import json
@@ -26,8 +25,8 @@ def _load(configs: Optional[List[Path]]):
 
 
 def _state(entry: Any, cfg: Any) -> str:
-    """항목 상태를 반환한다.
-    ``advisories.policy_overrides``로 꺼졌으면 "off", 아니면 "guide"(LLM 힌트와 인수인계)를 반환한다."""
+    """권고 항목의 상태를 반환한다.
+    ``advisories.policy_overrides``로 꺼 둔 항목이면 "off", 아니면 "guide"(LLM 힌트와 인수인계)다."""
     from .evaluate import switched_off
 
     return "off" if switched_off(entry, cfg) else "guide"
@@ -37,7 +36,7 @@ _DROPPED_FIELDS = ("policy", "recipes")      # 모델에는 남아 있지만 안
 
 
 def _row(entry: Any, cfg: Any) -> dict[str, Any]:
-    """출력용 한 줄 dict를 만들고 상태를 붙인다. 쓰지 않는 ``policy`` / ``recipes``는 뺀다."""
+    """항목 하나를 출력용 dict로 만들고 상태를 붙인다. 쓰지 않는 ``policy``, ``recipes``는 뺀다."""
     data = {k: v for k, v in entry.model_dump(mode="json").items() if k not in _DROPPED_FIELDS}
     return {**data, "state": _state(entry, cfg)}
 

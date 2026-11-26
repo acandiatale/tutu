@@ -1,8 +1,8 @@
-"""pom 구조, 소스 스캔, 라이브러리 탐지, 프로젝트 유형 분류 결과를 합쳐 ProjectProfile을 만드는 모듈.
-오케스트레이터의 ``step_analyze``가 호출하고, 결과인 ``profile.json``은 이후 단계와 보고서가 모두 읽는다.
-- 진입점은 실행 작업공간을 받는 :func:`analyze_project`와 폴더를 그 자리에서 읽는 :func:`analyze_path`다
-- 특이 사항이 있어도 실행을 막지 않고 ``profile.warnings``와 ``LibraryUsage``에만 남긴다
-- MSA 프로젝트는 ``profile.services``에 배포 서비스를 먼저, 공유 라이브러리 루트(``main_classes == []``)를 뒤에 넣는다
+"""프로젝트를 분석해 ProjectProfile을 만드는 모듈. pom 구조, 소스, 라이브러리, 프로젝트 유형을 한데 모은다.
+
+Called by the orchestrator's ``step_analyze``; the result ``profile.json`` is read by every later stage and
+the report. Entry points: :func:`analyze_project` (a run workspace) and :func:`analyze_path` (a folder read
+in place). Nothing found here blocks the run.
 
 Edge cases (docs/ERROR-HANDLING.md) surface as `profile.warnings` plus `LibraryUsage` entries:
 `system-scope-jars`, `kotlin` / `groovy` / `scala` / `codegen:<plugin artifactId>`, `legacy-encoding`,
@@ -44,7 +44,7 @@ class PathView:
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
-        self.ignored_dirs: set[str] = set()      # Workspace.ignored_dirs와 같다. 떠도는 pom 복사본 폴더
+        self.ignored_dirs: set[str] = set()      # Workspace.ignored_dirs와 같다. 모듈이 아닌 pom 복사본이 든 폴더
 
     def is_ignored(self, rel: str) -> bool:
         """``rel``이 무시할 폴더(``ignored_dirs``) 안에 있는지 확인한다."""
@@ -70,7 +70,7 @@ class PathView:
 
     def read(self, rel: str | Path, encoding: str = "utf-8") -> str:
         """파일을 텍스트로 읽는다.
-        인코딩이 깨져도 멈추지 않도록 디코딩하지 못한 바이트는 대체 문자로 바꾼다."""
+        디코딩하지 못한 바이트는 대체 문자로 바꾼다. 인코딩이 깨져도 멈추지 않는다."""
         return self.abs(rel).read_text(encoding=encoding, errors="replace")
 
     def glob(self, pattern: str) -> list[str]:
@@ -123,7 +123,7 @@ def _pick(values: list[Optional[str]]) -> Optional[str]:
 
 def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     """프로젝트를 분석해 ProjectProfile을 반환한다. 프로젝트 파일은 바꾸지 않는다.
-    Maven 프로젝트가 아니면 ``warnings[0]``에 이유를 넣어 반환하고, 오케스트레이터가 ``build_tool``을 보고 중단한다."""
+    Maven 프로젝트가 아니면 ``warnings[0]``에 이유를 넣어 반환한다. 오케스트레이터가 ``build_tool``을 보고 실행을 멈춘다."""
     root = Path(ws.root)
     poms, warnings = parse_poms(ws)
     order = module_order(poms)
@@ -134,7 +134,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     source = scan.stats()
     libraries = detect_libraries(poms, scan)
 
-    # 오케스트레이터가 build_tool을 보고 중단하므로 이유는 warnings[0]에 둔다. 접수 단계 검사의 대체 경로다
+    # Maven이 아니면 이유를 warnings[0]에 둔다. 접수 단계 검사를 거치지 않았을 때의 대체 경로다
     det = detect_build_tool(ws)
     build_tool = det.tool
     if det.tool != "maven":
@@ -157,7 +157,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
 
     case, confidence, reasons = classify(poms, source, libraries, scan)
     services = []
-    # 계획 단계가 공유 라이브러리 루트를 먼저 변환하므로 배포 서비스와 구분해 뒤에 붙인다
+    # MSA면 공유 라이브러리 루트를 배포 서비스 뒤에 따로 붙인다. 계획 단계가 라이브러리 루트를 먼저 변환한다
     if case == CaseType.MSA:
         deployables, _ = msa_deployables(poms, scan)
         roots = service_roots(deployables, poms)
@@ -184,7 +184,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     warnings += bm_warn
     reasons += bm_reasons
 
-    # 루트 pom 값을 우선하고, 없으면 모듈 중 가장 많이 쓰는 Java 버전과 처음 보이는 Boot / Spring 버전을 쓴다
+    # 루트 pom 값을 먼저 쓴다. 없으면 Java는 모듈에서 가장 많이 쓰는 버전, Boot와 Spring은 처음 보이는 버전이다
     java_version = normalize_java_version(
         (root_pom.java_version if root_pom else None) or _pick([p.java_version for p in poms]))
     boot_version = (root_pom.spring_boot_version if root_pom else None) or next(
@@ -224,7 +224,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
             profile.adf = adf.summary()
     except Exception as e:  # noqa: BLE001
         log.warning("ADF detection skipped: %s: %s", type(e).__name__, e)
-    # 트리에 있지만 어떤 pom도 선언하지 않은 jar를 프로필에 기록한다. 이 검사로 분석이 실패하지는 않는다
+    # 프로젝트 안에 있지만 어떤 pom도 선언하지 않은 jar를 프로필에 기록한다. 실패해도 분석은 계속한다
     if getattr(getattr(cfg, "intake", None), "bundled_jars", True):
         try:
             from .bundled_jars import scan_bundled_jars
@@ -239,7 +239,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     except Exception as e:  # noqa: BLE001
         log.warning("framework check skipped: %s: %s", type(e).__name__, e)
     if cfg.externalized.enabled:
-        # 외장 컨테이너만 주던 설정(JNDI, context-param, -D 등)을 코드가 읽는지 찾는다
+        # 외부 컨테이너가 주던 설정(JNDI, context-param, -D 등)을 코드가 읽는지 찾는다
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))
         # MSA는 배포 서비스마다 따로 찾는다. 라이브러리 루트는 서비스가 아니다
         deployable = [s for s in services if s.kind == "service"] if case == CaseType.MSA else None

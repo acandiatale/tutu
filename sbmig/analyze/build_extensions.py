@@ -1,14 +1,13 @@
 """접수 단계에서 배포 전송용 build extension을 pom에서 지우는 모듈.
-Wagon 전송 확장은 ``mvn deploy``에만 쓰이지만 Maven은 어떤 goal보다 먼저 확장을 받으므로, 받지 못하면
-``Unresolveable build extension``으로 실행 전체가 막힌다.
-- 목록 파일(``intake.build_extensions_file``)에 있는 확장을 첫 Maven 호출 전에 모든 pom에서 지운다.
-  프로필 안의 확장도 포함한다
-- 목록에 없는 확장은 빌드에 쓰일 수 있으므로 그대로 두고 기록만 한다
-- 지울 좌표는 코드가 아니라 목록 파일에 둔다
+이 확장을 받지 못하면 ``Unresolveable build extension``으로 Maven 실행 전체가 막힌다.
 
 Maven resolves every `<build><extensions>` entry while building the project model, before any goal
 (OpenRewrite included), so an unresolvable Wagon provider stops the whole run although only `mvn deploy`
-uses it."""
+uses it.
+
+The entries of the list file (``intake.build_extensions_file``) are removed from every pom, profiles included,
+before the first Maven call. An extension not on the list may be used by the build: it stays and is only
+recorded. The coordinates to remove live in the list file, not in the code."""
 from __future__ import annotations
 
 import fnmatch
@@ -27,7 +26,7 @@ log = logging.getLogger("sbmig.analyze.build_extensions")
 @dataclass(frozen=True)
 class DeployTransport:
     """목록 파일의 한 줄을 담는 클래스.
-    groupId는 정확히 일치해야 하고, artifactId는 셸 glob 패턴으로 비교한다."""
+    groupId는 정확히 같아야 한다. artifactId는 셸 glob 패턴으로 비교한다."""
     group: str
     artifact: str = "*"
     note: str = ""
@@ -79,7 +78,7 @@ def load_deploy_transports(cfg: Any) -> list[DeployTransport]:
 def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | None = None) -> StripResult:
     """모든 pom의 ``build/extensions``와 ``profiles/*/build/extensions``에서 목록에 있는 확장을 지운다.
     지워서 빈 ``<extensions>``도 지운다. 목록에 없는 확장은 ``kept``에 기록만 한다.
-    예외를 던지지 않고, 읽을 수 없는 pom은 건너뛴다."""
+    예외를 던지지 않는다. 읽을 수 없는 pom은 건너뛴다."""
     from sbmig.restructure.pom_editor import PomEditor
 
     res = StripResult()
@@ -103,7 +102,8 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
                     continue
                 removed_here = 0
                 for ext in list(ed.children(exts, "extension")):
-                    # `${…}`는 이 pom의 속성으로만 푼다. 부모 pom의 속성이면 그대로 남아 확장도 남고, 수정 루프의 노트가 처리한다
+                    # `${…}`는 이 pom의 속성으로만 푼다. 부모 pom의 속성이면 풀리지 않아 확장이 남는다.
+                    # 그 경우는 수정 루프의 노트가 다룬다
                     g = ed.resolve(ed.text_of(ext, "groupId")) or ""
                     a = ed.resolve(ed.text_of(ext, "artifactId")) or ""
                     v = ed.resolve(ed.text_of(ext, "version")) or ""
@@ -114,7 +114,7 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
                         res.removed.append(RemovedExtension(pom=rel, coordinates=coords, profile=profile))
                     else:
                         res.kept.append((rel, coords))
-                # 원래부터 비어 있던 <extensions/>까지 고치면 다음 커밋에 섞이므로 지운 경우에만 정리한다
+                # 확장을 지운 경우에만 빈 <extensions/>를 정리한다. 원래 비어 있던 것까지 고치면 다음 커밋에 섞인다
                 if removed_here:
                     ed.remove_if_empty(exts)
             if ed.changed:

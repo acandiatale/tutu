@@ -1,9 +1,10 @@
-"""``knowledge/libraries/advisories.yml``과 ``advisories.extra_files``를 id 기준으로 합쳐 권고 목록(카탈로그)을 만드는 모듈.
-``evaluate_advisories`` / ``verify_advisories`` / ``sbmig advisories``가 ``load_advisories``로 읽는다.
-- 같은 id는 뒤 파일이 우선하므로 회사 파일로 덮어쓸 수 있다. 없는 파일은 info 로그만 남기고 건너뛴다
-- 회사 고유 내용은 YAML에만 둔다
-- 항목에는 라이브러리, 아티팩트, 대체품, 후속 작업만 담는다. 레시피는 실행하지 않는다
-- 회사 파일에 남은 ``policy`` / ``recipes`` 키는 무시한다
+"""권고 파일(``knowledge/libraries/advisories.yml``과 회사 파일)을 읽어 권고 목록을 만드는 모듈.
+
+Files are merged by id from ``knowledge/libraries/advisories.yml`` and ``advisories.extra_files``; the later
+file wins, so a company file can override an entry. A missing file leaves an info log and is skipped. Read
+through ``load_advisories`` by ``evaluate_advisories``, ``verify_advisories`` and ``sbmig advisories``.
+Company specifics live in the YAML only. An entry carries library, artifacts, replacement and follow-up; no
+recipe is run. Leftover ``policy`` / ``recipes`` keys in a company file are ignored.
 
 File schema (version 1): `{version: 1, advisories: [LibraryAdvisory …]}`, see
 `sbmig.core.models.LibraryAdvisory` and docs/ADVISORIES.md.
@@ -69,7 +70,7 @@ class AdvisoryCatalog:
 
     def _merge_data(self, data: Any, source: str) -> None:
         """항목을 검증해 합친다.
-        항목 하나 때문에 다른 권고를 잃지 않도록, 잘못된 항목은 문제로 기록하고 건너뛴다.
+        잘못된 항목은 문제로 기록하고 건너뛴다. 항목 하나 때문에 나머지 권고를 잃지 않기 위해서다.
         ``applies_to``의 모르는 값은 문제로 기록하고 그 값만 뺀다."""
         if not isinstance(data, dict):
             self.load_problems.append(f"{source}: top level must be a mapping with 'advisories'")
@@ -120,8 +121,9 @@ class AdvisoryCatalog:
 
     # ---- 검사 ----------------------------------------------------
     def check(self, cfg: Config) -> list[str]:
-        """``sbmig advisories check``의 검사를 하고 문제 목록을 반환한다. 문제가 없으면 빈 리스트를 반환한다.
-        모르는 라이브러리 이름, 잘못된 아티팩트 패턴, 없는 노트 파일, 읽을 때 기록한 문제(중복 id 등)를 찾는다."""
+        """권고 항목에 문제가 있는지 검사한다. ``sbmig advisories check``가 호출한다.
+        모르는 라이브러리 이름, 잘못된 아티팩트 패턴, 없는 노트 파일, 읽을 때 기록한 문제(중복 id 등)를 찾는다.
+        문제가 없으면 빈 리스트를 반환한다."""
         from sbmig.analyze.libraries import LIBRARY_NAMES
 
         problems = list(self.load_problems)
@@ -140,8 +142,8 @@ class AdvisoryCatalog:
 
 
 def load_advisories(cfg: Config) -> AdvisoryCatalog:
-    """설정의 권고 파일(``cfg.advisory_files``)을 id로 합쳐 읽는다. 같은 id는 뒤 파일이 우선한다.
-    예외를 던지지 않는다. 파일이 없으면 권고가 적거나 빈 카탈로그를 반환한다."""
+    """설정에 있는 권고 파일(``cfg.advisory_files``)을 모두 읽어 하나로 합친다. 같은 id는 뒤 파일이 우선한다.
+    예외를 던지지 않는다. 없는 파일은 빼고 읽고, 모두 없으면 빈 카탈로그를 반환한다."""
     try:
         files = list(cfg.advisory_files)
     except Exception as e:  # pragma: no cover - advisories 절이 없는 설정
