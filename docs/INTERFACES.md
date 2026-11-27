@@ -25,6 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses); v2.1z-ch (the admin page's log ZIP of one run carries `logs/`, the reports, the error list and the state files); v2.1z-ck (`conversion_complete` in the run status, the page's 완료, the admin result word `converted`) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key); v2.1z-cg (the image's JDK: Amazon Corretto 21 at a pinned version, checksum checked) |
+| framework conversion (not wired into a run yet) | v2.1z-cl (the converters of `sbmig/fwconvert/`; rules, records and module table in `docs/FW-CONVERT.md`) |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for); v2.1z-cf (a refusal that lasts names the programs that have the file open; a test that fails when this process holds a path it renames) |
 
 ## Base contracts (in force; written before v2)
@@ -8720,3 +8721,31 @@ skipped still has a `final_build` and can satisfy the rule (the report stores no
 compiles none of the tree's sources is worded as before. The wording of the chained remediation after such a
 build (「조치함 · 빌드 미확인」, v2.1z-aw) is not touched. `sbmig fleet` still counts the project as incomplete and
 `--retry-failed` runs it again.
+
+## v2.1z-cl — a framework project converted into a generated Spring Boot project: the converters
+
+The second way to handle a project written on the in-house framework (the first is the reduced run of v2.1z-ak /
+v2.1z-aw: the framework stays, JDK 21 and jakarta only). The conversion generates a new project (a parent pom and the
+modules boot / domain / service / store) from the project's service XML, SQL files and web files; the framework is
+gone from the result. The rules come from the company's guide to an earlier in-house tool and are kept, with the
+framework's name as a token, in **`docs/FW-CONVERT.md`**, which is the contract of this area: input recognition,
+output layout and names, the decision tables, hand-over items, what is not ported, open decisions, acceptance
+scenarios, the module table.
+
+**What exists.** `sbmig/fwconvert/`: `model.py` (records), `rules.py` + `knowledge/fwconvert/rules.yml` (the
+vocabulary; `load_rules(name, overlay)` fills in the framework's name and merges company values), `naming.py`,
+`identity.py`, `inventory.py`, `sqlmap.py`, `servicexml.py`, `resources.py`, `javagen.py`, `frontcopy.py`,
+`apimap.py`, `ajax.py`. Functions with unit tests (`tests/fwconvert/`); `tests/fwconvert/test_chain.py` runs them
+one after another on a small project and checks the borders (a store's statement exists in a mapper, a rewritten
+script's address is served by a controller, a JSP's page link reaches a page controller).
+
+**What does not exist yet.** No run calls these modules: no config key, CLI command, plan step, scope value, report
+section or page control. The skeleton and poms, the datasource step, carried-over classes, the gate, the pipeline and
+the real-Maven run are the next increment (`docs/FW-CONVERT.md` section 9). The deployed behaviour for framework
+projects is unchanged.
+
+**Rules of this area.** The framework's name and company class names never enter the repository: rules carry
+`{Fw}` / `{fw}`, company values arrive through the overlay, tests use `Example` / `com.example`. No version from
+the guide is written into a generated pom: the target line, the parent chain and the repository decide. Generators
+return records and write nothing (the front-end copy and the ajax rewrite work on files). Project files are
+untrusted input: a bad file is an error entry or a hand-over item, never an exception.

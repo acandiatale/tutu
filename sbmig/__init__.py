@@ -28,6 +28,7 @@
 - web/: FastAPI와 SSE로 만든 웹 UI(``sbmig serve``)
 - remediations/: 취약점 조치 흐름. 사내 검사 도구 IVAS로 취약한 라이브러리 버전을 찾아 pom의 버전을 바꾸고
   다시 빌드한 뒤 재검사한다
+- fwconvert/: 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환하는 변환기. 아직 실행 흐름에서 호출하지 않는다
 
 설정은 ``config/default.yml``(회사 값은 ``config/artifacts.*.yml``), 지식은 ``knowledge/``, KB 데이터는
 ``kb-v2/``에 있다. 한국어 주석 규약은 ``docs/v2/CODE-COMMENTS-KO.md``에 있다.

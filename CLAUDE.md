@@ -771,6 +771,38 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   「확인해 주세요」) all read as done at first. Lesson: a label that says "done" needs a test that drives the real
   engine into every way of not being done; reports built by hand in a test only show the rule agreeing with itself.
   Contract: `docs/INTERFACES.md` "v2.1z-ck".
+- **Framework projects get a second way: conversion into a generated Spring Boot project (started 2026-11-27,
+  v2.1z-cl; the converters exist, NOTHING is wired into a run yet).** The user showed the company's guide to an
+  earlier in-house tool that generates a new project from a framework project (service XML, SQL files, JSPs) and
+  said that framework projects will be handled in two ways from now on: "프레임워크만 업그레이드 하는 방법이랑 사내
+  프레임워크로 적용하는 방법 … 디렉토리는 명시되어있는대로 쪼개주면 될거 같구". My reading: way one = the framework
+  stays and is upgraded (its document was promised, nothing designed before it arrives; today's reduced run of the
+  bullets above is the closest thing); way two = the guide's conversion, with the module directories the guide
+  names (parent + `{p}-boot` / `-domain` / `-service` / `-store`). The guide is the specification (that tool's source
+  is not here): its rules live in **`docs/FW-CONVERT.md`**, the code in `sbmig/fwconvert/` (`rules.py` +
+  `knowledge/fwconvert/rules.yml`, `model.py`, `naming.py`, `identity.py`, `inventory.py`, `sqlmap.py`,
+  `servicexml.py`, `resources.py`, `javagen.py`, `frontcopy.py`, `apimap.py`, `ajax.py`), tests in
+  `tests/fwconvert/` (`test_chain.py` runs the modules one after another; `test_javagen_spring.py`, integration,
+  compiles the generated classes against the Spring 7 / MyBatis jars of `~/.m2` and sends requests through MockMvc
+  and H2). Rules that hold here: (1) the framework's name and company class names never enter the repository —
+  rules carry the token `{Fw}` / `{fw}`, filled from the framework's display name; company values (package root,
+  domain codes, company activity classes, external-call words) arrive through an overlay, later the company config;
+  tests use `Example` / `com.example`. (2) No version from the guide (Java 17, Boot 3.5.13, pinned libraries) is
+  written into a generated pom: sbmig's target, the parent chain and the repository decide. (3) Project files are
+  untrusted input: no entity resolution, every scan linear or capped, no path leaves its root, a bad file is an
+  error entry or a hand-over item, never an exception. (4) Where the guide records a defect of the earlier tool, or
+  is silent, the rule made here is marked *sbmig* in the document. Mine, not confirmed by the user: the target line
+  (JDK 21 / Boot 4.1.0 instead of the guide's), the company names staying out of the repository (it costs the user
+  hand-typed values in the company config), everything marked *sbmig*. Not built: skeleton and poms, datasource
+  step, carried-over classes, the gate, the pipeline, the run scope and the page's choice between the two ways, the
+  report section, the real-Maven run. Lessons of the five review rounds (21, 8, 6, 3, 3 reproduced defects):
+  (a) a generator is only checked by running what it generates — a body-less POST answered 500, every count
+  returned 0 and camelCase page links answered 404 while 630 unit tests on the generated text were green;
+  (b) a fix written quickly is new code, and a hand-written scanner over untrusted text is where it shows: the
+  script scanner of `apimap.py` hung on a new shape in four rounds running, until it got a work budget per file
+  (every step charged by the distance it examines) instead of one more shape fix; (c) a border between two
+  implementers' modules needs its own check that the pipeline calls (`ajax_targets_without_controller`,
+  `duplicate_mappings`), because each side was right by its own tests.
 - **First real cluster projects, 2026-11-19 (v2.1z-ax / ay / az)** — three things the fixtures never had.
   (1) **A library uploaded without its pom** (an in-house jar in the releases repository): Maven asks every repository
   for the pom; "not found" everywhere is a warning, but ONE repository answering with an error (the Central proxy of a

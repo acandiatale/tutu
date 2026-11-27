@@ -1,0 +1,94 @@
+# 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환할 때 쓰는 낱말과 표.
+# {Fw}는 프레임워크 이름(framework.name, 없으면 아티팩트 이름에서 만든 이름)이고 {fw}는 그 소문자다.
+# 회사 고유 값은 여기에 쓰지 않는다. "회사 값"이라고 쓴 항목은 회사 설정에서 채운다.
+# 규칙 설명은 docs/FW-CONVERT.md에 있다.
+
+naming:
+  package_root: com.example        # 회사 값. 생성할 패키지의 앞부분
+  domains: []                      # 회사 값. 쓸 수 있는 도메인 코드
+  default_domain: ""               # 회사 값. 목록에 없는 도메인일 때 쓰는 코드. 비우면 패키지에 도메인을 넣지 않는다
+  name_prefixes: ["sample-", "{fw}-", "demo-", "test-"]     # 회사 값을 더할 수 있다(도메인 접두사)
+  name_suffixes: ["-clean", "-final", "-v2", "-v1", "-poc", "-prod", "-dev", "-bak", "-backup"]
+  project_suffix: Project
+  service_suffix: "-service"
+
+files:
+  jsp_extensions: [.jsp]
+  static_extensions: [.css, .js, .png, .jpg, .jpeg, .gif, .ico, .svg, .bmp, .webp, .woff, .woff2, .ttf, .otf, .eot, .map]
+  sql_extension: ".{fw}_sql"
+  sql_root: queryMap
+  sql_query: query
+  sql_named_attr: isNamed
+  service_xml_suffix: "-service.xml"
+  mapper_path_word: mybatis
+  mapper_extensions: [.xml, .mapper]
+  webapp_roots: [WebContent, webapp]
+  db_config_names: ["applicationContext.xml", "*-context.xml", "*datasource*.xml", "*.properties"]
+  ignored_names: [web.xml]
+
+activities:
+  # 클래스 이름의 끝부분(대소문자 무시)으로 종류를 정한다. 회사 클래스는 회사 설정에서 더한다
+  kinds:
+    "{Fw}MyBatisSearch": search
+    "{Fw}JdbcSearch": search
+    "{Fw}MyBatisUpdate": update
+    "{Fw}JdbcUpdate": update
+  kind_returns: {search: list, sortsearch: list, pagesearch: list, update: int, upsert: int, delete: int}
+  router_word: router
+  user_suffixes: []                # 회사 값. 세션을 다루는 activity 클래스
+  builtin_prefixes: ["{Fw}"]
+  extra_db_prefixes: []            # 회사 값. DB activity가 확실한 회사 클래스의 이름 앞부분
+  external_calls: {}               # 회사 값. 태그: [클래스 이름에 들어 있는 낱말]
+  mutate_words: [insert, update, delete, upsert, save]
+  sql_key: sql-key
+  result_key: result-key
+  dao_call_methods: [find, findOne, findList, findOneItem, "select*", update, insert, delete, execute, count, batchUpdate, "exec*"]
+  db_api_markers: [SqlSession, "{Fw}Dao", "{Fw}MyBatis", JdbcTemplate, NamedParameterJdbcTemplate, PreparedStatement, "getDao(", executeQuery, executeUpdate, "@Mapper"]
+
+components:
+  # 위에서부터 처음 맞는 종류로 정한다. 값은 소스 본문에 쓰는 정규식이다
+  kinds:
+    - {kind: batch, patterns: ["{Fw}ChunkProcessor", "{Fw}BatchContext", "package .+\\.batch"]}
+    - {kind: controller, patterns: ["{Fw}Controller", "{Fw}Action", "package .+\\.controller"]}
+    - {kind: service, patterns: ["{Fw}Service", "{Fw}Transaction", "package .+\\.service", "class \\w+ServiceImpl"]}
+    - {kind: dao, patterns: ["{Fw}Repository", "{Fw}BaseDao", "{Fw}MyBatisDao", "{Fw}QueryExecutor", "package .+\\.dao", "extends.*Dao", "class \\w+Dao\\b"]}
+    - {kind: domain, patterns: ["package .+\\.(domain|model|vo|dto)"]}
+  batch_markers: []                # 회사 값. batch로 볼 회사 클래스 이름
+  # 본문에 들어 있으면 더하는 위험 점수(문자열 그대로 찾는다). 합은 1.0을 넘지 않는다
+  risk:
+    "{Fw}ChunkProcessor": 0.25
+    "{Fw}FileWriter": 0.15
+    "{Fw}BatchContext": 0.15
+    "Class.forName": 0.2
+    "Method.invoke": 0.2
+    "Thread.": 0.15
+    "synchronized": 0.1
+    ".getInstance()": 0.1
+  risk_threshold: 0.7
+  order: [domain, dao, service, controller, batch, unknown]
+
+frontend:
+  ajax_endpoint: commonAjax.json
+  service_param: ServiceName
+  result_param: ResultName
+  page_param: isPage
+  page_suffix: .mvc
+  api_prefix: /api
+  js_scan_limit_kb: 512
+  max_scan_kb: 4096               # 이보다 큰 JSP, JS 파일은 읽지 않고 건너뛴 목록에 남긴다
+  common_js_prefix: common
+  page_exclude_dirs: [common, fragment, fragments, include, tiles, layout]
+  page_exclude_routes: [error, dashboard, main, index, home]
+  route_exclude: [error]
+
+rest:
+  lov_prefix: lov
+  summary_ids: [getsummary]
+  summary_suffix: summary
+  list_ids: [getlist, find, list, selectall, selectlist, getlistpaged]
+  save_ids: [upsert, save, insert, update, merge]
+  delete_ids: [delete]
+  count_words: [count, total, size, exists]
+  delete_words: [delete, remove]
+  insert_words: [insert, save, create, add]
+  update_words: [update, modify, upsert, merge]
