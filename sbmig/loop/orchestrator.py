@@ -1182,8 +1182,9 @@ class Orchestrator:
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         """분석 단계를 실행한다. 프로젝트 정보(케이스 타입, Java, Spring/Boot 버전, 라이브러리)와 권고를 만든다.
-        여기서 멈추거나 중단하면 False를 반환한다. ADF 프로젝트, Maven이 아닌 프로젝트, pom.xml이나 루트 pom이 없는
-        프로젝트가 그렇다. ``stop_after``가 analyze일 때도 False다."""
+        여기서 멈추거나 중단하면 False를 반환한다. Maven이 아니거나 pom.xml이 없는 프로젝트가 그렇다.
+        ``intake.adf_policy: stop``에 걸린 ADF 프로젝트, 루트 pom이 없는 프로젝트(MSA 제외)도 중단한다.
+        ``stop_after``가 analyze일 때도 False다."""
         with stage("analyze"):
             return self._step_analyze(report, stop_after)
 

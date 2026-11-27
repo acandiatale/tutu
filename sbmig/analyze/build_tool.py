@@ -45,7 +45,7 @@ class BuildToolDetection:
 
 def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
     """``names`` 중 하나라도 프로젝트 안에 있으면 True를 반환한다.
-    루트부터 보고, 없으면 하위 폴더까지 찾는다."""
+    루트부터 보고, 없으면 하위 폴더까지 찾는다. ``.git``, ``target`` 같은 폴더 안의 파일은 세지 않는다."""
     exists = getattr(ws, "exists", None)
     if callable(exists) and any(exists(n) for n in names):
         return True
@@ -54,7 +54,8 @@ def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
 
 def find_ant_build_file(ws: Any) -> str:
     """Ant 빌드 파일(``build.xml``)의 경로를 찾는다.
-    루트에 없으면 가장 얕은 폴더의 것을 고른다. 하나도 없으면 빈 문자열을 반환한다."""
+    루트에 없으면 가장 얕은 폴더의 것을 고른다. 깊이가 같으면 경로 순서로 고른다.
+    하나도 없으면 빈 문자열을 반환한다."""
     exists = getattr(ws, "exists", None)
     if callable(exists) and exists("build.xml"):
         return "build.xml"

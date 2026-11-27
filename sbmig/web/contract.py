@@ -59,7 +59,9 @@ MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드가 읽는 동시 Job �
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1"이면 Worker가 llm.record_dir을 유지한다. 기본은 끈다
 # 이 단어가 들어간 환경 변수는 비밀 값으로 보고 로그와 보고서에서 마스킹한다
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")
-MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 마스킹하지 않는다. 로그의 다른 문자열과 우연히 겹쳐서 엉뚱한 곳까지 가린다
+# 이 길이 이상인 값만 비밀 값 목록에 넣는다. 더 짧은 값은 독립된 토큰일 때만 가린다(redact._compile).
+# 짧은 값을 문자열 그대로 바꾸면 로그의 다른 문자열까지 가려지기 때문이다
+MIN_SECRET_LEN = 6
 # 이름에 위 단어가 없어도 비밀로 다루는 환경 변수. 회사 규칙상 IVAS 사용자, 비밀번호, 토큰은 모두 비밀이다.
 # 조치는 빌드 파드에서 실행돼서 Job 로그에 남을 수 있다. 아이디는 짧을 수 있어서 최소 길이를 따로 둔다
 SECRET_NAMES = frozenset({"IVAS_USER_ID"})

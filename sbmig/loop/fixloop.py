@@ -846,7 +846,9 @@ class VersionResolver:
         캡처에 선언한 모듈의 항목이 있으면 그 모듈의 effective dependencyManagement만 본다.
         다른 모듈이 관리한다고 이 모듈도 관리되는 것은 아니다.
         모듈 항목이 없으면 합친 ``managed``를 본다.
-        재구성 뒤 캡처가 없으면 모듈 pom이 상속하는 사내 부모의 관리 버전만 본다. 그 부모를 모르면 체인 전체를 본다.
+        재구성 뒤 캡처가 없으면 모듈 pom이 상속하는 사내 부모의 관리 버전만 본다.
+        모듈 pom의 부모가 설정한 사내 부모가 아니면 관리되는 것이 없다.
+        모듈을 모르거나, 그 부모를 읽지 못했거나, 부모별 관리 버전이 없으면 체인 전체를 본다.
 
         Without the post-restructure capture: the set of the company parent the module's pom
         inherits (`per_parent`; a parent that is no configured root manages nothing) when the facts carry per-parent
@@ -1027,14 +1029,14 @@ class BuildFixLoop:
         self._layout_cache: Optional[tuple[int, list[str]]] = None
         # 적용한 시도의 파일에 처음 나타난 오류의 (파일, 서명): 그 시도
         self._introduced: dict[tuple[str, str], FixAttempt] = {}
-        # 개선으로 평가된 시도가 없앤 (파일, 서명)과 그 시도다. 다른 케이스의 시도가 그 오류를 되살리면 악화로 본다
+        # 개선으로 평가된 시도가 없앤 (파일, 서명)과 그 시도다. 다른 케이스의 시도가 그 오류를 되살리는 것이 trade-back이다
         # trade-back은 (오류를 되살린 케이스, 해결했던 케이스) 쌍마다 센다
-        # `loop.trade_back: revert`일 때 `loop.oscillation_limit`에 이르면 OSCILLATION으로 차단할 케이스에 넣는다
-        # 값은 (시도, 근거)다. 기본값 observe에서는 세어서 저널에만 남긴다
+        # `loop.trade_back: revert`면 그 시도를 악화로 보고, `loop.oscillation_limit`에 이르면 케이스를 차단한다
+        # 기본값 observe면 세어서 저널에 남기고 관련 스크립트를 round_trip으로 기록한다. 차단하지 않는다
         self._resolved_by: dict[tuple[str, str], FixAttempt] = {}
         self._resolved_lines: dict[tuple[str, str], frozenset[int]] = {}   # 그 시도 전 빌드가 보여 준 줄 번호
         self._trade_backs: Counter = Counter()
-        self._trade_back_blocks: dict[str, tuple[FixAttempt, str]] = {}
+        self._trade_back_blocks: dict[str, tuple[FixAttempt, str]] = {}   # OSCILLATION으로 차단할 케이스: (시도, 근거)
         # 왕복에 참여한 시도와 그 이유다. 저장된 버전의 실적을 round_trip으로 기록한다(`_credit_script`)
         self._round_trips: dict[int, str] = {}
         # 거절한 답의 원인 문장과 needs_owner로 차단한 케이스다. 원인이 같은 케이스는 LLM 호출 없이 차단한다
@@ -1906,8 +1908,12 @@ class BuildFixLoop:
         """직전 라운드의 시도를 이 빌드 결과로 평가한다. 시도를 되돌려 프로젝트가 바뀌었으면 True를 반환한다.
         - improved: 대상 오류가 모두 사라지고 빌드가 그 단계까지 갔다
         - partial: 일부만 사라지고 수정한 파일에 새 오류가 없다
-        - regressed: 수정한 파일에 새 오류가 생긴 경우, 케이스를 해결한 시도가 하나도 없는데 오류 수가
-          ``regression_ratio``배를 넘은 경우, pom 수정 뒤 새 구조적 오류나 더 이른 단계의 오류가 대상을 가린 경우다
+        - regressed: 아래 경우다
+          - 대상 오류가 남았는데 수정한 파일에 새 오류가 생겼다
+          - 케이스를 해결한 시도가 하나도 없는데 오류 수가 ``regression_ratio``배를 넘었다
+          - pom을 고친 뒤 새 구조적 오류가 생겼다. 대상 오류가 사라졌고 새 오류가 모두 더 뒤 단계면 제외한다
+          - pom을 고친 뒤 더 이른 단계의 새 오류가 대상 오류를 가렸다
+          - ``loop.trade_back: revert``인데 다른 케이스가 해결한 오류를 되살렸다
         - 악화된 시도는 ``loop.revert_on_regression``이 켜져 있으면 되돌린다. 뒤에 남길 커밋이 있으면 구조적 악화와
           trade-back만 되돌리고 나머지는 남긴다
         - inconclusive: 타임아웃이나 읽은 오류가 없는 실패처럼 빌드로 판단할 수 없다. KB 실적 없이 다시 평가한다
@@ -3539,8 +3545,9 @@ class BuildFixLoop:
         - 실행할 스크립트는 실행 전에 저장한다. 실패해도 이력이 남는다
         - edits 답에 딸린 스크립트는 unverified로 저장한다
         - 보강한 버전에는 부모 버전(``parent``)과 만든 이유(``reason``)를 남긴다
-        같은 버전을 이번 실행에서 같은 위치에 이미 실행했으면 False를 반환한다. 그 버전은 다시 실행하지 않는다.
-        다른 위치에서 실행한 버전은 여기서 다시 실행한다.
+        같은 버전을 이번 실행에서 같은 위치에 이미 실행했으면 False를 반환한다. 호출하는 쪽은 그 버전을 실행하지 않는다.
+        다른 위치에서만 실행한 버전이면 True를 반환한다. 이 위치에서 다시 실행할 수 있다.
+        ``check_duplicate=False``면 이 확인을 하지 않는다.
 
         `kb.cases.add_script`, source = the try's. `reason` = `v1: <the parent's failure in words>`."""
         store = self.cases
@@ -5322,8 +5329,10 @@ class BuildFixLoop:
                        st: _Round | None = None) -> list[tuple[str, str, str, str]]:
         """적용한 스크립트나 edits가 바꾼 pom에서 버전 없는 ``<dependencies>`` 항목에 버전을 채운다.
         시도의 커밋에 함께 들어가도록 커밋 전에 실행한다. 쓴 버전 목록을 반환한다. 예외를 던지지 않는다.
-        - 시도가 추가한 의존성은 관리되는 버전이 있으면 그대로 둔다. 없으면 목표 Boot BOM, as-is, 저장소 순서로 채운다
-        - 원래 있던 의존성은 빌드가 버전이 없다고 보고했을 때만 as-is 버전으로 채운다
+        - 시도가 추가한 의존성은 관리되고 있으면 버전 없이 둔다. 아니면 ``VersionResolver.resolve``의 규칙대로 채운다.
+          목표 Boot BOM 버전이 먼저다(as-is가 더 새것이면 as-is). 없으면 저장소에서 찾는다. Spring 계열은 저장소에서 찾지 않는다
+        - 시도가 추가한 사내 의존성은 체인이 관리하지 않으면 체인의 버전 속성 ``${prop}``을 쓴다
+        - 원래 있던 의존성은 빌드가 버전이 없다고 보고했을 때만 채운다. 저장소는 조회하지 않는다
         - 시도가 버전을 지운 의존성은 재구성 뒤 캡처가 있을 때만 채운다
         - 시도가 버전을 써서 추가한 의존성을 새 부모 체인이 관리하면 ``<version>``을 지운다
         - 원래 있던 명시 버전, 부모나 BOM import를 바꾼 pom, 보호 좌표, 자기 모듈, system scope는 건드리지 않는다
@@ -5431,7 +5440,7 @@ class BuildFixLoop:
                 if key in local:
                     continue
                 if key not in pre_versions:          # 이 시도가 추가했다
-                    # 목표 Boot BOM, as-is, 저장소 순서로 찾은 버전을 쓴다.
+                    # 버전은 VersionResolver.resolve의 규칙대로 찾는다. 저장소 조회까지 허용한다
                     # 비워 두면 다음 빌드의 pom_invalid가 구조적 악화로 잡혀 시도 전체가 되돌려진다
                     v, src = r.resolve(key, module, allow_repository=True)
                 elif pre_versions[key]:              # 시도가 버전을 지웠다

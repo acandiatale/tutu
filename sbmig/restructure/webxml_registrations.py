@@ -37,6 +37,7 @@ log = logging.getLogger("sbmig.restructure")
 RULES_FILE = "knowledge/config/web_xml_rules.yml"
 CLASS_NAME = "WebXmlRegistrations"
 # 흔한 오류 코드만 error page로 만든다. HttpStatus.valueOf는 Spring이 모르는 코드에 예외를 던진다
+# 그 밖의 코드는 인수인계로 남긴다
 ERROR_STATUS_CODES = frozenset({400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416,
                                 417, 422, 423, 424, 426, 428, 429, 431, 451, 500, 501, 502, 503, 504, 505, 507,
                                 508, 511})

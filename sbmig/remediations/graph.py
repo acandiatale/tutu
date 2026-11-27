@@ -250,8 +250,9 @@ class DeliveryRecordNotWritten(Exception):
 
 
 class ScanSourceChanged(Exception):
-    """검사용 ZIP(``original/scan-source.zip``)의 sha256이 기록한 값과 다를 때 던지는 예외.
-    ZIP을 다시 만들었을 때와 결과 폴더로 복사했을 때 확인한다.
+    """조치 전 검사에 쓴 ZIP의 sha256이 기록한 값과 다를 때 던지는 예외.
+    ``original/scan-source.zip``을 다시 만들었을 때 확인한다.
+    바꾼 것이 없어 그 ZIP을 결과 ZIP으로 복사했을 때도 확인한다.
 
     The scan source ZIP cannot be made again with the sha256 the state recorded; the run ends FAILED
     `zip_hash_mismatch` with `SCAN_SOURCE_CHANGED`."""
