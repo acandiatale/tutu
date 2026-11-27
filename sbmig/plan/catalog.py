@@ -1,9 +1,12 @@
-"""알려진 레시피 id를 관리하는 유일한 목록인 레시피 카탈로그(``knowledge/recipes/catalog.yml``)를 읽는 모듈.
-계획기가 레시피 jar와 LLM 계획 조언자의 허용 목록, 포함 관계, 게이트를 여기서 얻고 ``sbmig recipes …``가 읽는다.
-- ``check()``는 설정의 레시피 세트(``openrewrite.recipes.*``)와 레시피 아티팩트가 카탈로그와 어긋나는지
-  찾는다. 회사 설정이 빈 세트를 다시 채우면 카탈로그 항목의 ``sets:``에도 그 id를 써야 통과한다
-- OpenRewrite 레시피만 실행한다. 레시피 BOM은 3.37.0으로 고정한다(``openrewrite.recipe_bom_version``)
-- 카탈로그 파일이 없거나 깨지면 경고 로그를 남기고 내장 최소 카탈로그(``_BUILTIN``)를 쓴다
+"""레시피 카탈로그(``knowledge/recipes/catalog.yml``)를 읽는 모듈.
+카탈로그는 sbmig가 아는 레시피 id의 유일한 목록이다.
+
+The planner takes from here each recipe's jar, the LLM plan advisor's allow list, what a recipe covers and
+the gates; ``sbmig recipes …`` reads it too. ``check()`` finds where the config recipe sets
+(``openrewrite.recipes.*``) and recipe artifacts disagree with the catalog: a company config that re-fills
+an empty set must also list that id in the entry's ``sets:``. Only OpenRewrite recipes run; the recipe BOM
+is pinned to 3.37.0 (``openrewrite.recipe_bom_version``). A missing or broken catalog file logs a warning
+and the built-in minimal catalog (``_BUILTIN``) is used.
 
 No project, library or KB recipes. Operator doc: docs/RECIPES.md.
 """
@@ -22,9 +25,9 @@ from sbmig.core.models import CaseType, ProjectProfile
 log = logging.getLogger("sbmig.plan.catalog")
 
 DEFAULT_CATALOG_PATH = PACKAGE_ROOT / "knowledge" / "recipes" / "catalog.yml"
-CORE_GROUP = "org.openrewrite:"       # core 레시피는 rewrite-maven-plugin에 들어 있어 설정 아티팩트가 아니다
+CORE_GROUP = "org.openrewrite:"       # core 레시피는 rewrite-maven-plugin에 들어 있다. 설정 아티팩트가 아니다
 
-# 카탈로그에 없는 id의 jar를 접두어로 추정한다. 가장 긴 접두어가 이긴다
+# 카탈로그에 없는 id의 jar는 접두어로 추정한다. 가장 길게 맞는 접두어를 고른다
 PREFIX_ARTIFACTS: dict[str, str] = {
     "org.openrewrite.java.spring": "org.openrewrite.recipe:rewrite-spring",
     "org.openrewrite.java.migrate": "org.openrewrite.recipe:rewrite-migrate-java",
@@ -36,14 +39,14 @@ PREFIX_ARTIFACTS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # 이름 붙은 게이트
 # ---------------------------------------------------------------------------
-# 작은 모델이 필요 없는 레시피를 권하지 않도록 조언자가 레시피를 더하려면 프로필이 뒷받침하는 정보(게이트)가 있어야 한다
+# 조언자가 레시피를 더하려면 프로젝트 정보가 뒷받침해야 한다(게이트). 작은 모델이 필요 없는 레시피를 권하지 않게 하기 위해서다
 _ADVISOR_EE = ("javax.servlet", "javax.persistence", "javax.validation", "javax.annotation", "javax.inject",
                "javax.transaction", "javax.ws", "javax.jms", "javax.mail", "javax.websocket", "javax.el",
                "javax.xml.bind")
 
 
 def _has_javax_ee(profile: ProjectProfile) -> bool:
-    """소스가 Java EE javax 패키지를 import하는지 확인한다(게이트 ``has_javax_ee``)."""
+    """소스가 Java EE javax 패키지를 import하면 True를 반환한다(게이트 ``has_javax_ee``)."""
     return any(k.startswith(_ADVISOR_EE) for k in profile.source.javax_imports)
 
 
@@ -66,7 +69,7 @@ GATES: dict[str, Callable[[ProjectProfile], bool]] = {
     "has_javax_xml_bind": _has_javax_xml_bind,
     "has_xml_bind_any": _has_xml_bind_any,
     "has_spring_security": lambda p: p.has_library("spring-security"),
-    # 분석기의 라이브러리 이름이다. `hibernate`는 네이티브 ORM 사용이고 JPA만 쓰는 프로젝트는 `jpa`만 갖는다
+    # 분석기의 라이브러리 이름이다. `hibernate`는 Hibernate를 직접 쓰는 경우이고, JPA만 쓰는 프로젝트는 `jpa`만 있다
     "has_spring_batch": lambda p: p.has_library("spring-batch"),
     "has_hibernate": lambda p: p.has_library("hibernate"),
     "is_spring": _is_spring,
@@ -81,7 +84,7 @@ GATES: dict[str, Callable[[ProjectProfile], bool]] = {
 # ---------------------------------------------------------------------------
 class CatalogEntry(BaseModel):
     """카탈로그 항목 하나를 담는 데이터 클래스.
-    레시피 id, 출처, jar, 단계, 설명, 포함하는 레시피(covers), 게이트, 조언자 허용 여부, 속한 설정 세트(sets)를 담는다."""
+    레시피 id, 출처, jar, 단계, 설명, 포함하는 레시피(covers), 게이트, 조언자가 쓸 수 있는지, 속한 설정 세트(sets)다."""
     id: str
     origin: str = "openrewrite"                # openrewrite만 받는다. 다른 값은 `check`가 문제로 보고한다
     artifact: Optional[str] = None
@@ -95,7 +98,7 @@ class CatalogEntry(BaseModel):
     sets: list[str] = Field(default_factory=list)
     verified: Optional[str] = None
     notes: Optional[str] = None
-    # 이 id를 정의하는 선언형 레시피 파일(저장소 기준 경로)이다. 실행용 rewrite.yml에 그대로 넣는다
+    # 이 id를 정의하는 선언형 레시피 파일(저장소 기준 경로). 실행용 rewrite.yml에 그대로 넣는다
     file: Optional[str] = None
 
 
@@ -114,7 +117,7 @@ def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
 
 
 class RecipeCatalog:
-    """카탈로그 파일을 파일 순서대로 메모리에 담는 클래스. 경로와 수정 시각이 같으면 캐시를 쓴다."""
+    """카탈로그를 파일 순서대로 메모리에 담는 클래스. 경로와 수정 시각이 같으면 캐시를 쓴다."""
 
     def __init__(self, entries: list[CatalogEntry], path: Optional[Path] = None, version: int = 1):
         self.entries = list(entries)
@@ -127,7 +130,7 @@ class RecipeCatalog:
 
     @classmethod
     def from_dict(cls, data: dict, path: Optional[Path] = None) -> "RecipeCatalog":
-        """dict로 카탈로그를 만든다. id가 중복되면 어느 쪽을 믿을지 알 수 없으므로 ValueError를 던진다."""
+        """dict로 카탈로그를 만든다. id가 중복되면 ValueError를 던진다. 어느 쪽을 믿을지 알 수 없기 때문이다."""
         entries = [CatalogEntry.model_validate(r) for r in (data.get("recipes") or [])]
         seen: set[str] = set()
         for e in entries:
@@ -138,7 +141,7 @@ class RecipeCatalog:
 
     @classmethod
     def load(cls, path: str | Path) -> "RecipeCatalog":
-        """카탈로그 파일을 읽는다. (경로, 수정 시각)으로 캐시하고 파일이 바뀌면 다시 읽는다."""
+        """카탈로그 파일을 읽는다. (경로, 수정 시각)으로 캐시하고, 파일이 바뀌면 다시 읽는다."""
         p = Path(path).resolve()
         key = (str(p), p.stat().st_mtime)
         hit = cls._cache.get(key)
@@ -170,7 +173,7 @@ class RecipeCatalog:
         return {e.id: e.description for e in self.entries if e.advisor}
 
     def coverage(self) -> dict[str, list[str]]:
-        """조언자가 중복 레시피를 권하지 않도록 묶음 레시피마다 이미 포함하는 레시피 목록을 반환한다."""
+        """묶음 레시피마다 이미 포함하는 레시피 목록을 반환한다. 조언자가 겹치는 레시피를 권하지 않게 하는 데 쓴다."""
         return {e.id: list(e.covers) for e in self.entries if e.covers}
 
     def gates(self) -> dict[str, Callable[[ProjectProfile], bool]]:
@@ -206,7 +209,8 @@ class RecipeCatalog:
 
     # ---- 검사 ----------------------------------------------------
     def check(self, cfg: Config) -> list[str]:
-        """카탈로그, 설정 레시피 세트, 레시피 아티팩트가 서로 어긋나는지 찾는다(``sbmig recipes check``의 오프라인 검사).
+        """카탈로그, 설정 레시피 세트, 레시피 아티팩트가 서로 어긋나는 곳을 찾는다.
+        ``sbmig recipes check``의 오프라인 검사다.
         문제가 없으면 빈 리스트를 반환한다. 실제 jar 확인은 ``--jars``(jarcheck.py)가 한다."""
         problems: list[str] = []
         sets = config_recipe_sets(cfg)
@@ -239,7 +243,8 @@ class RecipeCatalog:
         return problems
 
     def _check_file(self, e: CatalogEntry, cfg: Config) -> list[str]:
-        """``file``이 있는 항목의 파일이 그 id를 정의하고, 그 안에서 쓰는 레시피가 모두 카탈로그에 있는지 확인한다."""
+        """항목의 ``file``이 그 id를 정의하는지 확인한다. 그 안에서 쓰는 레시피가 모두 카탈로그에 있는지도 본다.
+        찾은 문제를 문장 목록으로 반환한다."""
         path = recipe_file_path(e, cfg)
         if path is None or not path.is_file():
             return [f"catalog {e.id}: file {e.file} not found"]
@@ -284,14 +289,14 @@ def prefix_artifact(recipe_id: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# 파일이 없거나 읽지 못할 때만 쓰는 내장 카탈로그다. 정식 목록은 catalog.yml이므로 여기에 id를 늘리지 않는다
+# 파일이 없거나 읽지 못할 때만 쓰는 내장 카탈로그. 정식 목록은 catalog.yml이니 여기에 id를 늘리지 않는다
 # ---------------------------------------------------------------------------
 _MIGRATE = "org.openrewrite.recipe:rewrite-migrate-java"
 _SPRING = "org.openrewrite.recipe:rewrite-spring"
 _TESTING = "org.openrewrite.recipe:rewrite-testing-frameworks"
 _SEC7_DESCRIPTION = ("Spring Security 6.x → 7.0 (version bump, SecurityConfigurer init/configure lose `throws Exception`, "
                      "AuthorizationManager.check → authorize); planned after the 6.0 … 6.5 steps")
-# Framework 7 레시피와 Boot 묶음 레시피가 이미 실행하는 레시피(rewrite-spring 6.37.0 등에서 확인)
+# Framework 7 레시피와 Boot 묶음 레시피가 이미 실행하는 레시피. rewrite-spring 6.37.0 등에서 확인했다
 _FW7_COVERS = ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
                "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
                "org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
@@ -352,7 +357,7 @@ def builtin_catalog() -> RecipeCatalog:
 def default_catalog(cfg: Optional[Config] = None) -> RecipeCatalog:
     """설정의 카탈로그 파일(없으면 저장소의 catalog.yml)을 읽는다.
     파일이 없거나 깨졌으면 경고를 남기고 내장 카탈로그를 반환한다.
-    카탈로그 문제로 계획 단계가 멈추지 않도록 예외를 던지지 않는다.
+    예외를 던지지 않는다. 카탈로그 문제로 계획 단계가 멈추면 안 된다.
 
     The file is `cfg.recipe_catalog_file`."""
     path = cfg.recipe_catalog_file if cfg is not None else DEFAULT_CATALOG_PATH

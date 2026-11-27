@@ -1,10 +1,10 @@
-"""레시피 카탈로그(knowledge/recipes/catalog.yml)를 보여 주고 검사하는
-``sbmig recipes …`` 명령(list | show | check | sets) 모듈.
-이관 실행과 무관한 운영 도구다.
-- ``check``는 카탈로그, 설정 레시피 세트, 레시피 아티팩트가 서로 어긋나는지 찾고, ``check --jars``는
-  Maven으로 실제 레시피 jar를 받아 id를 확인한다
-- ``sets``는 케이스별로 계획기가 고를 변환 레시피를 보여 준다
-- typer는 명령 함수의 docstring을 ``--help`` 화면으로 쓰므로 한국어 첫 줄이 명령 목록의 요약이 된다
+"""레시피 카탈로그를 보여 주고 검사하는 ``sbmig recipes …`` 명령(list | show | check | sets) 모듈.
+이관 실행과는 상관없는 운영 도구다.
+
+``check`` finds where the catalog, the config recipe sets and the recipe artifacts disagree; ``check
+--jars`` resolves the real recipe jars with Maven and checks the ids. ``sets`` shows, per case, the
+transform recipes the planner picks. Typer prints a command function's docstring as its ``--help`` text, so
+the Korean first line is the summary in the command list.
 
 Operator doc: docs/RECIPES.md."""
 from __future__ import annotations
@@ -28,7 +28,7 @@ ArtifactOpt = typer.Option(None, "--artifact", help="with --jars: g:a to resolve
 
 def _load(configs: Optional[List[Path]], catalog: Optional[Path] = None):
     """설정을 읽는다.
-    레시피 명령에는 사내 아티팩트 설정이 필요 없으므로, 어느 설정에도 없으면 플레이스홀더 parent로 채운다."""
+    레시피 명령에는 사내 아티팩트 설정이 필요 없다. 어느 설정에도 없으면 플레이스홀더 parent로 채운다."""
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config
@@ -61,7 +61,7 @@ def _where(row: dict) -> str:
 
 
 def _table(rows: list[dict], cols: list[tuple[str, Any]]) -> list[str]:
-    """머리글, 구분선, 행으로 고정폭 텍스트 표를 만든다."""
+    """머리글, 구분선, 행으로 된 고정폭 텍스트 표를 만든다."""
     cells = [[str(fn(r)) for _, fn in cols] for r in rows]
     widths = [max([len(h)] + [len(c[i]) for c in cells]) for i, (h, _) in enumerate(cols)]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)

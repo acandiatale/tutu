@@ -1,9 +1,10 @@
-"""규칙으로 이관 계획(변환 -> 재구성 -> 구조 검토 -> 검증 빌드)을 세우고 레시피 카탈로그를 관리하는 패키지.
-분석 다음 계획 단계에서 오케스트레이터가 ``build_plan``을 호출하고 그 결과가 ``plan.json``이 된다.
-- ``build_plan``(planner.py), ``default_catalog`` / ``RecipeCatalog``(catalog.py), ``recipes_cli``(``sbmig
-  recipes``), 버전 비교(versions.py)
-- 레시피 id는 ``knowledge/recipes/catalog.yml``에서만 관리한다
-- ``recipes_cli``는 필요할 때 import한다"""
+"""이관 계획(변환 -> 재구성 -> 구조 검토 -> 검증 빌드)을 규칙으로 세우는 패키지.
+레시피 카탈로그도 여기서 관리한다.
+
+The orchestrator calls ``build_plan`` in the plan step after analyze; the result is ``plan.json``.
+Contents: ``build_plan`` (planner.py), ``default_catalog`` / ``RecipeCatalog`` (catalog.py), ``recipes_cli``
+(``sbmig recipes``, imported on first use) and version comparison (versions.py). Recipe ids live only in
+``knowledge/recipes/catalog.yml``."""
 from typing import Any
 
 from .catalog import GATES, CatalogEntry, RecipeCatalog, default_catalog
@@ -27,7 +28,7 @@ __all__ = ["ADVISOR_CATALOG", "ADVISOR_COVERAGE", "ADVISOR_GATES", "build_plan",
 
 
 def __getattr__(name: str) -> Any:
-    # 계획 단계에서 typer를 불필요하게 import하지 않도록 recipes_cli만 필요할 때 가져온다
+    # 계획 단계에서 typer를 괜히 import하지 않게, recipes_cli는 필요할 때만 가져온다
     if name == "recipes_cli":
         from .catalog_cli import recipes_cli
         return recipes_cli

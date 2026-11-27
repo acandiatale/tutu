@@ -1,13 +1,10 @@
-"""수정 시도마다 무엇을 바꿨는지 기록(EditNote)을 만들고 커밋의 의존성 변경을 확인하는 모듈.
-수정 루프와 오케스트레이터(구조 검토 커밋)가 함께 쓴다.
-기록에는 경로, 위치, 변경 내용, 줄 범위, 출처(llm, diff), as-is / to-be 변경 조각이 들어간다.
-조각 줄 수는 ``errors.snippet_lines``를 따르고, 0이면 전체를 담는다.
-- ``answer_notes``: LLM이 쓴 변경 설명을 기록으로 만든다
-- ``try_notes``: LLM 설명과 diff를 합쳐 최종 기록을 만든다
-- ``note_line``: 로그와 errors.md에 쓰는 한 줄을 만든다
-- ``operator_changes`` / ``fallback_guide`` / ``log_major_upgrades``: 커밋에 들어간 메이저 업그레이드와
-  라이브러리 교체를 운영자 확인 항목으로 남긴다
-예외를 던지지 않는다. 메이저 업그레이드가 있어도 되돌리거나 차단하지 않고 운영자 확인 안내만 남긴다.
+"""수정 시도마다 무엇을 바꿨는지 기록(EditNote)으로 남기는 모듈.
+커밋에 메이저 업그레이드나 라이브러리 교체가 있으면 운영자가 확인할 항목으로 남긴다.
+
+Used by the fix loop and by the orchestrator (structure-review commits). A note carries the path, the place,
+the change, the line span, the source (llm, diff) and the as-is / to-be hunks. ``operator_changes`` /
+``fallback_guide`` / ``log_major_upgrades`` turn a commit's major upgrades and library replacements into
+operator checks; such a change is never reverted or blocked.
 
     answer_notes(answer, edits=True)   the LLM's own descriptions: the answer's `<changes>` + each applied edit's
                                        `desc` for a file `<changes>` does not describe; a script run: `<changes>` only
@@ -51,7 +48,7 @@ def _helper(name: str) -> Optional[Callable[..., Any]]:
 
 def note_line(n: Any) -> str:
     """수정 기록을 한 줄 문자열로 만든다.
-    errors.md, report.md, 로그가 같은 형식을 쓰도록 ``sbmig.errors.common.note_text``를 호출한다."""
+    ``sbmig.errors.common.note_text``를 호출해서 errors.md, report.md, 로그가 같은 형식을 쓴다."""
     try:
         from sbmig.errors.common import note_text
         return note_text(n)
@@ -72,8 +69,8 @@ def _one(text: Any) -> str:
 
 def answer_notes(ans: Any, *, edits: bool) -> list[EditNote]:
     """적용된 변경에 대한 LLM의 설명을 기록 목록으로 만든다. 설명이 없으면 빈 목록을 반환한다.
-    ``edits=True``면 ``<changes>``와 각 편집의 ``desc``를 쓰고, 스크립트를 실행한 경우면 ``<changes>``만 쓴다.
-    적용되지 않은 편집의 설명이 기록에 섞이지 않게 하기 위해서다.
+    ``edits=True``면 ``<changes>``와 각 편집의 ``desc``를 쓴다.
+    스크립트를 실행한 경우면 ``<changes>``만 쓴다. 적용되지 않은 편집의 설명이 섞이지 않게 하기 위해서다.
 
     With edits: `sbmig.script.notes.answer_notes(changes, edits)` (an edit's `desc` only for a file
     `<changes>` does not describe). The fixer's parser has usually merged them into `answer.changes` already;
@@ -105,8 +102,8 @@ def answer_notes(ans: Any, *, edits: bool) -> list[EditNote]:
 
 def try_notes(llm_notes: list[EditNote], diff: str, *, max_lines: int = 0) -> list[EditNote]:
     """시도의 최종 수정 기록을 만든다. 기준은 diff다.
-    LLM 설명에 diff의 줄 범위와 as-is / to-be 조각을 붙이고, LLM이 설명하지 않은 파일은 diff로 기록을 만든다.
-    재사용한 저장 스크립트는 LLM 설명이 없으므로 diff만으로 만든다. 도우미 모듈이 없으면 대체 구현을 쓴다.
+    LLM 설명에 diff의 줄 범위와 as-is / to-be 조각을 붙인다. LLM이 설명하지 않은 파일은 diff로 기록을 만든다.
+    재사용한 저장 스크립트는 LLM 설명이 없어서 diff만으로 만든다. 도우미 모듈이 없으면 대체 구현을 쓴다.
 
     Helpers: `merge_notes(llm_notes, diff)`, or `notes_from_diff(diff)` without LLM notes; `max_lines` lines
     per side (callers pass `errors.snippet_lines`, 0 = whole)."""
@@ -191,7 +188,7 @@ def _from_diff(diff: str) -> list[EditNote]:
 
 
 def _merge(llm: list[EditNote], diff: str) -> list[EditNote]:
-    """LLM 기록에 그 파일의 diff 줄 범위를 붙이고, LLM이 설명하지 않은 파일은 diff 기록을 덧붙인다.
+    """LLM 기록에 그 파일의 diff 줄 범위를 붙인다. LLM이 설명하지 않은 파일은 diff 기록을 덧붙인다.
     경로가 같거나 한쪽 경로가 다른 쪽 경로로 끝나면 같은 파일로 본다."""
     by_file = {n.path: n for n in _from_diff(diff)}
     out: list[EditNote] = []
@@ -209,7 +206,7 @@ def _merge(llm: list[EditNote], diff: str) -> list[EditNote]:
 
 
 # ---------------------------------------------------------------------------- 커밋의 의존성 변경 확인
-# 메이저 업그레이드는 피하는 것이 원칙이지만 빌드는 통과해야 하므로 막지 않는다
+# 메이저 업그레이드는 피하는 게 원칙이지만, 빌드는 통과해야 하니 막지 않는다
 # 대신 커밋의 pom 변경에서 메이저 업그레이드와 라이브러리 교체를 찾아 운영자 확인 항목으로 남긴다
 # docs/INTERFACES.md "v2.1d". Calls into sbmig.build.depchanges / sbmig.core.jakarta_libraries fail to
 # DEBUG + the "nothing" value.
@@ -229,7 +226,8 @@ def library_table(cfg: Any) -> list:
 
 
 def table_entry(key: str | None, cfg: Any) -> Any:
-    """회사 파일까지 합친 라이브러리 표에서 ``key``(g:a)의 ``JakartaLibrary`` 항목을 찾는다. 없거나 실패하면 None을 반환한다."""
+    """라이브러리 표에서 ``key``(g:a)의 ``JakartaLibrary`` 항목을 찾는다. 회사 파일의 항목도 찾는다.
+    없거나 실패하면 None을 반환한다."""
     if not key:
         return None
     try:
@@ -241,13 +239,13 @@ def table_entry(key: str | None, cfg: Any) -> Any:
 
 
 def pom_changed(files: Any) -> bool:
-    """커밋이 pom.xml을 바꿨는지 반환한다. 의존성 변경 확인은 pom만 보므로 pom이 바뀌지 않았으면 건너뛴다."""
+    """커밋이 pom.xml을 바꿨으면 True를 반환한다. 의존성 변경 확인은 pom만 보므로, False면 건너뛰면 된다."""
     return any(_norm(str(f or "")).rsplit("/", 1)[-1] == "pom.xml" for f in (files or []))
 
 
 def operator_changes(ws: Any, pre: str | None, sha: str | None, cfg: Any) -> list:
-    """커밋 ``pre..sha``의 의존성 변경 중 운영자가 확인할 항목(``major``, ``replaced``)을 찾아 반환한다.
-    라이브러리 표가 승인한 항목도 승인 표시만 붙여 남긴다.
+    """커밋 ``pre..sha``의 의존성 변경에서 운영자가 확인할 항목을 찾아 반환한다.
+    메이저 업그레이드(``major``)와 라이브러리 교체(``replaced``)다. 표가 승인한 항목도 승인 표시를 붙여 남긴다.
     git이나 pom 파싱으로 알 수 없으면 빈 목록을 반환한다. 예외를 던지지 않는다.
 
     `changes_in_commit`, then `apply_table` marks the ones a table entry allows."""
@@ -279,7 +277,8 @@ def operator_changes(ws: Any, pre: str | None, sha: str | None, cfg: Any) -> lis
 
 
 def fallback_guide(changes: list, lang: str = "ko") -> str:
-    """LLM이 가이드를 주지 않았을 때 쓸 운영자 확인 가이드를 만든다. 언어는 호출한 쪽이 ``report.language``로 정한다.
+    """LLM이 가이드를 주지 않았을 때 쓸 운영자 확인 가이드를 만든다.
+    언어는 호출한 쪽이 ``report.language``로 정한다.
     ``sbmig.build.depchanges.synthesized_guide``로 만들지 못하면 변경마다 한 줄씩 쓴다."""
     try:
         from sbmig.build.depchanges import synthesized_guide
@@ -329,8 +328,8 @@ def approved_by(change: Any, cfg: Any) -> str:
 
 
 def log_major_upgrades(changes: list, guide: str, cfg: Any, offered: dict[str, str] | None = None) -> None:
-    """변경마다 WARNING 한 줄을 남기고 이어서 가이드를 INFO로 최대 ``GUIDE_LOG_LINES``줄 남긴다.
-    WARNING 끝에는 승인한 표나 같은 메이저의 jakarta 빌드 버전을 붙여 이 줄만 보고도 확인할 것을 알 수 있게 한다.
+    """변경마다 WARNING 한 줄을 남기고, 이어서 가이드를 INFO로 ``GUIDE_LOG_LINES``줄까지 남긴다.
+    WARNING 끝에는 승인한 표나 같은 메이저의 jakarta 빌드 버전을 붙인다. 이 줄만 봐도 무엇을 확인할지 알 수 있다.
 
     Shapes: `메이저 업그레이드: <text> (<pom>) — 운영자 확인 필요 [승인: libraries.yml]` /
     `[같은 메이저 jakarta 빌드 있음: 2.6.0]`, then `운영자 확인: …`."""
