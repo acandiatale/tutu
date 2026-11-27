@@ -1,10 +1,9 @@
 """버전을 올린 수정본의 빌드가 실패했을 때 이관의 수정 루프(``BuildFixLoop``)로 소스를 고치는 모듈.
-루프는 ``rounds/<r>/fixloop/tree/``의 작업 복사본에서 실행하고 수정본은 읽기만 한다.
-고친 파일은 바이트 비교로 찾아 ``fixloop/fixed/``에 남기고, 수정본에 덮어쓰는 일은 그래프가 한다.
-- pom, 숨김 경로, 실행 스크립트, 바이너리 파일의 수정과 파일 추가, 삭제는 ``edit_guard``가 거절한다
-- KB의 스크립트를 쓰지 않고, 이 루프의 결과도 KB에 기록하지 않는다
-- 루프의 저널과 로그는 ``rounds/<r>/fixloop/``에만 남긴다
-- 빌드가 바꾼 추적 파일은 빌드마다 되돌리고, 시도가 커밋한 경로만 고친 파일로 본다
+
+The work copy is ``rounds/<r>/fixloop/tree/``. The ``edit_guard`` refuses edits of poms, hidden paths, run
+scripts and binary files, and any created or deleted file. No KB script is used and nothing of this loop is
+recorded in the KB. The loop's journal and log stay under ``rounds/<r>/fixloop/``. Tracked files a build
+changed are restored after every build; only the paths an attempt committed count as fixed.
 
 `run_fix_loop` and the `Fixer` the graph reaches through `Components.fixer` (`RemediationFixer`). The
 candidate tree is never written: the loop runs in a work copy of the loop paths, changed files are found by
@@ -26,7 +25,7 @@ from .models import BuildOutcome, FixResult, FixUsage, Proposal
 log = logging.getLogger("sbmig.remediations.fixer")
 
 _clock = time.monotonic                 # 테스트에서 교체하는 시계
-# 남은 시간이 이보다 짧으면 Maven 빌드 한 번도 끝내기 어려우므로 루프를 시작하지 않는다
+# 남은 시간이 이보다 짧으면 Maven 빌드 한 번도 끝내기 어렵다. 루프를 시작하지 않는다
 MIN_LOOP_SECONDS = 60.0
 GITIGNORE = ".gitignore"
 
@@ -156,7 +155,7 @@ def make_edit_guard(loops: Iterable[str], editable: Iterable[str]) -> Callable[[
 
 def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
                   attempted: set[str] | None = None) -> tuple[list[str], str | None]:
-    """원래 트리와 작업 복사본의 바이트를 비교해서 (바뀐 경로, 첫 위반 사유)를 반환한다.
+    """원래 수정본과 작업 복사본의 바이트를 비교해서 (바뀐 경로, 첫 위반 사유)를 반환한다.
     ``attempted``를 주면 시도가 바꾼 경로만 본다. 나머지 차이는 빌드가 남긴 것으로 보고 넘어간다.
 
     Rule 3: bytes of every loop path in `tree` against the work copy. An editable path that differs is changed; a
@@ -177,7 +176,7 @@ def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
                 return changed, f"{p} must not be deleted"
             continue
         if p == GITIGNORE or not by_attempt:
-            continue                                  # 시도가 바꾸지 않은 경로의 차이는 빌드가 남긴 것이다
+            continue                                  # 시도가 바꾸지 않은 경로의 차이는 빌드가 남긴 것으로 본다
         if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
             continue
         if p not in editable:
@@ -258,7 +257,7 @@ def _untracked_entries(ws: Any) -> set[str]:
 
 
 class _DeadlineRunner:
-    """빌드마다 시간 한도를 남은 시간과 ``remediation.build_timeout_minutes`` 중 짧은 쪽으로 맞추는 래퍼 클래스.
+    """빌드마다 시간 한도를 맞추는 래퍼 클래스. 남은 시간과 ``remediation.build_timeout_minutes`` 중 짧은 쪽을 쓴다.
     빌드가 바꾸거나 지운 추적 파일은 되돌리고, 빌드가 새로 만든 항목은 기록해 둔다.
 
     After each build every tracked file the build modified or deleted that was clean before it is checked
@@ -366,7 +365,7 @@ def _usage(results: list[Any], budget_calls: int, cfg: Any = None) -> tuple[int,
                       input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
                       cost=costs.get(u.model)) for u in rows]
     if extra > 0:
-        # 시도에 사용량이 없는 호출은 토큰 수를 모르므로 따로 한 행으로 두고 비용을 매기지 않는다
+        # 시도에 사용량이 없는 호출은 토큰 수를 모른다. 따로 한 행으로 두고 비용을 매기지 않는다
         usage.append(FixUsage(model=asked_model_name(default), calls=extra, cost=None, tokens_unknown=True))
     return (sum(r.calls for r in usage), sum(r.input_tokens for r in usage), sum(r.output_tokens for r in usage),
             list(dict.fromkeys(r.model for r in usage)), usage, currency)
@@ -593,7 +592,8 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                  llm_fixer: Any = None, script_runner: Any = None, edit_applier: Any = None,
                  profile: Any = None) -> FixResult:
     """수정본의 프로젝트 루트 ``tree``를 복사한 작업 폴더에서 빌드 오류 수정 루프를 실행하고 결과를 반환한다.
-    ``tree``는 읽기만 하고, 고친 파일은 ``work_dir/fixed/``에 둔다. 루프 안의 실패는 예외 대신 결과로 반환한다.
+    ``tree``는 읽기만 한다. 고친 파일은 ``work_dir/fixed/``에 둔다.
+    루프 안의 실패는 예외로 던지지 않고 결과로 반환한다.
 
     `tree` = the project root inside the candidate (never written); `work_dir` = `rounds/<r>/fixloop/` (the loop's
     journal and logs, the work copy `tree/`, the fixed bytes `fixed/`); `targets` = the remediation's build targets
@@ -697,7 +697,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                             edit_guard=make_edit_guard(loops, editable), **kw)
         # 루프 전에 있던 파일. 끝에서 시도가 만든 파일을 찾을 때 뺀다(sbmig의 .gitignore, 분석이 남긴 파일)
         initial = _walk_files(work)
-        # journal_usage는 저널이 없으면 호출도 없었다고 보므로 첫 LLM 요청 전에 저널 첫 줄을 쓴다
+        # journal_usage는 저널이 없으면 호출도 없었다고 본다. 그래서 첫 LLM 요청 전에 저널 첫 줄을 쓴다
         ws.journal({"event": "remediation_fix_loop_start", "targets": list(targets) or [""],
                     "first_build_log": getattr(first_outcome, "log", "") if first_outcome is not None else "",
                     "max_iterations": int(cfg.remediation.fix_loop_max_iterations),
@@ -717,7 +717,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         res.remaining = len(results[-1].remaining_errors) if results and not all_ok else 0
 
         if all_ok:
-            # 시도가 커밋한 경로만 시도의 수정으로 본다. 그 밖의 바이트 차이는 빌드가 남긴 것이다
+            # 시도가 커밋한 경로만 시도의 수정으로 본다. 그 밖의 바이트 차이는 빌드가 남긴 것으로 본다
             attempted = {_norm(x) for x in ws.changed_between(base, ws.head())}
             changed, violation = compare_trees(tree, work, loops, editable, attempted)
             if violation is None:
@@ -744,7 +744,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                 patch_file.write_text(unified_patch(tree, work, changed), encoding="utf-8")
                 res.fixed, res.changed, res.reason = True, changed, ""
                 res.patch, res.fixed_dir = str(patch_file), str(fixed_root)
-        # 시간 한도가 지나면 중지 함수도 참이 되므로 마감을 중지 요청보다 먼저 확인한다
+        # 시간 한도가 지나면 중지 함수도 참이 된다. 그래서 마감을 중지 요청보다 먼저 확인한다
         elif out_of_time() or loop.budget.time_exceeded():
             res.reason = R_TIME
         elif stopped():
@@ -760,7 +760,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         res.reason = scrub(f"error: {type(e).__name__}: {e}")
         res.fixed, res.changed, res.patch, res.fixed_dir, res.retry_passed = False, [], "", "", False
         if loop is not None and not res.llm_calls:
-            # 시도 결과를 받지 못했으므로 루프가 저널에 남긴 사용량을 읽는다
+            # 시도 결과를 받지 못했다. 루프가 저널에 남긴 사용량을 읽는다
             try:
                 res.usage, res.currency = _usage_after_error(work_dir, loop.budget.llm_calls, cfg)
                 _set_totals(res)

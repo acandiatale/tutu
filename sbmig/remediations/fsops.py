@@ -1,8 +1,5 @@
 """취약점 조치에서 파일과 폴더를 옮기고 지우는 함수를 모은 모듈.
-Windows에서 백신, 색인 서비스, 편집기가 파일을 잠깐 열고 있어 호출이 거부되면 60초까지 다시 시도한다.
-- 그 밖의 오류는 바로 던지므로 Linux에서는 ``os``, ``shutil`` 호출과 똑같이 동작한다
-- 끝내 거부되면 Restart Manager로 파일을 열고 있는 프로그램을 찾아 경고 로그에 이름을 남긴다
-- ``models.py``가 이 모듈을 import하므로 표준 라이브러리만 쓴다
+Windows에서 백신이나 편집기가 파일을 잠깐 열고 있어 거부되면 60초까지 다시 시도한다.
 
 Renames, replaces and removals of the remediation package. On Windows a call refused with `winerror` 5 (access
 denied) or 32 (sharing violation) because another program briefly holds a file open is made again: after 0.05 s,
@@ -129,7 +126,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _IMAGE_NAME_CHARS = 1024
 _RM_TYPES: Any = None
 _RM_TYPES_LOCK = threading.Lock()
-# 찾기는 프로세스당 하나만 실행하므로 끝나지 않은 찾기의 시작 시각을 둔다
+# 찾기는 프로세스당 하나만 실행한다. 그래서 끝나지 않은 찾기의 시작 시각을 둔다
 _PENDING_LOCK = threading.Lock()
 _pending: dict[str, float] | None = None
 
@@ -295,7 +292,7 @@ def _rm_holders(files: list[str], rm: Any, k32: Any) -> tuple[list[str], str | N
                     break
                 if rc != _ERROR_MORE_DATA:
                     return [], f"RmGetList answered {rc}"
-                # 두 호출 사이에 프로그램이 늘 수 있으므로 조금 넉넉히 잡는다
+                # 두 호출 사이에 프로그램이 늘 수 있다. 조금 넉넉히 잡는다
                 infos = (t.RM_PROCESS_INFO * (max(needed.value, len(infos)) + 4))()
             else:
                 return [], f"RmGetList answered {_ERROR_MORE_DATA} {_RM_LIST_TRIES} times"
@@ -313,7 +310,7 @@ def _rm_holders(files: list[str], rm: Any, k32: Any) -> tuple[list[str], str | N
             return out, None
         finally:
             rm.RmEndSession(handle.value)
-    # 프로그램 찾기는 로그에 쓰려는 것이므로 어떤 실패도 예외로 던지지 않는다
+    # 프로그램 이름은 로그에만 쓴다. 찾다가 실패해도 예외로 던지지 않는다
     except Exception as e:  # noqa: BLE001
         return [], f"{type(e).__name__} {getattr(e, 'winerror', '') or ''}".strip()
 
@@ -367,7 +364,7 @@ def _release(record: dict[str, float]) -> None:
 
 def holders(paths: Any) -> list[str]:
     """``paths``를 열고 있는 프로그램 이름 목록을 반환한다.
-    Windows가 아니거나 찾지 못하면 빈 목록을 반환하고, 예외를 던지지 않는다.
+    Windows가 아니거나 찾지 못하면 빈 목록을 반환한다. 예외를 던지지 않는다.
 
     One string per program: `<application name> [<executable>] (pid <n>)`, with `, this process` in the pid part
     for `os.getpid()`; base names only, never a path. A single `str` / `bytes` / `os.PathLike` is a list of one.
@@ -434,8 +431,8 @@ def _names_text(names: list[str]) -> str:
 
 def _waiting(op: str, path: Any, call: Callable[[int], _T], final: Callable[[], bool] | None = None,
              codes: tuple[int, ...] = HOLD_WINERRORS, look: tuple[Any, ...] | None = None) -> _T:
-    """``call``을 실행하고, 다른 프로그램이 파일을 열고 있어 거부되면 정해진 시간 동안 다시 시도한다.
-    ``final``이 True를 반환하면 기다려도 풀리지 않는 거부이므로 바로 던진다.
+    """``call``을 실행한다. 다른 프로그램이 파일을 열고 있어 거부되면 정해진 시간 동안 다시 시도한다.
+    ``final``이 True를 반환하면 기다려도 풀리지 않는 거부다. 바로 던진다.
 
     ``call`` gets the try number (1 first). ``look``: the paths whose holders are looked up on give-up (default
     ``path``). On give-up the last exception is marked for `waited_out` and the block's ``gave_up`` is set."""
@@ -459,7 +456,7 @@ def _waiting(op: str, path: Any, call: Callable[[int], _T], final: Callable[[], 
         left = limit - waited
         if left <= _DONE_S:
             b = _own_batch()
-            # 블록 안에서 한 번 포기했으면 파일을 잡고 있는 프로그램은 이미 기록했으므로 다시 찾지 않는다
+            # 블록 안에서 이미 한 번 포기했으면 잡고 있는 프로그램도 그때 기록했다. 다시 찾지 않는다
             skip = b is not None and b["gave_up"]
             got = None if skip else _look((path,) if look is None else look, HOLDERS_WAIT_S)
             if got is not None and got[0]:

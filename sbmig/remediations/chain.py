@@ -1,17 +1,16 @@
-"""이관이 BUILD SUCCESS로 끝난 뒤 같은 빌드 파드에서 취약점 조치를 이어서 실행하는 모듈.
-이관 그래프의 ``remediation`` 노드가 ``run_after_migration``을 호출하고, 이관 없이 조치만 하는 실행(``--flow
-remediation``)은 ``run_only``를 호출한다.
-- 조치 결과는 이관의 성공 여부, 종료 코드, 보고서 결과를 바꾸지 않는다. 예외도 밖으로 던지지 않는다
-- 실행 폴더는 ``<이관 실행 폴더>/remediation/``이고 작업 id는 이관 실행 id와 같다
-- 이관이 끝난 프로젝트 트리를 ZIP으로 묶어 ``intake.accept_zip``에 넣는다.
-  ``remediation.trusted_projects``는 확인하지 않는다
-- Maven 로컬 저장소는 이관과 같은 것을 쓴다
-- 빌드 파드는 사람을 기다리지 않는다. AWAITING_CONFIRMATION 상태를 저장하고 끝난다.
-  재개할 때는 새 빌드 파드가 ``resume``을 호출한다
-- 이전 버전이 AWAITING_APPROVAL로 저장한 조치는 재개하지 않고 ``StateConflict``를 던진다
-- ``remediation.chain_budget_minutes``를 넘기면 STOPPED(사유 ``chain_budget``)로 멈추고 나중에 재개할 수 있다
-- ``run_only``는 준비가 안 됐으면 상태를 만들지 않고 ``RemediationNotReady``를 던진다
-- 상태를 진행시키는 동안 ``claim.json``으로 조치 폴더를 점유한다. 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
+"""이관이 끝난 뒤 같은 빌드 파드에서 취약점 조치를 이어서 실행하는 모듈.
+이관 없이 조치만 하는 실행도 이 모듈이 실행한다.
+
+The migration graph's ``remediation`` node calls ``run_after_migration``; a run without migration
+(``--flow remediation``) calls ``run_only``. The remediation's outcome never changes the migration's success,
+exit code or report verdict, and ``run_after_migration`` never raises. The run folder is
+``<migration run dir>/remediation/`` and the state id is the migration run id. The migrated tree is zipped
+into ``intake.accept_zip``; ``remediation.trusted_projects`` is not asked. The Maven local repository is the
+migration's. A build pod never waits for a person: it saves AWAITING_CONFIRMATION and ends, and a new build
+pod calls ``resume`` later. A state an older version saved as AWAITING_APPROVAL is not resumed
+(``StateConflict``). Past ``remediation.chain_budget_minutes`` the run stops as STOPPED (reason
+``chain_budget``) and can be resumed. ``run_only`` raises ``RemediationNotReady`` without creating a state
+when the remediation is not ready.
 
 The remediation graph stays a separate feature; this module only drives it from the migration side. `run_only`
 shares files, state id and driver with the chained run. Whatever drives the state (the chained first run,
@@ -54,7 +53,7 @@ log = logging.getLogger("sbmig.remediations.chain")
 
 CHAIN_DIR = "remediation"
 # 시간 한도를 넘겨 STOPPED가 될 때의 사유 코드.
-# 이관에 이어 실행하는 조치에만 쓰이므로 models가 아니라 여기에 둔다
+# 이관에 이어 실행하는 조치에만 쓴다. 그래서 models가 아니라 여기에 둔다
 R_CHAIN_BUDGET = "chain_budget"
 _monotonic = time.monotonic               # 테스트에서 교체하는 시계
 SCOPE = "remediation"                     # 이관 저널에서 취약점 조치가 남긴 줄을 구분하는 값
@@ -124,7 +123,7 @@ def _read_claim(path: Path) -> dict[str, Any] | None:
 
 def _fs_now(root: Path) -> float:
     """조치 폴더가 있는 파일 시스템의 현재 시각을 잰다. 실패하면 이 호스트의 시각을 반환한다.
-    NFS에서는 서버가 mtime을 기록하므로 파드 사이의 시계 차이가 점유 판단에 영향을 주지 않는다.
+    NFS에서는 서버가 mtime을 기록한다. 그래서 파드 사이의 시계 차이가 점유 판단에 영향을 주지 않는다.
 
     Measured as the mtime of a probe file that is removed at once."""
     probe = Path(root) / f".claim.probe.{os.getpid()}.{uuid.uuid4().hex[:8]}"
@@ -149,7 +148,8 @@ def _fs_now(root: Path) -> float:
 
 def _claim_stale(root: Path, info: dict[str, Any], mtime: float) -> bool:
     """점유가 오래되어 넘겨받아도 되는지 판단한다.
-    같은 호스트에서 pid가 죽었거나, 파일 시스템 시계로 ``CLAIM_STALE_SECONDS``초 넘게 갱신되지 않았으면 오래된 것이다."""
+    같은 호스트에서 pid가 죽었으면 오래된 점유다.
+    파일 시스템 시계로 ``CLAIM_STALE_SECONDS``초 넘게 갱신되지 않았어도 오래된 점유다."""
     from sbmig.kb.lock import pid_alive
     if info.get("host") == socket.gethostname() and info.get("pid") is not None and not pid_alive(info.get("pid")):
         return True
@@ -190,7 +190,7 @@ def claim_refusal(info: dict[str, Any] | None) -> str:
 
 class RunClaim:
     """조치 폴더 하나를 상태를 진행시키는 프로세스 하나만 쓰도록 점유하는 클래스.
-    ``acquire``가 ``claim.json``을 배타적으로 만들고, ``with`` 블록이 끝나면 어떤 경로로 끝나든 지운다.
+    ``acquire``가 ``claim.json``을 배타적으로 만든다. ``with`` 블록이 끝나면 어떻게 끝나든 지운다.
 
     `claim.json` is created with ``O_CREAT | O_EXCL`` and holds pid, host, attempt, start time, purpose and a
     token. A fresh claim of anyone else -> `StateConflict` (nothing touched). A stale claim (the holder's pid
@@ -255,7 +255,7 @@ class RunClaim:
         다른 프로세스가 그 사이에 새로 만든 점유였으면 제자리에 되돌린다."""
         aside = self.path.with_name(f"{CLAIM_NAME}.stale.{uuid.uuid4().hex[:8]}")
         try:
-            # 오래됐다는 판단은 바로 앞에서 한 것이어야 하므로 거부돼도 기다리지 않는다
+            # 오래됐다는 판단은 바로 앞에서 한 것이어야 한다. 그래서 거부돼도 기다리지 않는다
             os.rename(self.path, aside)
         except FileNotFoundError:
             return                           # 다른 프로세스가 먼저 넘겨받았다
@@ -418,7 +418,7 @@ def _sigterm_to_exit() -> Callable[[], None]:
 
 
 def _try_claim(paths: RunPaths, jr: Journal, purpose: str, attempt: Any = None) -> RunClaim | None:
-    """점유를 시도하고, 다른 프로세스가 가졌으면 WARNING 한 줄을 남기고 None을 반환한다."""
+    """점유를 시도한다. 다른 프로세스가 가졌으면 WARNING 한 줄을 남기고 None을 반환한다."""
     try:
         return RunClaim(paths.root, purpose=purpose, attempt=attempt, journal=jr).acquire()
     except StateConflict as e:
@@ -468,8 +468,8 @@ def readiness(cfg: Any, components: Components | None) -> list[str]:
 
 def _is_build_output(dirpath: Path, rel_parts: tuple[str, ...], filenames: Iterable[str]) -> bool:
     """``dirpath/target`` 폴더가 Maven 빌드 산출물인지 판단한다.
-    src 아래면 산출물이 아니고, 옆에 pom.xml이 있거나 안에 Maven이 남기는 폴더가 있으면 산출물이다.
-    패키지 이름이 target인 소스를 빠뜨리지 않도록 ``Workspace.walk``, result.zip과 같은 규칙을 쓴다."""
+    src 아래면 산출물이 아니다. 옆에 pom.xml이 있거나 안에 Maven이 남기는 폴더가 있으면 산출물이다.
+    ``Workspace.walk``, result.zip과 같은 규칙이다. 패키지 이름이 target인 소스를 빠뜨리지 않기 위해서다."""
     if "src" in rel_parts:
         return False
     return "pom.xml" in filenames or any((dirpath / "target" / m).is_dir() for m in _MAVEN_OUTPUT_MARKERS)
@@ -477,10 +477,10 @@ def _is_build_output(dirpath: Path, rel_parts: tuple[str, ...], filenames: Itera
 
 def source_zip(project_dir: Path | str, out_zip: Path | str, *, exclude_dirs: Iterable[str] = (),
                journal: Journal | None = None) -> None:
-    """이관이 끝난 프로젝트 트리를 ZIP으로 묶는다. 루트 pom.xml은 ZIP 최상위에 둔다.
-    일반 파일만 이름 순으로 넣고 시각과 권한을 고정하므로 같은 트리면 같은 바이트가 나온다.
+    """이관이 끝난 프로젝트를 ZIP으로 묶는다. 루트 pom.xml은 ZIP 최상위에 둔다.
+    일반 파일만 이름 순으로 넣고 시각과 권한을 고정한다. 그래서 같은 프로젝트면 같은 바이트가 나온다.
     ``.git/``, ``.sbmig/``, Maven 빌드 산출물 ``target/``, ``exclude_dirs``는 뺀다.
-    심볼릭 링크는 접수에서 거부되므로 넣지 않고 저널에 ``remediation_symlink_skipped``를 남긴다."""
+    심볼릭 링크는 접수에서 거부되므로 넣지 않는다. 대신 저널에 ``remediation_symlink_skipped``를 남긴다."""
     root = Path(project_dir)
     out = Path(out_zip)
     ignored = {str(d).replace("\\", "/").strip("/") for d in exclude_dirs if str(d).strip("/")}
@@ -598,8 +598,8 @@ class _Budget:
 
 def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, real_stop: StopCheck,
                     jr: Journal | None = None, cfg: Any = None) -> RemediationState:
-    """시간 한도 때문에 STOPPED가 된 상태의 사유를 ``chain_budget``으로 바꿔 저장한다.
-    실제 중지 요청이 있었으면 사유를 그대로 둔다. 화면에 재개하면 이어서 진행한다고 안내하기 위해서다.
+    """시간 한도 때문에 STOPPED가 된 상태면 사유를 ``chain_budget``으로 바꿔 저장한다.
+    재개하면 이어서 진행된다고 화면에 안내하기 위해서다. 실제 중지 요청이 있었으면 사유를 그대로 둔다.
 
     Like `_baseline_outcome`: the new reason and message get a new `updated` stamp, the state is saved and the
     report is written again once (`_report_again`); a kill in between leaves a pending report, repaired on the
@@ -660,7 +660,8 @@ def _try_save(paths: RunPaths, st: RemediationState) -> None:
 
 def _error(paths: RunPaths, jr: Journal, e: BaseException, run_id: str,
            state: RemediationState | None) -> RemediationState:
-    """잡은 예외를 저널 ``remediation_error``와 로그(비밀 값을 마스킹한 traceback)에 남기고 FAILED 상태로 저장한다."""
+    """잡은 예외를 저널 ``remediation_error``와 로그에 남기고 FAILED 상태로 저장한다.
+    로그에 남기는 traceback은 비밀 값을 마스킹한다."""
     msg = graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root, 500)
     jr({"event": "remediation_error", "type": type(e).__name__, "message": msg})
     log.error("chained remediation failed: %s", graph_mod.scrub_message(traceback.format_exc(), paths.root, 20000))
@@ -671,7 +672,7 @@ def _error(paths: RunPaths, jr: Journal, e: BaseException, run_id: str,
 
 def clean_targets(targets: Iterable[str] | None) -> list[str]:
     """이관의 최종 빌드 대상 폴더 목록을 조치 상태에 넣을 형태로 정리한다.
-    프로젝트 기준 상대 경로로 순서를 유지하고, 중복, 빈 값, 프로젝트 밖 경로는 뺀다.
+    프로젝트 기준 상대 경로로 바꾸고 순서는 유지한다. 중복, 빈 값, 프로젝트 밖 경로는 뺀다.
     루트 하나뿐이면 빈 목록을 반환한다. 이때 조치는 루트에서 한 번 빌드한다."""
     from .inventory import normalize_roots
     roots = normalize_roots([str(t) for t in (targets or []) if t is not None])
@@ -680,14 +681,14 @@ def clean_targets(targets: Iterable[str] | None) -> list[str]:
 
 def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, excluded: Iterable[str],
                       cfg: Any = None) -> RemediationState:
-    """같은 트리로 이관의 최종 빌드는 통과했는데 조치 전 빌드가 실패했으면 그 사실을 메시지 앞에 쓴다.
+    """이관의 최종 빌드는 통과했는데 같은 프로젝트로 조치 전 빌드가 실패했으면 그 사실을 메시지 앞에 붙인다.
     메시지에는 같은 Maven 설정이라는 것, 비교할 두 로그, 조치가 빌드한 복사본에서 빠진 것을 넣는다.
     저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다.
 
     The report and the state carry the same message; `_report_again` writes the report once more (a kill in
     between is repaired on the next entry like any pending report)."""
     from .models import R_BASELINE_BUILD_FAILED
-    # 이관의 최종 빌드가 실패한 트리(baseline_tolerated)에는 이 안내가 맞지 않는다
+    # 이관의 최종 빌드가 실패한 프로젝트(baseline_tolerated)에는 이 안내가 맞지 않는다
     if (state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or state.baseline_tolerated
             or "migration's final build passed" in (state.message or "")):
         return state
@@ -703,7 +704,7 @@ def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, exc
     jr({"event": "remediation_baseline_differs", "remediation": state.id, "targets": list(state.build_targets or [])})
     log.warning("vulnerability remediation %s: the baseline build failed although the migration's final build passed on the "
                 "same tree — see remediation/baseline/build.log", state.id)
-    # 메시지가 바뀌었으므로 시각을 새로 찍어 보고서를 다시 써야 하는 상태로 만들고, 바로 한 번 다시 쓴다
+    # 메시지가 바뀌었으니 시각을 새로 찍는다. 보고서도 바로 한 번 다시 쓴다
     _report_again(paths, state, jr, cfg)
     return state
 
@@ -715,7 +716,7 @@ def _ended(jr: Journal, st: RemediationState, paths: RunPaths | None = None) -> 
     jr({"event": "remediation_end", "remediation": st.id, "status": st.status, "reason": st.reason})
     text = " ".join(str(st.message or "").split())
     if text:
-        # 회사 PC에서는 복사와 붙여넣기가 안 되므로 sbmig.log 한 줄만 보고도 실패 이유를 알 수 있게 한다
+        # 회사 PC에서는 복사와 붙여넣기가 안 된다. sbmig.log 한 줄만 보고도 실패 이유를 알 수 있게 한다
         msg = graph_mod.scrub_message(text, paths.root if paths is not None else None, _END_MESSAGE_CAP)
         msg = " ".join(msg.split())
         log.info("chained remediation %s: %s %s — %s", st.id, st.status, st.reason, msg)
@@ -727,8 +728,8 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                         stop: StopCheck | None, components: Components | None = None,
                         exclude_dirs: Iterable[str] = (), build_targets: Iterable[str] = (),
                         baseline_may_fail: bool = False) -> RemediationState | None:
-    """빌드에 성공한 이관 뒤에 취약점 조치를 한 번 실행하고 마지막 상태를 반환한다. 예외를 던지지 않는다.
-    ``baseline_may_fail``이 True면 이관의 최종 빌드가 실패한 트리이고, 조치 전 빌드가 실패해도 조치를 이어 간다.
+    """이관 뒤에 취약점 조치를 한 번 실행하고 마지막 상태를 반환한다. 예외를 던지지 않는다.
+    ``baseline_may_fail``이 True면 이관의 최종 빌드가 실패한 프로젝트다. 이때는 조치 전 빌드가 실패해도 이어 간다.
     - 기능이 꺼져 있거나 준비가 안 됐으면 None을 반환한다. 준비가 안 됐을 때는 저널
       ``remediation_skipped``와 WARNING 한 줄을 남긴다
     - 조치 상태가 이미 있으면 새로 시작하지 않는다. 저널 ``remediation_exists``를 남기고 그 상태를 반환한다
@@ -789,8 +790,8 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
-    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
-    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다. 점유 파일은 남긴다
+    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다. 지우고 다시 시작한다.
+    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있어서 지워도 된다. 점유 파일은 남긴다
     _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id, **({"baseline_may_fail": True} if baseline_may_fail else {})})
@@ -828,7 +829,7 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
 class RemediationNotReady(Exception):
     """조치만 하는 실행(``run_only``)을 시작할 수 없을 때 던지는 예외.
     ``missing``에 빠진 IVAS 환경 변수 이름과 Maven 준비 문제를 담는다. 값은 넣지 않는다.
-    이 예외가 나면 상태 파일은 만들어지지 않은 것이다."""
+    이 예외가 나면 상태 파일은 만들어지지 않는다."""
 
     def __init__(self, missing: Iterable[str]):
         self.missing = [str(m) for m in missing]
@@ -861,7 +862,7 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
              stop: StopCheck | None, components: Components | None = None,
              build_targets: Iterable[str] = ()) -> RemediationState:
     """이관 없이 취약점 조치만 한 번 실행한다(실행 방식 ``remediation``).
-    ``source``가 ZIP 파일이면 그 바이트를 그대로, 디렉토리면 ``source_zip``으로 묶어서 ``accept_zip``에 넣는다.
+    ``source``가 ZIP 파일이면 그 바이트를 그대로 ``accept_zip``에 넣는다. 디렉토리면 ``source_zip``으로 묶어서 넣는다.
     - 준비가 안 됐으면 저널 ``remediation_skipped``를 남기고 ``RemediationNotReady``를 던진다.
       상태는 만들지 않는다. 던지는 예외는 이것뿐이다
     - 조치 상태가 이미 있으면 그대로 반환한다. 그 밖에는 이관에 이어 실행하는 조치와 같은 규칙으로 실행한다
@@ -890,7 +891,7 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
         real_stop = _safe_stop(stop)
         claim = _try_claim(paths, jr, "remediation-only")
         if claim is None:
-            # 다른 프로세스가 이 조치 폴더를 쓰고 있으면 아무것도 바꾸지 않고, 저장하지 않은 FAILED 상태를 반환한다
+            # 다른 프로세스가 이 조치 폴더를 쓰고 있다. 아무것도 바꾸지 않고 저장하지 않은 FAILED 상태를 반환한다
             return load_state(run_dir) or _failed_state(run_id, StateConflict.code,
                                                         claim_refusal(_read_claim(claim_path(paths.root))))
         with claim, remediation_log(paths):
@@ -917,8 +918,8 @@ def _start_only(paths: RunPaths, source: Path, cfg: Any, comps: Components, *, r
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
-    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
-    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다. 점유 파일은 남긴다
+    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다. 지우고 다시 시작한다.
+    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있어서 지워도 된다. 점유 파일은 남긴다
     _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id, "flow": "remediation"})
@@ -993,7 +994,7 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
     save = _saver(paths)
     try:
         state = graph_mod.run_remediation(state, paths, cfg, comps, save=save, journal=jr, stop=stop)
-    except Exception as e:  # noqa: BLE001 - 노드 오류는 run_remediation이 FAILED로 바꾸고, 여기서는 나머지를 막는다
+    except Exception as e:  # noqa: BLE001 - 노드 오류는 run_remediation이 FAILED로 바꾼다. 여기서는 그 밖의 오류를 막는다
         return _error(paths, jr, e, state.id, state)
     if chained:                              # 이관 없이 실행한 조치에는 이관의 최종 빌드가 통과했다는 정보가 없다
         state = _baseline_outcome(paths, state, jr, excluded, cfg)
@@ -1021,7 +1022,7 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
         log.error("chained remediation %s: resume refused: %s", state.id, removed)
         raise removed
     if graph_mod.final_repair_needed(paths, state):
-        # 끝난 조치는 재개할 것이 없으므로 결과 ZIP 기록과 보고서만 맞춘다
+        # 끝난 조치라 재개할 것이 없다. 결과 ZIP 기록과 보고서만 맞춘다
         jr({"event": "remediation_report_repair", "remediation": state.id, "status": state.status})
         return _repair_report(paths, run_dir, state, cfg, jr, "resume")
     if not graph_mod.can_resume(state):
@@ -1032,7 +1033,7 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
         log.error("chained remediation %s: resume refused: %s", state.id, e)
         raise
     with claim, remediation_log(paths):
-        # 점유하기 전에 다른 프로세스가 상태를 바꿨을 수 있으므로 다시 읽는다
+        # 점유하기 전에 다른 프로세스가 상태를 바꿨을 수 있다. 다시 읽는다
         state = load_state(run_dir)
         if state is None:
             raise StateConflict("no chained remediation in this run directory")
@@ -1052,9 +1053,9 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
 
 def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dict[str, Any] | None = None) -> dict[str, Any]:
     """이관 보고서(``RunReport.remediation``)에 넣을 짧은 JSON 요약을 만든다.
-    status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message, 결과 파일 경로, 결과 ZIP 정보를 담는다.
+    status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message를 담는다. 결과 파일 경로와 결과 ZIP 정보도 담는다.
     조치 전 빌드를 실행했으면 ``baseline_build_ok``를 담는다.
-    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated``와 ``delivery.build_tolerated``를 True로 담는다.
+    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated``와 ``delivery.build_tolerated``가 True다.
 
     `fix_llm_calls` (only when > 0) = the LLM calls of the build fix loop over every round
     (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count the

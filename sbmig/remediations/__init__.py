@@ -1,12 +1,11 @@
-"""취약점 조치 기능을 모은 패키지. 이관과 별개인 LangGraph 흐름으로 실행된다.
-업로드된 프로젝트를 빌드하고 IVAS로 검사한 뒤, 취약한 라이브러리의 버전 문자열만 고쳐서 다시 빌드하고 재검사한다.
-프로젝트 구조는 건드리지 않는다. 소스는 버전을 올린 뒤 빌드가 깨졌을 때 수정 루프만 고친다.
-- ``models.py``, ``interfaces.py``: 공통 데이터 클래스와 바꿔 넣을 수 있는 구성 요소
-- ``intake.py``, ``ivas.py``, ``maven.py``: 접수, IVAS 검사, 서버 Maven 빌드
-- ``inventory.py``, ``planner.py``, ``apply.py``: 취약점과 의존성 연결, 버전 선택, 수정본 적용과 검증
-- ``fixer.py``: 수정본 빌드가 실패했을 때의 빌드 오류 수정 루프
-- ``graph.py``, ``report.py``: 노드 흐름과 보고서
-- ``service.py``, ``api.py``: 작업 관리와 HTTP API
+"""취약점 조치 기능을 모은 패키지. 프로젝트를 IVAS로 검사하고 취약한 라이브러리의 버전을 올린다.
+버전을 올린 뒤 다시 빌드하고 재검사한다.
+
+Modules: ``models.py`` / ``interfaces.py`` (shared data classes, swappable parts), ``intake.py`` /
+``ivas.py`` / ``maven.py`` (intake, IVAS scan, server-side Maven build), ``inventory.py`` / ``planner.py`` /
+``apply.py`` (findings to dependencies, version choice, candidate apply and checks), ``fixer.py`` (the build
+fix loop after a failed candidate build), ``graph.py`` / ``report.py`` (node flow, report), ``service.py`` /
+``api.py`` (job management, HTTP API). The project structure is never changed.
 
 Vulnerability remediation, a LangGraph flow separate from the migration graph: baseline_build -> baseline_scan
 -> inventory -> plan -> apply -> build -> freeze_delivery -> rescan -> evaluate -> report. Only planned Maven

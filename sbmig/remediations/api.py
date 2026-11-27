@@ -1,9 +1,10 @@
 """취약점 조치 HTTP API(``/api/remediations…``)를 제공하는 모듈.
-웹 앱의 ``create_app``이 :func:`create_router`를 붙이므로 같은 프로세스와 TokenGuard를 쓴다.
-- 업로드는 임시 파일로 받으면서 크기 상한(``remediation.max_upload_mb``)과 ZIP 서명을 확인한다
-- ZIP 검사와 상태 파일 읽기는 이벤트 루프를 막지 않도록 스레드풀에서 실행한다
-- 오류 응답은 ``{"error", "code", …}`` 형태이고 비밀 값과 서버 절대 경로는 넣지 않는다
-- Job 모드에서는 단독 업로드를 본문을 받기 전에 409 ``not_available``로 거절한다
+
+The web app's ``create_app`` mounts :func:`create_router`, so the routes share its process and TokenGuard.
+An upload is streamed into a temp file while the size cap (``remediation.max_upload_mb``) and the ZIP
+signature are checked. ZIP checks and state-file reads run in the thread pool so the event loop is never
+blocked. An error answer has the shape ``{"error", "code", …}`` and never carries a secret or an absolute
+server path. In Job mode a standalone upload is refused with 409 ``not_available`` before the body is read.
 
 The `/api/remediations` router (contract: API.md). In Job mode a remediation chained after a migration is read
 through the same routes; a resume runs in a new build pod. Error mapping: IntakeRejected → 400, NotReady →
@@ -91,12 +92,12 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
 
     @r.post("", status_code=202)
     async def submit(request: Request, name: str = "project.zip", configs: str | None = None) -> JSONResponse:
-        if manager.job_mode:          # Job 모드는 빌드 파드에서 조치하므로 큰 본문을 받기 전에 거절한다
+        if manager.job_mode:          # Job 모드에서는 빌드 파드가 조치한다. 큰 본문을 받기 전에 거절한다
             return error_response(NotAvailable(manager.readiness()[0], mode=manager.mode))
         length = request.headers.get("content-length")
         if limit and length and length.isdigit() and int(length) > limit:
             return too_large()
-        # 본문이 1 GiB에 가까울 수 있으므로 임시 파일로 받으면서 크기 상한과 ZIP 서명을 확인한다
+        # 본문이 1 GiB 가까이 될 수 있다. 임시 파일로 받으면서 크기 상한과 ZIP 서명을 확인한다
         tmp = manager.incoming_path()
         size, head = 0, b""
         try:
@@ -187,7 +188,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             # 결과 ZIP은 프로젝트명으로 받는다. 이름을 정하지 못하면 result.zip 그대로 보낸다
             try:
                 filename = await _call(manager.zip_name, rid)
-            except Exception:  # 표시용 이름이므로 정하지 못해도 내려받기는 실패시키지 않는다
+            except Exception:  # 표시용 이름일 뿐이다. 이름을 못 정해도 내려받기는 실패시키지 않는다
                 log.debug("remediation %s: download name of result.zip not computed", rid, exc_info=True)
         return FileResponse(path, media_type=_MEDIA.get(ext, "application/octet-stream"),
                             headers={"Cache-Control": "no-store"},

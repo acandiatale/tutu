@@ -1,6 +1,8 @@
-"""버전 문자열의 숫자 부분을 숫자로 비교하는 모듈(1.18.24 < 1.18.30, 2.7.18.RELEASE == 2.7.18).
-권고의 버전 하한 판단 등에서 사용한다.
-``${...}`` 참조나 숫자로 시작하지 않는 버전은 None이므로 그 처리는 호출하는 쪽이 정한다."""
+"""버전 문자열을 숫자로 비교하는 모듈. 1.18.24 < 1.18.30이고 2.7.18.RELEASE == 2.7.18이다.
+
+Used for the lower version bounds of advisories, among others. A ``${...}`` reference or a version that does
+not
+start with a digit parses to None; the caller decides what that means."""
 from __future__ import annotations
 
 import re

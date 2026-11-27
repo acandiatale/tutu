@@ -1,15 +1,17 @@
 """계획한 버전 변경을 수정본의 pom에 적용하고 결과를 검증하는 모듈.
-계획한 버전 문자열만 바꿔 넣은 뒤, 바뀐 것이 그것뿐인지와 Maven이 계산한 의존성 버전이 계획과 같은지 확인한다.
-흐름: plan -> apply(``apply_proposals``, ``verify_text_only``) -> build -> verify(``verify_resolution``).
-planner도 ``render_diff``와 ``locate_override``를 호출한다.
-- 버전 교체(replace)는 줄 단위 문자열 치환이다. ``edit.line`` 줄에 ``edit.old``가 정확히 한 번 있어야 하고,
-  그 밖의 바이트(인코딩, BOM, CRLF, 마지막 줄바꿈)는 그대로 둔다. XML을 다시 쓰지 않는다
-- 유일한 예외는 ``K_MANAGED_OVERRIDE`` 제안의 삽입(insert)이다. 루트 ``pom.xml``이나 모듈 pom의 정해진 줄 앞에
-  ``render_override``가 만든 ``<dependency>`` 항목 하나, 또는 그 항목을 담은 절 전체만 넣는다. 넣기 전에
-  기준 줄, 형태, 같은 관리 키(g:a, 형식, classifier)의 기존 항목을 확인한다
-- 한 pom의 변경은 모두 원래 줄 번호 기준으로 한 번에 적용한다
-- 모든 제안의 변경을 먼저 검사하고, 잘못된 변경이 하나라도 있는 제안은 통째로 건너뛴다
-- 경로는 프로젝트 폴더 안이어야 하고 ``old`` / ``new``는 버전 문자열 형태여야 한다
+
+Only the planned version text is written; afterwards the checks confirm that nothing else changed and that
+the versions Maven resolves match the plan. Flow: plan -> apply (``apply_proposals``, ``verify_text_only``)
+-> build -> verify (``verify_resolution``). The planner also calls ``render_diff`` and ``locate_override``.
+
+A replace edit is a string replacement on one line: ``edit.old`` must occur exactly once on line
+``edit.line``, and every other byte (encoding, BOM, CRLF, final newline) stays as it is. The XML is never
+rewritten. The one exception is the insert of a ``K_MANAGED_OVERRIDE`` proposal: before a fixed line of the
+root ``pom.xml`` or a module pom, only one ``<dependency>`` entry made by ``render_override``, or a whole
+section holding it, is inserted. Before inserting, the anchor line, the shape and an existing entry of the
+same management key (g:a, type, classifier) are checked. All edits of one pom are applied at once against
+the original line numbers. The edits of every proposal are checked first; a proposal with one bad edit is
+skipped as a whole. Paths must lie inside the project, and ``old`` / ``new`` must be version text.
 
 Inserts before the same line go in proposal-id order (two whole sections at one place become one section
 holding the entries in that order). An override entry carries `<type>` (not jar) and `<classifier>` when the
@@ -43,12 +45,12 @@ from .models import (
 
 log = logging.getLogger("sbmig.remediations.apply")
 
-# 버전 문자열로 인정하는 형태. XML 특수문자, 공백, 따옴표가 없고, ``${``는 속성 참조이므로 받지 않는다
+# 버전 문자열로 인정하는 형태. XML 특수문자, 공백, 따옴표가 없어야 한다. ``${``는 속성 참조라서 받지 않는다
 _VERSION_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-+]*")
 _BOMS = ((codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF32_BE, "utf-32-be"),
          (codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be"))
-# property, 부모, BOM 제안은 같은 값을 쓰는 다른 아티팩트도 함께 바꾸므로 그 변화는 참고 정보로만 남긴다.
-# override 항목은 g:a 하나만 고정하므로 넣지 않는다. 다른 의존성이 함께 바뀌면 계획에 없는 변화다
+# property, 부모, BOM 제안은 같은 값을 쓰는 다른 아티팩트도 함께 바꾼다. 그 변화는 참고 정보로만 남긴다.
+# override 항목은 g:a 하나만 고정해서 여기 넣지 않는다. 다른 의존성이 함께 바뀌면 계획에 없는 변화다
 _SHARED_KINDS = (K_PROPERTY_VERSION, K_PARENT_VERSION, K_BOM_VERSION)
 # override 항목의 groupId / artifactId로 인정하는 형태. XML 특수문자, 공백, 따옴표, ``$``가 없어야 한다
 _COORD_TEXT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
@@ -76,7 +78,7 @@ def is_version_text(text: str) -> bool:
 # ---------------------------------------------------------------------------------------------------- 파일 읽기
 class PomReadError(ValueError):
     """pom을 읽지 못했을 때 이유를 담아 던지는 예외.
-    메시지는 열기 실패, 인코딩, XML 문법 중 하나의 영어 이유이고 ``i18n.pom_why_ko``가 한국어로 바꾼다."""
+    메시지는 열기 실패, 인코딩, XML 문법 중 하나를 말하는 영어 문장이다. ``i18n.pom_why_ko``가 한국어로 바꾼다."""
 
 
 def _decode(data: bytes) -> tuple[bytes, str, str]:
@@ -88,7 +90,7 @@ def _decode(data: bytes) -> tuple[bytes, str, str]:
             bom, encoding = b, enc
             break
     body = data[len(bom):]
-    # Maven은 선언과 다른 바이트도 받아 주므로 선언보다 실제로 읽히는 인코딩을 따른다
+    # Maven은 선언과 다른 바이트도 받아 준다. 그래서 선언보다 실제로 읽히는 인코딩을 따른다
     encoding = encoding or pom_encoding(body)
     try:
         return bom, encoding, body.decode(encoding)
@@ -139,8 +141,8 @@ def xml_reason(e: Exception) -> str:
 
 
 class _PomText:
-    """pom 파일 하나의 바이트와 문자열을 서로 변환하는 클래스. 인코딩은 BOM, 이관 쪽 ``pom_encoding`` 순으로 정한다.
-    바꾼 곳 밖의 바이트를 보존하기 위해 다시 인코딩했을 때 원래 바이트가 나오는 파일만 받는다.
+    """pom 파일 하나의 바이트와 문자열을 서로 바꾸는 클래스. 인코딩은 BOM, 이관 쪽 ``pom_encoding`` 순으로 정한다.
+    다시 인코딩했을 때 원래 바이트가 나오는 파일만 받는다. 바꾼 곳 밖의 바이트를 그대로 지키기 위해서다.
     아니면 ``EditError``를 던진다."""
 
     def __init__(self, data: bytes, name: str):
@@ -150,7 +152,7 @@ class _PomText:
         except PomReadError as e:
             raise EditError(f"{name}: {e}") from None
         body = data[len(self.bom):]
-        # 원래 바이트로 되돌아오지 않는 인코딩이면 한 문자만 바꿔도 다른 줄의 바이트가 달라질 수 있으므로 거부한다
+        # 다시 인코딩해서 원래 바이트가 나오지 않으면 거부한다. 한 문자만 바꿔도 다른 줄의 바이트가 달라질 수 있다
         if self.text.encode(self.encoding) != body:
             raise EditError(f"{name}: {self.encoding} does not round-trip byte for byte; not edited")
 
@@ -160,7 +162,7 @@ class _PomText:
 
 def _split_lines(text: str) -> list[str]:
     """문자열을 ``\\n``에서만 나누고 줄 끝 문자는 그대로 둔다.
-    ``str.splitlines``는 \\x0c 같은 문자에서도 나눠서 줄 번호가 Maven이나 편집기와 달라지기 때문이다."""
+    ``str.splitlines``는 \\x0c 같은 문자에서도 나눈다. 그러면 줄 번호가 Maven이나 편집기와 달라진다."""
     parts = text.split("\n")
     lines = [p + "\n" for p in parts[:-1]]
     if parts[-1]:
@@ -238,7 +240,7 @@ def _key_text(ga: str, t: str, c: str) -> str:
 
 def _override_full(e: TextEdit) -> tuple[str, str, str, str, str]:
     """삽입 변경에서 (groupId, artifactId, version, type, classifier)를 꺼내 반환한다.
-    groupId, artifactId, version은 꼭 있어야 하고 type, classifier는 해석된 의존성에 있을 때만 있다.
+    groupId, artifactId, version은 꼭 있어야 한다. type, classifier는 해석된 의존성에 있을 때만 있다.
     키가 없으면 빈 문자열이다. type 값으로 "jar"를 쓰면 ``EditError``를 던진다."""
     ov = e.override or {}
     if (not isinstance(ov, dict) or not set(_OVERRIDE_KEYS) <= set(ov)
@@ -295,8 +297,9 @@ def _render(entries: list[tuple[str, ...]], indent: str, eol: str, with_section:
 def render_override(group_id: str, artifact_id: str, version: str, indent: str, eol: str, with_section: bool,
                     unit: str = "    ", *, type_: str = "jar", classifier: str = "") -> str:
     """override로 넣을 줄들(줄 끝 포함)을 정해진 형태로 만든다.
-    ``with_section``이 False면 ``<dependency>`` 항목 하나, True면 그 항목을 담은 ``<dependencyManagement>`` 절 전체다.
-    ``indent``는 항목이나 절의 들여쓰기, ``unit``은 한 단계 들여쓰기, ``eol``은 파일의 줄 끝("\\n" / "\\r\\n")이다.
+    ``with_section``이 False면 ``<dependency>`` 항목 하나를 만든다.
+    True면 그 항목을 담은 ``<dependencyManagement>`` 절 전체를 만든다.
+    ``indent``는 항목이나 절의 들여쓰기다. ``unit``은 한 단계 들여쓰기, ``eol``은 파일의 줄 끝("\\n" / "\\r\\n")이다.
 
     The only shape an override insert may have: groupId / artifactId / version, then `<type>` when not jar and
     `<classifier>` when set. `_override_shape` re-renders an insert with this function and compares byte for
@@ -306,8 +309,8 @@ def render_override(group_id: str, artifact_id: str, version: str, indent: str, 
 
 
 def _override_shape(e: TextEdit) -> tuple[str, str, str, bool]:
-    """삽입 변경의 ``new``에서 들여쓰기, 단위, 줄 끝, 절 전체 여부를 읽어 반환한다.
-    ``render_override``로 다시 만든 문자열과 정확히 같아야 하고, 다르면 ``EditError``를 던진다."""
+    """삽입 변경의 ``new``에서 들여쓰기, 단위, 줄 끝, 절 전체인지를 읽어 반환한다.
+    ``render_override``로 다시 만든 문자열과 정확히 같아야 한다. 다르면 ``EditError``를 던진다."""
     g, a, v, t, c = _override_full(e)
     new = e.new or ""
     eol = "\r\n" if new.endswith("\r\n") else "\n"
@@ -345,7 +348,7 @@ def _parse_text(text: str):
 def _management_entries(root, ga: str, type_: str = "jar", classifier: str = "") -> list:
     """pom의 ``<dependencyManagement>``(최상위와 프로필)에서 이 관리 키(g:a:type:classifier)일 수 있는
     ``<dependency>`` 목록을 반환한다.
-    같은 항목을 두 번 넣지 않도록, 값에 ``${``가 있어 같은지 알 수 없는 항목도 포함한다.
+    값에 ``${``가 있어 같은지 알 수 없는 항목도 포함한다. 같은 항목을 두 번 넣지 않기 위해서다.
 
     An entry for the plain jar is not an entry for the `jakarta` classifier."""
     g, _, a = ga.partition(":")
@@ -374,7 +377,7 @@ def _ktext(el, name: str) -> str:
 
 
 def _check_inserts(text: str, lines: list[str], inserts: list[TextEdit], name: str) -> None:
-    """삽입 변경이 원래 pom 내용과 맞는지 확인하고, 어긋나면 ``EditError``를 던진다.
+    """삽입 변경이 원래 pom 내용과 맞는지 확인한다. 어긋나면 ``EditError``를 던진다.
     - 기준 줄이 ``anchor``와 같고 줄 끝이 파일과 같아야 한다
     - 항목은 ``</dependencies>`` 앞에, 절은 ``<dependencies>`` / ``<build>`` / ``</project>`` 앞에만 넣는다
     - 최상위 ``<dependencyManagement>``가 있으면 항목만, 없으면 절만 넣는다
@@ -485,7 +488,7 @@ def _edits_in_order(proposals: list[Proposal]) -> list[TextEdit]:
 
 
 def _overrides(edits: list[TextEdit]) -> list[tuple[str, str, str, bool, str, str]]:
-    """삽입 변경마다 (groupId, artifactId, version, 절 전체 여부, type, classifier)를 반환한다."""
+    """삽입 변경마다 (groupId, artifactId, version, 절 전체인지, type, classifier)를 반환한다."""
     out = []
     for e in edits:
         if (e.op or E_REPLACE) == E_INSERT:
@@ -515,7 +518,7 @@ class _El:
 def _positions(text: str, name: str = ROOT_POM) -> list[_El]:
     """pom의 요소마다 (경로, 시작 줄, 시작 칸, 닫는 줄)을 구해 문서 순서대로 반환한다.
     lxml은 시작 줄만 알려 주므로 닫는 태그의 줄은 expat으로 얻는다.
-    업로드된 pom은 믿을 수 없는 입력이므로 DTD나 엔티티 선언이 있으면 ``EditError``를 던진다."""
+    업로드된 pom은 믿을 수 없는 입력이다. DTD나 엔티티 선언이 있으면 ``EditError``를 던진다."""
     from xml.parsers import expat
     parser = expat.ParserCreate(encoding="utf-8", namespace_separator="}")
     out: list[_El] = []
@@ -627,7 +630,7 @@ def locate_override(project: Path, group_id: str, artifact_id: str, version: str
     edit = TextEdit(pom=pom, line=line, old="", op=E_INSERT, anchor=lines[line - 1].strip(), override=override,
                     new=render_override(group_id, artifact_id, version, indent, eol, with_section, unit,
                                         type_=t or "jar", classifier=c))
-    # 기존 항목, 형태, 기준 줄 검사를 적용할 때가 아니라 지금 미리 실행한다
+    # 기존 항목, 형태, 기준 줄은 적용할 때까지 기다리지 않고 지금 검사한다
     after = doc.encode(_apply_to_text(doc.text, [edit], pom))
     problems = _structure_problems(pom, doc.raw, after, _overrides([edit]))
     if problems:
@@ -649,8 +652,8 @@ def override_variant(p: Proposal) -> str:
 # ---------------------------------------------------------------------------------------------------- 적용
 def apply_proposals(project: Path, proposals: list[Proposal]) -> ApplyResult:
     """수정본 프로젝트 폴더에 제안들의 변경을 적용한다.
-    모든 변경을 먼저 검사하고, 잘못된 제안은 이유와 함께 ``skipped``에 넣고 통째로 건너뛴다.
-    한 pom의 변경은 원래 줄 번호 기준으로 제안 ID 순서에 따라 한 번에 적용한다.
+    모든 변경을 먼저 검사한다. 잘못된 제안은 통째로 건너뛰고 이유와 함께 ``skipped``에 넣는다.
+    한 pom의 변경은 원래 줄 번호 기준으로, 제안 ID 순서대로 한 번에 적용한다.
     ``candidate_tree_hash``는 그래프가 채운다.
 
     Proposals are checked in the given order: a replace that conflicts with one already accepted skips the
@@ -675,11 +678,11 @@ def apply_proposals(project: Path, proposals: list[Proposal]) -> ApplyResult:
                     continue
                 key = (e.pom, e.line)
                 for seen in (accepted.get(key), mine.get(key)):
-                    # 같은 줄을 서로 다르게 고치는 두 변경은 어느 쪽이 맞는지 알 수 없으므로 뒤의 제안을 건너뛴다
+                    # 같은 줄을 서로 다르게 고치는 변경이 둘이면 어느 쪽이 맞는지 알 수 없다. 뒤의 제안을 건너뛴다
                     if seen is not None and (seen.old, seen.new) != (e.old, e.new):
                         raise EditError(f"{e.pom}:{e.line}: conflicts with another edit on the same line")
                 mine[key] = e
-            # 파일을 쓰기 전에 이 제안까지 넣어도 파일마다 적용이 되는지, 넣은 항목의 XML 구조까지 미리 확인한다
+            # 파일을 쓰기 전에, 이 제안까지 넣어도 파일마다 적용되는지 확인한다. 넣은 항목의 XML 구조도 함께 본다
             trial = _edits_in_order([*chosen, p])
             for pom in sorted({e.pom for e in p.edits}):
                 if pom not in docs:
@@ -760,8 +763,8 @@ def _local(tag: str) -> str:
 
 
 def verify_text_only(original: Path, candidate: Path, proposals: list[Proposal], paths: list[str]) -> list[str]:
-    """수정본이 원본과 비교해 계획한 버전 문자열 치환과 override 항목 추가만큼만 다른지 확인한다.
-    위반 내용을 담은 문장 목록을 반환하고, 목록이 비어 있으면 통과다.
+    """수정본이 원본과 계획한 만큼만 다른지 확인한다. 버전 문자열 치환과 override 항목 추가만 허용한다.
+    위반 내용을 문장 목록으로 반환한다. 목록이 비어 있으면 통과다.
     - ``paths``의 파일은 양쪽에 모두 있어야 한다
     - 변경이 없는 파일은 바이트가 같아야 한다
     - 변경이 있는 pom은 원본에 계획한 변경을 제안 ID 순서로 적용한 바이트와 같아야 한다
@@ -806,9 +809,9 @@ def verify_text_only(original: Path, candidate: Path, proposals: list[Proposal],
 
 
 def _inserted(rel: str, rb, ra, overrides: list[tuple]) -> tuple[set, list[str]]:
-    """수정본 ``ra``에서 계획대로 넣은 override 요소를 찾아 (비교에서 뺄 요소 집합, 문제 목록)을 반환한다.
+    """수정본 ``ra``에서 계획대로 넣은 override 요소를 찾는다. (비교에서 뺄 요소 집합, 문제 목록)을 반환한다.
     - 최상위 ``<dependencyManagement>/<dependencies>`` 안에 관리 키마다 정확히 하나 있어야 한다
-    - 자식은 groupId / artifactId / version과 계획한 type / classifier뿐이고 값이 계획과 같아야 한다
+    - 자식은 groupId / artifactId / version과 계획한 type / classifier뿐이어야 한다. 값도 계획과 같아야 한다
     - 절 전체를 넣었으면 원본에는 절이 없었고 새 절에는 그 항목들만 있어야 한다"""
     skip: set = set()
     problems: list[str] = []
@@ -849,7 +852,7 @@ def _inserted(rel: str, rb, ra, overrides: list[tuple]) -> tuple[set, list[str]]
 
 def _structure_problems(rel: str, before: bytes, after: bytes, overrides: list[tuple] | None = None) -> list[str]:
     """두 pom의 XML 구조를 비교해 문제 목록을 반환한다.
-    태그 순서, 속성, tail은 같아야 하고, 값이 바뀐 요소는 ``<version>``이거나 ``<properties>``의 자식이어야 한다.
+    태그 순서, 속성, tail은 같아야 한다. 값이 바뀐 요소는 ``<version>``이거나 ``<properties>``의 자식이어야 한다.
     ``overrides``가 있으면 수정본에서 그 요소를 빼고 비교한다. 이때는 공백만 다른 변화도 허용한다."""
     try:
         rb, ra = _xml_root(before), _xml_root(after)
@@ -897,7 +900,7 @@ def _module_map(model: ResolvedModel, variant: str | None = None) -> dict[str, d
 
 
 def _has(versions: set[str], version: str) -> bool:
-    # Maven은 버전 한정자의 대소문자를 구분하지 않으므로 같은 비교 함수를 쓴다
+    # Maven은 버전 한정자의 대소문자를 구분하지 않는다. 그래서 같은 비교 함수를 쓴다
     return any(same_version(v, version) for v in versions)
 
 
@@ -907,7 +910,7 @@ def _direct_gas(model: ResolvedModel) -> set[str]:
 
 def _packaging_module(artifact: str) -> str | None:
     """산출물 경로(예 ``app/target/app.war``)에서 그것을 만든 모듈 폴더를 구한다.
-    ``/target/`` 앞부분을 쓰고, ``target/``으로 시작하면 루트(".")를, 알 수 없으면 None을 반환한다."""
+    ``/target/`` 앞부분이 모듈 폴더다. ``target/``으로 시작하면 루트(".")이고, 알 수 없으면 None을 반환한다."""
     a = (artifact or "").replace("\\", "/").lstrip("/")
     while a.startswith("./"):
         a = a[2:]
@@ -931,13 +934,14 @@ def _insert_pom(p: Proposal) -> str:
 
 
 def _stale_packaged(p: Proposal, lib: PackagedLib, variant: str | None) -> str:
-    """패키징된 jar가 이 제안의 from 버전 그대로 남은 것인지 보고, 그렇다면 설명 문자열을, 아니면 빈 문자열을 반환한다."""
+    """패키징된 jar가 이 제안의 from 버전 그대로 남았는지 확인한다.
+    남았으면 그 jar를 가리키는 문자열을, 아니면 빈 문자열을 반환한다."""
     artifact = p.ga.split(":", 1)[1] if ":" in p.ga else p.ga
     stale_name = f"{artifact}-{p.from_version}.jar"
     name = lib.file_name or ""
     classifier = (variant or "/").split("/", 1)[1] if variant else ""
     if classifier:
-        # classifier 의존성의 jar는 pom.properties가 일반 jar와 같으므로 파일 이름으로만 구별한다
+        # classifier 의존성의 jar는 pom.properties가 일반 jar와 같다. 그래서 파일 이름으로만 구별한다
         if name.casefold().startswith(f"{artifact}-{p.from_version}-{classifier}.".casefold()):
             return name
         return ""
@@ -952,11 +956,11 @@ def _stale_packaged(p: Proposal, lib: PackagedLib, variant: str | None) -> str:
 
 def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: ResolvedModel,
                       packaged: list[PackagedLib]) -> list[str]:
-    """적용한 제안이 Maven 의존성 결과와 패키징 결과에 계획대로 나타났는지 확인하고 문제 목록을 반환한다.
+    """적용한 제안이 Maven 의존성 결과와 패키징 결과에 계획대로 나타났는지 확인한다. 문제 목록을 반환한다.
     ``info:``로 시작하는 줄은 참고용이다.
     - ``p.modules``가 있으면 그 모듈에서만 from -> to 변경을 요구한다.
       다른 모듈에 남은 ``from_version``은 ``info:``로 남기고 다음 라운드에서 처리한다
-    - ``p.modules``가 비어 있으면(부모 / BOM 제안, 이전 상태) 모든 모듈에서 from 버전이 없어져야 한다
+    - ``p.modules``가 비어 있으면 모든 모듈에서 from 버전이 없어져야 한다(부모 / BOM 제안, 이전 상태)
     - override 제안은 그 항목의 관리 키(g:a, 형식, classifier)와 같은 의존성만 본다
     - 제안과 상관없는 버전 변화는 원래 직접 의존성이었을 때만 문제로 본다.
       ``before`` / ``after``가 불완전하면 그것도 문제로 본다
@@ -1010,7 +1014,7 @@ def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: R
                     problems.append(f"{p.ga} in module {mdir} resolves at {got}, planned {p.to_version} ({p.id})")
             elif _has(now, p.from_version):
                 if variant is not None:
-                    # override 항목은 그 pom이 적용되는 모듈만 다루므로 버전 문자열 제안과 다른 문장으로 남긴다
+                    # override 항목은 그 pom이 적용되는 모듈만 다룬다. 그래서 버전 문자열 제안과 다른 문장으로 남긴다
                     problems.append(f"info: {p.ga} in module {mdir} still resolves at {p.from_version} — outside the "
                                     f"modules the inserted entry in {_insert_pom(p)} governs ({p.id}); left for the "
                                     "next round")
@@ -1058,7 +1062,7 @@ _LINE_ID = re.compile(r"\((?:[^()]*, )?(p-\d+-\d+)\)$")
 
 
 def split_ineffective(proposals: list[Proposal], lines: list[str]) -> tuple[list[Proposal], list[str]]:
-    """검증 문제 중 효과가 없던 override 삽입 항목의 것을 가려 (그 제안 목록, 나머지 문제)를 반환한다.
+    """검증 문제 중 효과가 없던 override 삽입 제안의 줄을 가려낸다. (그 제안 목록, 나머지 문제)를 반환한다.
     효과가 없다는 것은 넣은 항목이 다루는 모듈이 여전히 from 버전으로 해석된다는 뜻이다.
     ``info:`` 줄은 버린다.
 
