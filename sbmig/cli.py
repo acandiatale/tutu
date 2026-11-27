@@ -1,12 +1,13 @@
-"""운영자가 쓰는 모든 명령을 정의하는 `sbmig` 명령줄(Typer) 모듈.
-명령: run(프로젝트 하나 이관), fleet(일괄 실행), serve(웹 UI), llm-probe(게이트웨이 점검), repo-probe(저장소
-조회 진단), analyze / plan(변경 없이 보기), inventory(pom 없는 트리 설명서), build / parse-log /
-rewrite(디버깅), clean(디스크 정리), kb / recipes / advisories(하위 명령), version.
-- 명령 함수 docstring의 첫 단락이 `sbmig --help` 목록의 설명이 되므로 한국어 첫 줄을 짧게 쓴다
-- docstring에 대괄호는 쓰지 않는다. rich 마크업으로 해석될 수 있다
-- 어느 패키지가 깨져도 `sbmig --help`가 동작하도록 무거운 import는 모두 함수 안에서 한다
-- 모든 run은 실행 디렉토리에 sbmig.log(DEBUG)를 남긴다
-- 마지막에 운영자가 결과를 확인하는 SBMIG-RESULT 한 줄(ASCII)을 출력한다
+"""운영자가 쓰는 `sbmig` 명령을 모두 정의하는 모듈(Typer).
+
+Commands: run (one project), fleet (batch), serve (web UI), llm-probe (gateway check), repo-probe (repository
+lookup), analyze / plan (read-only views), inventory (describes a pom-less tree), build / parse-log / rewrite
+(debugging), clean (disk cleanup), kb / recipes / advisories (sub-apps), version.
+The first paragraph of a command's docstring is its `sbmig --help` text, so its first Korean line stays short.
+No square brackets in docstrings: rich may read them as markup.
+Heavy imports live inside the functions so that `sbmig --help` works even when a package is broken.
+Every run writes sbmig.log (DEBUG) into its run dir and ends with one ASCII SBMIG-RESULT line for the
+operator.
 """
 from __future__ import annotations
 
@@ -38,9 +39,9 @@ from sbmig.core.diag import dump_threads, install_thread_dump_signal  # noqa: E4
 
 
 def harden_console_streams() -> None:
-    """출력할 수 없는 문자 때문에 죽지 않도록 stdout / stderr와 콘솔 로그 스트림을 errors="replace"로 바꾼다.
-    콘솔 인코딩(한국어 Windows의 cp949)은 그대로 둔다.
-    출력을 리다이렉트하거나 작업 스케줄러로 실행할 때 UnicodeEncodeError로 실패하지 않게 하기 위해서다.
+    """콘솔이 출력하지 못하는 문자가 나와도 죽지 않게 한다.
+    stdout / stderr와 콘솔 로그 스트림을 errors="replace"로 바꾼다. 콘솔 인코딩(한국어 Windows의 cp949)은 그대로 둔다.
+    출력을 리다이렉트하거나 작업 스케줄러로 실행할 때 UnicodeEncodeError가 나지 않게 하려는 것이다.
 
     Without it, cp949 output of a non-encodable character (✅ in the console summary, an em dash in a log line)
     made `sbmig run` exit 1 after the report was written, or printed `--- Logging error ---`."""
@@ -66,8 +67,8 @@ def harden_console_streams() -> None:
 
 
 class _ConsoleFilter(logging.Filter):
-    """`extra={"sbmig_console": False}`로 남긴 로그를 콘솔에서 빼고 파일에만 보내는 필터 클래스.
-    SBMIG-RESULT, 일괄 실행 진행 상황처럼 콘솔에는 typer.echo로 같은 줄을 이미 출력했기 때문이다."""
+    """`extra={"sbmig_console": False}`로 남긴 로그를 콘솔에는 내지 않고 파일에만 보내는 필터 클래스.
+    SBMIG-RESULT나 일괄 실행 진행 상황은 typer.echo로 콘솔에 이미 출력했기 때문이다."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         return getattr(record, "sbmig_console", True) is not False
@@ -77,8 +78,9 @@ NO_CONSOLE = {"sbmig_console": False}
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """콘솔 로그를 설정한다. rich로 INFO 이상을 출력하고, `-v`면 DEBUG까지 출력한다. 줄마다 단계 태그를 붙인다.
-    sbmig 로거 자체는 DEBUG이므로 파일 로그는 항상 모든 줄을 받는다. 스레드 덤프 시그널도 여기서 등록한다."""
+    """콘솔 로그를 설정한다. rich로 INFO 이상을 출력하고, `-v`면 DEBUG까지 출력한다.
+    줄마다 단계 태그를 붙인다. sbmig 로거는 DEBUG라서 파일 로그는 항상 모든 줄을 받는다.
+    스레드 덤프 시그널도 여기서 등록한다."""
     from rich.logging import RichHandler
 
     harden_console_streams()
@@ -86,7 +88,7 @@ def setup_logging(verbose: bool = False) -> None:
     root = logging.getLogger("sbmig")
     root.setLevel(logging.DEBUG)                       # 걸러 내는 것은 핸들러다. 콘솔은 INFO, 파일은 항상 DEBUG
     if not any(isinstance(h, RichHandler) for h in root.handlers):
-        # rich는 예외를 포매터 밖에서 직접 그려 마스킹을 거치지 않으므로 출력 마스킹이 켜져 있으면 rich traceback을 끈다
+        # 출력 마스킹이 켜져 있으면 rich traceback을 끈다. rich가 그리는 예외는 마스킹을 거치지 않는다
         from sbmig.core.scrub import output_scrubbing
         h = RichHandler(rich_tracebacks=not output_scrubbing(), show_path=False, markup=False, show_time=True,
                         show_level=True)
@@ -106,8 +108,8 @@ _LOG_THREAD: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("sbm
 
 class _ThreadFilter(logging.Filter):
     """한 실행의 로그만 통과시키는 필터 클래스.
-    그 스레드나 그 컨텍스트를 물려받은 스레드(LangGraph의 노드 실행 스레드)의 로그만 받는다.
-    웹 서버의 동시 실행이 서로의 sbmig.log에 섞이지 않게 하기 위해서다.
+    그 실행의 스레드와, 그 컨텍스트를 물려받은 스레드(LangGraph 노드 실행 스레드)의 로그만 받는다.
+    웹 서버에서 동시에 실행되는 run끼리 sbmig.log가 섞이지 않게 한다.
 
     A graph engine running a node in an executor thread copies the context, so `_LOG_THREAD` still names the
     run's thread."""
@@ -121,9 +123,9 @@ class _ThreadFilter(logging.Filter):
 
 
 def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = logging.DEBUG) -> Path:
-    """sbmig 로그를 ``path`` 파일에 덧붙이는 핸들러를 달고 그 경로를 반환한다. 같은 파일과 스레드면 다시 달지 않는다.
-    - 기본은 DEBUG다. LLM 호출, 빌드, 결정을 남기고 키는 남기지 않는다
-    - ``thread_id``를 주면 그 실행의 로그만 그 파일로 간다. 웹 서버가 실행마다 sbmig.log를 따로 쓸 때 쓴다
+    """sbmig 로그를 ``path`` 파일에도 남기기 시작하고 그 경로를 반환한다. 같은 파일과 스레드면 다시 달지 않는다.
+    - 기본 수준은 DEBUG다. LLM 호출, 빌드, 결정을 남기고 키는 남기지 않는다
+    - ``thread_id``를 주면 그 실행의 로그만 이 파일로 간다. 웹 서버가 실행마다 sbmig.log를 따로 쓸 때 쓴다
     - 일괄 실행의 fleet/sbmig.log는 ``level``을 INFO로 준다. 프로젝트마다 DEBUG sbmig.log가 따로 있다"""
     path = Path(path).resolve()
     root = logging.getLogger("sbmig")
@@ -139,7 +141,7 @@ def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = lo
         root.setLevel(logging.DEBUG)
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setLevel(level)
-    # 웹 스트림이 기본 asctime 형식으로 로그 줄을 정렬하므로 datefmt를 바꾸지 않는다(sbmig.web.runs._event_time)
+    # datefmt는 바꾸지 않는다. 웹 스트림이 기본 asctime 형식으로 로그 줄을 정렬한다(sbmig.web.runs._event_time)
     fh.setFormatter(stage_formatter(LOG_FILE_FORMAT, datefmt=None))
     fh.sbmig_thread = thread_id  # type: ignore[attr-defined]
     if thread_id is not None:
@@ -173,9 +175,9 @@ def detach_file_log(path: Path, thread_id: Any = _ANY_THREAD) -> int:
 
 
 def install_redaction_if_requested() -> bool:
-    """`SBMIG_REDACT_OUTPUT=1`이면 이 프로세스의 출력 마스킹(`sbmig.core.scrub`)을 켜고, 켜져 있는지를 반환한다.
-    이미 켜져 있으면 그대로 둔다. 로그 줄, 저널 줄, 처리되지 않은 예외의 traceback에서 비밀 값을 쓰는 순간 지운다.
-    요청했는데 켤 수 없으면 마스킹 없이 실행하지 않도록 예외를 그대로 던진다."""
+    """`SBMIG_REDACT_OUTPUT=1`이면 출력 마스킹(`sbmig.core.scrub`)을 켠다. 켜져 있는지를 반환한다.
+    마스킹은 로그 줄, 저널 줄, 처리되지 않은 예외의 traceback에서 비밀 값을 쓰는 순간 지운다.
+    이미 켜져 있으면 그대로 둔다. 요청했는데 켤 수 없으면 예외를 그대로 던진다. 마스킹 없이 실행하지 않는다."""
     from sbmig.core.scrub import install_scrubbed_excepthooks, output_scrubbing, redaction_requested
 
     if output_scrubbing():
@@ -190,9 +192,9 @@ def install_redaction_if_requested() -> bool:
 
 
 def final_redaction(run_dir: Path) -> int:
-    """출력 마스킹이 켜져 있으면 실행 폴더의 텍스트 출력을 한 번 더 검사해 비밀 값을 지우고, 바뀐 파일 수를 반환한다.
-    쓰는 순간의 마스킹이 적용되지 않는 파일(`logs/`의 Maven 출력, 보고서)과 실행 중에 받은 토큰을 위한 마지막 단계다.
-    마스킹이 꺼져 있으면 아무것도 하지 않고 0을 반환한다. 실패해도 로그만 남기고 0을 반환한다."""
+    """실행 폴더의 텍스트 파일에서 비밀 값을 한 번 더 지우고, 바뀐 파일 수를 반환한다.
+    쓰는 순간 마스킹되지 않는 파일(`logs/`의 Maven 출력, 보고서)과 실행 중에 받은 토큰을 위한 마지막 정리다.
+    출력 마스킹이 꺼져 있으면 아무것도 하지 않고 0을 반환한다. 실패해도 로그만 남기고 0을 반환한다."""
     from sbmig.core.scrub import output_scrubbing
 
     if not output_scrubbing():
@@ -203,13 +205,13 @@ def final_redaction(run_dir: Path) -> int:
         n = redact_run_dir(run_dir)
         log.debug("output redaction: the final pass rewrote %d file(s) under %s", n, run_dir)
         return n
-    except Exception:  # noqa: BLE001 - 마지막 정리이므로 실패만 기록하고 결과 줄은 그대로 출력한다
+    except Exception:  # noqa: BLE001 - 마지막 정리라서 실패는 기록만 한다. 결과 줄은 그대로 출력한다
         log.exception("output redaction: the final pass over %s failed", run_dir)
         return 0
 
 
-# 모든 명령 전에 실행되는 콜백으로 콘솔 인코딩 보호, 출력 마스킹, 로그 설정, --log-file을 처리한다.
-# Typer 앱 도움말이 바뀌지 않도록 docstring은 달지 않는다
+# 모든 명령 전에 실행되는 콜백이다. 콘솔 인코딩 보호, 출력 마스킹, 로그 설정, --log-file을 맡는다.
+# docstring은 달지 않는다. 달면 Typer 앱 도움말이 바뀐다
 @app.callback()
 def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug logging"),
           log_file: Optional[Path] = typer.Option(None, "--log-file",
@@ -217,7 +219,7 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
                                                        "<run dir>/sbmig.log)")) -> None:
     harden_console_streams()
     try:
-        install_redaction_if_requested()     # 이 결과로 rich traceback 사용 여부가 정해지므로 핸들러보다 먼저 호출한다
+        install_redaction_if_requested()     # 핸들러보다 먼저 호출한다. 이 결과에 따라 rich traceback을 쓸지 정한다
     except Exception as e:  # noqa: BLE001
         typer.echo(f"ERROR: SBMIG_REDACT_OUTPUT=1 but the output redaction could not be installed "
                    f"({type(e).__name__}) - refusing to run without it", err=True)
@@ -229,7 +231,7 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
 
 def _load(configs: Optional[List[Path]], overrides: Optional[dict] = None, repo_root: Optional[Path] = None):
     """설정을 읽는다. 검증 오류면 무엇이 틀렸는지 출력하고 exit 2로 끝낸다.
-    흔한 원인은 `--config config/artifacts.yml`을 빠뜨린 것이다. 회사 artifacts 섹션에는 기본값이 없다."""
+    `--config config/artifacts.yml`을 빠뜨린 경우가 흔하다. 회사 artifacts 섹션에는 기본값이 없다."""
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config
@@ -248,7 +250,7 @@ def _load(configs: Optional[List[Path]], overrides: Optional[dict] = None, repo_
         raise typer.Exit(2)
 
 
-# --config 없이 실행한 llm-probe용 artifacts 값. 점검은 .env만 쓰고 이 섹션은 읽지 않으므로 필수 검증만 통과시킨다
+# --config 없이 실행한 llm-probe가 쓰는 artifacts 값. 점검은 .env만 쓴다. 필수 검증만 통과시키려는 값이다
 _PROBE_ARTIFACTS_STUB = {"artifacts": {"parent": {"group_id": "sbmig.probe", "artifact_id": "no-config", "version": "0"}}}
 
 
@@ -275,7 +277,7 @@ def refuse_intake(orch, reason: str, flow: str = "full"):
     return report
 
 
-# 운영자, 일괄 실행, 작업 스케줄러가 판단에 쓰는 종료 코드: 0 성공, 2 미완(차단이나 미해결 남음), 3 중단
+# 종료 코드. 운영자, 일괄 실행, 작업 스케줄러가 이 값으로 결과를 본다. 0 성공, 2 미완, 3 중단
 EXIT_SUCCESS = 0          # 최종 `mvn clean package`가 통과했고 차단된 것이 없다
 EXIT_INCOMPLETE = 2       # 끝났지만 차단되었거나 해결하지 못한 오류가 남았다(report.md 참고)
 EXIT_ABORTED = 3          # 중단: Maven 없음, Maven 프로젝트 아님, 설정한 부모 pom을 찾지 못함, 내부 오류
@@ -371,10 +373,10 @@ def run(
     orch = Orchestrator(cfg, ws, source=input)
     try:
         if ws.intake_refusal:
-            # 풀기 한도를 넘어 아무것도 풀지 않은 zip은 다른 접수 거절처럼 보고서와 종료 코드 3으로 끝낸다
+            # 풀기 한도를 넘어 아무것도 풀지 않은 zip이다. 다른 접수 거절처럼 보고서를 쓰고 종료 코드 3으로 끝낸다
             report = refuse_intake(orch, ws.intake_refusal, flow=flow)
         else:
-            # 사내 래퍼가 깨지지 않도록 기본 흐름이 아닐 때만 flow=를 넘긴다
+            # flow=는 기본 흐름이 아닐 때만 넘긴다. 사내 래퍼가 이 인자를 모를 수 있다
             report = orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
     except Exception:
         log.exception("run aborted by an unexpected error (see %s)", log_path)
@@ -393,7 +395,7 @@ def run(
     raise typer.Exit(code)
 
 
-REMEDIATION_MARK = "SBMIG-REMEDIATION"      # 취약점 조치 재개의 결과 줄 표시. 이관 결과 줄은 SBMIG-RESULT 그대로다
+REMEDIATION_MARK = "SBMIG-REMEDIATION"      # 취약점 조치를 이어 간 실행의 결과 줄 머리. 이관 결과 줄은 SBMIG-RESULT다
 
 
 @app.command("remediation-resume")
@@ -422,7 +424,7 @@ def remediation_resume(
     log.info("remediation resume %s (new build pod)", run_id)
 
     def journal(event: dict) -> None:
-        # 웹이 이 파일을 따라 읽으므로 Workspace.journal과 같은 형식(ts, run_id)으로 쓴다
+        # Workspace.journal과 같은 형식(ts, run_id)으로 쓴다. 웹이 이 파일을 따라 읽는다
         # 마스킹이 켜져 있으면 값 단위로 지운다
         from datetime import datetime, timezone
         rec = {"ts": datetime.now(timezone.utc).isoformat(), "run_id": run_id, **event}
@@ -458,8 +460,8 @@ def remediation_resume(
 
 
 def _mask_headers(headers) -> dict:
-    """출력용 헤더 복사본을 만든다.
-    키가 화면이나 로그에 나가지 않도록 Authorization과 API 키 값은 앞 10자와 길이만 남긴다."""
+    """화면에 출력할 헤더 복사본을 만든다.
+    Authorization과 API 키 값은 앞 10자와 길이만 남긴다. 키가 화면이나 로그에 나가지 않게 한다."""
     out = {}
     for k, v in dict(headers or {}).items():
         v = str(v)
@@ -470,8 +472,8 @@ def _mask_headers(headers) -> dict:
 
 
 def _echo_wire(resp, timeout) -> None:
-    """정상 동작하는 클라이언트와 비교할 수 있도록 실제로 보낸 요청과 받은 응답 헤더, 프록시, 타임아웃을 출력한다.
-    요청 헤더의 토큰은 가린다."""
+    """실제로 보낸 요청, 받은 응답 헤더, 프록시, 타임아웃을 출력한다.
+    잘 동작하는 다른 클라이언트와 비교할 때 쓴다. 요청 헤더의 토큰은 가린다."""
     req = getattr(resp, "request", None)
     if req is not None:
         body = getattr(req, "body", None) or getattr(req, "content", b"")
@@ -499,8 +501,8 @@ def _probe_messages(prompt: str, no_system: bool = False) -> list[dict]:
 
 
 def _probe_bare(cfg, prompt: str, no_system: bool = False) -> None:
-    """회사가 준 코드 그대로 requests.post(url, headers=..., json=payload, timeout=...)를 한 번 호출한다.
-    sbmig 클라이언트를 거치지 않는다. 결과를 출력하고 HTTP 2xx면 exit 0, 아니면 exit 1로 끝낸다."""
+    """sbmig 클라이언트를 거치지 않고 회사가 준 코드 그대로 requests.post를 한 번 호출한다.
+    결과를 출력한다. HTTP 2xx면 exit 0, 아니면 exit 1로 끝낸다."""
     import requests
 
     llm = cfg.llm
@@ -612,7 +614,7 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit}{env_token}"
                f"{env_cfg} uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown "
                f"{graceful_timeout})")
-    # 종료 시 열린 SSE 스트림이 끝나지 않으면 Ctrl+C가 멈추므로 graceful_timeout 뒤에는 연결을 기다리지 않는다
+    # 종료할 때 graceful_timeout이 지나면 열린 연결을 더 기다리지 않는다. 기다리면 SSE 스트림 때문에 Ctrl+C가 멈춘다
     # SSE 종료와 Maven 프로세스 정리는 lifespan의 RunManager.shutdown이 한다
     try:
         uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token,
@@ -661,7 +663,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         if not isinstance(extra, dict):
             typer.echo("--payload-extra must be a JSON object", err=True)
             raise typer.Exit(2)
-        cfg.llm.payload_extra = extra               # 합치면 need_origin 같은 키를 뺄 수 없으므로 통째로 바꾼다
+        cfg.llm.payload_extra = extra               # 합치지 않고 통째로 바꾼다. 합치면 need_origin 같은 키를 뺄 수 없다
     llm = cfg.llm
     if bare:
         _probe_bare(cfg, prompt, no_system=no_system)
@@ -738,7 +740,7 @@ def analyze(input: Path = typer.Argument(..., exists=True), config: Optional[Lis
     try:
         from sbmig.advisory import evaluate_advisories
         findings = evaluate_advisories(profile, cfg) if cfg.advisories.enabled else []
-    except Exception as e:  # 권고 때문에 `analyze`가 실패하면 안 된다
+    except Exception as e:  # 권고를 계산하지 못해도 `analyze`는 끝까지 출력한다
         log.warning("advisories unavailable: %s", e)
         findings = []
     for f in findings:
@@ -775,7 +777,7 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
 # --------------------------------------------------------------------------- inventory (pom 없는 웹앱)
 def inventory_console_lines(inv) -> list[str]:
     """inventory 결과를 콘솔에 출력할 12줄 이하의 요약으로 만든다.
-    회사 PC에서는 복사와 붙여넣기가 안 되므로 운영자가 화면을 보고 옮겨 적을 수 있는 분량으로 줄인다."""
+    회사 PC에서는 복사와 붙여넣기가 안 된다. 운영자가 화면을 보고 옮겨 적을 수 있는 분량으로 줄인다."""
     jars = [j for wr in inv.webapp_roots for j in wr.lib_jars]
     active = [j for j in jars if not j.ignored]
     unknown = sorted(j.name for j in active if not j.artifact_guess)
@@ -846,7 +848,7 @@ def inventory(input: Path = typer.Argument(..., help="webapp directory without a
         else:
             _fail(f"input must be a directory or a zip: {input}", EXIT_ABORTED)
         inv = scan_webapp_tree(root, name=input.stem if root == tmp else None)
-        if tmp is not None:                    # 아래에서 지우는 임시 디렉토리 대신 zip 경로를 보고한다
+        if tmp is not None:                    # zip을 푼 임시 디렉토리는 곧 지운다. 경로는 zip 경로로 보고한다
             inv.root = str(input.resolve()) + ("" if root == tmp else f"!/{root.relative_to(tmp).as_posix()}")
         write_inventory(inv, out, cfg)
     finally:
@@ -1035,7 +1037,7 @@ def version() -> None:
 # --------------------------------------------------------------------------- 하위 명령
 def _mount(module: str, attr: str, name: str, help_text: str) -> None:
     """하위 명령(kb, recipes, fleet, advisories)을 붙인다.
-    패키지 import가 실패하면 그 이름으로 대신 명령을 하나 등록한다. `sbmig --help`는 그대로 동작하고,
+    패키지 import가 실패하면 같은 이름으로 대신할 명령을 등록한다. 그래도 `sbmig --help`는 동작한다.
     그 명령을 실행하면 import 실패 이유를 출력하고 exit 1로 끝낸다."""
     try:
         import importlib

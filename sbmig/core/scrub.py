@@ -1,10 +1,9 @@
 """로그 줄과 저널 줄을 기록하기 직전에 비밀 값을 가리는(마스킹) 훅을 제공하는 모듈.
-- 기본으로는 아무것도 하지 않는다. `SBMIG_REDACT_OUTPUT=1`이면 진입점이 마스킹 함수를 등록한다
-- 실행 중에 로그를 읽는 쪽(파드 로그, 웹 로그 탭)도 원래 값을 보지 못하도록 기록하는 시점에 마스킹한다
-- 마스킹 함수가 예외를 던지면 원문 대신 `WITHHELD`를 기록한다
-- 무엇이 비밀 값인지는 `sbmig.web.contract`가 판단한다. core가 web을 import하지 않도록 여기에는 훅만 둔다
-- 실행 중에 생긴 비밀 값(교환한 액세스 토큰 등)은 `note_secret`으로 등록한다
 
+Off by default; with `SBMIG_REDACT_OUTPUT=1` the entry point registers the scrubber. Masking happens at write
+time, so readers of a live log (pod log, the web log tab) never see the value. A scrubber that raises makes
+the line `WITHHELD`. `sbmig.web.contract` decides what a secret is; core keeps only the hook so that it never
+imports web. Secrets born during a run (an exchanged access token) are registered with `note_secret`.
 Installer: `sbmig.web.redact.install_output_redaction`.
 """
 from __future__ import annotations
@@ -34,7 +33,7 @@ def redaction_requested(environ: Mapping[str, str] | None = None) -> bool:
 
 
 def set_output_scrubber(fn: Callable[[str], str] | None, on_refresh: Callable[[], None] | None = None) -> None:
-    """마스킹 함수를 등록하고, None을 주면 해제한다.
+    """마스킹 함수를 등록한다. None을 주면 해제한다.
     `on_refresh`는 비밀 값 목록이 바뀌었을 수 있을 때 호출된다."""
     global _scrubber, _on_refresh
     _scrubber, _on_refresh = fn, (on_refresh if fn is not None else None)
@@ -47,7 +46,7 @@ def output_scrubbing() -> bool:
 
 def scrub(text: str) -> str:
     """문자열 하나를 마스킹해서 반환한다. 예외를 던지지 않는다.
-    마스킹 함수가 없으면 문자열을 그대로, 마스킹 함수가 예외를 던지면 `WITHHELD`를 반환한다."""
+    마스킹 함수가 없으면 문자열을 그대로 반환한다. 마스킹 함수가 예외를 던지면 `WITHHELD`를 반환한다."""
     fn = _scrubber
     if fn is None:
         return text
@@ -59,8 +58,8 @@ def scrub(text: str) -> str:
 
 def scrub_json(obj: Any) -> Any:
     """JSON 값 안의 모든 문자열(키 포함)을 마스킹한 복사본을 반환한다.
-    직렬화한 줄을 통째로 바꾸면 JSON이 깨질 수 있으므로 값 단위로 처리한다.
-    마스킹 함수가 없으면 받은 객체를 그대로 반환하고, 마스킹 함수가 예외를 던지면 값 전체를 정해진 형태로 바꾼다.
+    직렬화한 줄을 통째로 바꾸면 JSON이 깨질 수 있다. 그래서 값 하나하나를 마스킹한다.
+    마스킹 함수가 없으면 받은 객체를 그대로 반환한다. 마스킹 함수가 예외를 던지면 값 전체를 정해진 형태로 바꾼다.
 
     The fixed shape for a dict is `{"event": "output_withheld", "message": WITHHELD}`."""
     fn = _scrubber
@@ -96,8 +95,8 @@ def format_exception_scrubbed(exc_type: Any, exc: Any, tb: Any) -> str:
 
 
 def install_scrubbed_excepthooks() -> None:
-    """잡히지 않은 예외의 traceback도 마스킹을 거치도록 `sys.excepthook`과 `threading.excepthook`을 바꾼다.
-    기본 훅과 Typer의 rich traceback은 예외 텍스트를 그대로 stderr에 출력하기 때문이다.
+    """잡히지 않은 예외의 traceback도 마스킹되게 `sys.excepthook`과 `threading.excepthook`을 바꾼다.
+    기본 훅과 Typer의 rich traceback은 예외 텍스트를 그대로 stderr에 출력한다.
     진입점이 마스킹 함수를 등록한 뒤에 호출한다.
 
     Typer's rich traceback also prints locals. KeyboardInterrupt keeps the default hook; SystemExit in a

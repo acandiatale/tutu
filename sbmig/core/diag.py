@@ -1,8 +1,8 @@
 """프로그램이 멈춘 것처럼 보일 때 모든 스레드의 스택을 파일로 남기는 진단 모듈.
-덤프를 요청하는 방법은 `kill -USR1 <pid>`, Windows 콘솔의 Ctrl+Break, 실행 디렉토리나 시작 디렉토리에
-`dump-threads` 파일 만들기, `GET /api/threads`, 감시 스레드의 자동 덤프다.
-진입점은 install_thread_dump_signal, dump_threads, watch_dump_trigger다.
-진단이 실패해도 실행은 멈추지 않는다.
+
+A dump is requested by `kill -USR1 <pid>`, Ctrl+Break in a Windows console, a `dump-threads` file in a run
+dir or the start dir, `GET /api/threads`, or the watchdog. Entry points: install_thread_dump_signal,
+dump_threads, watch_dump_trigger. A failing diagnosis never stops the run.
 
 * Signal dumps go to `out/threads-<ts>.txt`.
 * `dump-threads.txt` is what Explorer makes of the name with hidden extensions. Within TRIGGER_POLL_S the dump
@@ -25,7 +25,7 @@ log = logging.getLogger("sbmig.diag")
 
 TRIGGER_NAMES: tuple[str, ...] = ("dump-threads", "dump-threads.txt")
 TRIGGER_POLL_S = 2.0
-MAX_WATCHED_RUN_DIRS = 8            # 플릿은 프로젝트마다 실행 디렉토리를 등록하므로 최근 것만 감시한다
+MAX_WATCHED_RUN_DIRS = 8            # 플릿은 프로젝트마다 실행 디렉토리를 등록한다. 그래서 최근 것만 감시한다
 
 _WATCH_LOCK = threading.Lock()
 _FIXED_DIRS: list[Path] = []                                            # 설치할 때의 cwd와 시그널의 out_dir
@@ -46,8 +46,8 @@ def thread_dump_text() -> str:
 
 
 def dump_threads(out_dir: Optional[Path] = None) -> Optional[Path]:
-    """스레드 덤프를 `<out_dir>/threads-<ts>.txt`(기본 `out/`)에 기록하고 그 경로를 로그에 남긴다.
-    파일에 기록할 수 없으면 stderr로 출력하고 None을 반환한다."""
+    """스레드 덤프를 `<out_dir>/threads-<ts>.txt`에 기록하고, 그 경로를 로그에 남기고 반환한다.
+    ``out_dir``가 없으면 `out/`에 쓴다. 파일에 쓸 수 없으면 stderr로 출력하고 None을 반환한다."""
     text = thread_dump_text()
     try:
         d = Path(out_dir) if out_dir else Path("out")
@@ -63,8 +63,8 @@ def dump_threads(out_dir: Optional[Path] = None) -> Optional[Path]:
 
 # ---------------------------------------------------------------------------------------------- 트리거 파일
 def watch_dump_trigger(*dirs: Path | str) -> None:
-    """실행 디렉토리를 `dump-threads` 파일 감시 대상에 추가한다. 최근 MAX_WATCHED_RUN_DIRS개만 유지한다.
-    감시 스레드는 CLI와 serve가 따로 시작하므로 이 함수만으로는 스레드가 생기지 않는다.
+    """실행 디렉토리를 `dump-threads` 파일 감시 대상에 추가한다. 최근 MAX_WATCHED_RUN_DIRS개만 감시한다.
+    이 함수는 감시 스레드를 시작하지 않는다. 스레드는 CLI와 serve가 따로 시작한다.
 
     The thread starts in `install_thread_dump_signal()` / `start_dump_trigger_watcher()`; library use and
     tests stay thread-free."""
@@ -88,9 +88,9 @@ def watched_dirs() -> list[Path]:
 
 
 def check_dump_triggers(dirs: Optional[list[Path]] = None) -> list[Path]:
-    """감시 디렉토리에서 트리거 파일을 찾아 지우고 그 디렉토리에 스레드 덤프를 기록한다.
+    """감시 디렉토리에 트리거 파일이 있으면 지우고, 그 디렉토리에 스레드 덤프를 기록한다.
     기록한 덤프 파일 목록을 반환한다.
-    편집기에 열려 있어 지울 수 없는 트리거 파일은 한 번만 덤프를 만든다."""
+    편집기에 열려 있어서 지울 수 없는 트리거 파일은 다시 저장되기 전까지 한 번만 덤프한다."""
     written: list[Path] = []
     for d in (dirs if dirs is not None else watched_dirs()):
         for name in TRIGGER_NAMES:
@@ -115,7 +115,7 @@ def check_dump_triggers(dirs: Optional[list[Path]] = None) -> list[Path]:
 
 
 def _watch_loop(interval: float, stop: threading.Event) -> None:
-    """interval마다 트리거 파일을 확인하는 감시 스레드의 본체를 실행한다."""
+    """``interval``마다 트리거 파일을 확인한다. 감시 스레드가 실행하는 함수다."""
     while not stop.wait(interval):
         try:
             check_dump_triggers()
@@ -124,8 +124,9 @@ def _watch_loop(interval: float, stop: threading.Event) -> None:
 
 
 def start_dump_trigger_watcher(*dirs: Path | str, interval: float = TRIGGER_POLL_S) -> bool:
-    """트리거 파일 감시 데몬 스레드를 한 번만 시작한다. 호출 후 감시 스레드가 실행 중이면 True를 반환한다.
-    ``dirs``는 고정 감시 디렉토리로 추가하고, 등록된 실행 디렉토리도 함께 감시한다."""
+    """트리거 파일 감시 데몬 스레드를 시작한다. 이미 실행 중이면 새로 시작하지 않는다.
+    감시 스레드가 실행 중이면 True를 반환한다.
+    ``dirs``는 고정 감시 디렉토리에 더한다. 등록된 실행 디렉토리도 함께 감시한다."""
     global _WATCHER
     with _WATCH_LOCK:
         for d in dirs:
@@ -145,7 +146,7 @@ def start_dump_trigger_watcher(*dirs: Path | str, interval: float = TRIGGER_POLL
 
 
 def stop_dump_trigger_watcher(timeout: float = 5.0) -> None:
-    """감시 스레드를 멈춘다. 테스트에서 쓰며, 다음 start 호출은 스레드를 새로 시작한다."""
+    """감시 스레드를 멈춘다. 테스트에서 쓴다. 다음 start 호출은 스레드를 새로 시작한다."""
     global _WATCHER
     _STOP.set()
     w, _WATCHER = _WATCHER, None
@@ -156,7 +157,7 @@ def stop_dump_trigger_watcher(timeout: float = 5.0) -> None:
 # ---------------------------------------------------------------------------------------------- 시그널
 def _signal_name() -> Optional[str]:
     """덤프 요청에 쓸 시그널 이름을 반환한다.
-    POSIX는 SIGUSR1, Windows는 SIGBREAK(Ctrl+Break)이고 둘 다 없으면 None을 반환한다."""
+    POSIX는 SIGUSR1, Windows는 SIGBREAK(Ctrl+Break)다. 둘 다 없으면 None을 반환한다."""
     import signal
 
     if hasattr(signal, "SIGUSR1"):
@@ -167,9 +168,9 @@ def _signal_name() -> Optional[str]:
 
 
 def install_thread_dump_signal(out_dir: Optional[Path] = None) -> bool:
-    """시그널과 트리거 파일로 스레드 덤프를 요청할 수 있게 연결한다. 예외를 던지지 않는다.
-    시그널 핸들러는 메인 스레드에서만 등록할 수 있으므로 다른 스레드에서는
-    False를 반환하고, 트리거 파일 감시는 그래도 시작한다.
+    """시그널과 트리거 파일로 스레드 덤프를 요청할 수 있게 한다. 예외를 던지지 않는다.
+    시그널 핸들러는 메인 스레드에서만 등록할 수 있다. 다른 스레드에서 호출하면 False를 반환한다.
+    그래도 트리거 파일 감시는 시작한다.
     트리거 파일은 현재 디렉토리, ``out_dir``, 모든 작업 공간의 실행 디렉토리에서 찾는다.
 
     Windows: the handler runs when the main thread next executes Python code, i.e. after the current Maven wait slot

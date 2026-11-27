@@ -1,9 +1,9 @@
 """외부 구현을 끼워 넣는 연결 지점(Protocol)을 모아 둔 모듈.
-오케스트레이터(sbmig.loop)는 구현 대신 이 Protocol만 사용한다.
-회사 LLM 게이트웨이는 LLMRequest / LLMResponse(1단계, `llm.plugin`)로, 사내 코딩 에이전트는
-FixerLike.propose_script(2단계, `fix.plugin`)로 연결한다. 새 HTTP 클라이언트는 만들지 않는다.
-- LLMRequest / LLMResponse, FixerLike.propose_script, sbmig.api.migrate의 형태는 바꾸지 않는다
-- 스크립트 저장소 구현은 sbmig.errors.cases.CaseStore다
+오케스트레이터(sbmig.loop)는 구현 대신 이 Protocol만 쓴다.
+
+The company LLM gateway plugs in through LLMRequest / LLMResponse (tier 1, `llm.plugin`), the in-house
+coding agent through FixerLike.propose_script (tier 2, `fix.plugin`); no new HTTP client is written.
+The shapes of LLMRequest / LLMResponse, FixerLike.propose_script and sbmig.api.migrate never change.
 
 Implementations (module -> class):
     sbmig.analyze.analyzer     analyze_project(ws, cfg) -> ProjectProfile
@@ -105,8 +105,8 @@ class LLMRequest(BaseModel):
 
 @runtime_checkable
 class LLMClientLike(Protocol):
-    """채팅 응답을 받아 오는 저수준 LLM 클라이언트의 Protocol. 구현은 `role` / `metadata`와 나중에 추가될
-    키워드 인자를 받을 수 있어야 하며, 받은 뒤 무시해도 된다.
+    """채팅 응답을 받아 오는 저수준 LLM 클라이언트의 Protocol.
+    구현은 `role` / `metadata`와 나중에 추가될 키워드 인자도 받아야 한다. 받은 뒤 무시해도 된다.
 
     Built-in clients: openai_compatible / anthropic / fake (sbmig.fix.client)."""
     def complete(
@@ -124,9 +124,9 @@ class LLMClientLike(Protocol):
 
 @runtime_checkable
 class LLMAdapterLike(Protocol):
-    """사내 게이트웨이나 에이전트 플랫폼을 연결하는 1단계 어댑터의 Protocol. LLMRequest 하나를 받아
-    LLMResponse 하나를 반환한다.
-    `llm.provider: plugin`과 `llm.plugin`이나 entry point로 연결하면 sbmig가 LLMClientLike로 감싸고 호출 기록도 남긴다.
+    """사내 게이트웨이나 에이전트 플랫폼을 연결하는 1단계 어댑터의 Protocol.
+    LLMRequest 하나를 받아 LLMResponse 하나를 반환한다.
+    `llm.provider: plugin`에 `llm.plugin`이나 entry point로 연결한다. sbmig가 LLMClientLike로 감싸고 호출 기록도 남긴다.
 
     `llm.plugin: "pkg.module:attr"`, or an entry point in group `sbmig.llm_adapters`; wrapper
     `sbmig.llm.AdapterClient`."""
@@ -177,7 +177,8 @@ class RestructureResult(BaseModel):
     moved_files: int = 0
     generated_files: list[str] = Field(default_factory=list)
     optional_bumped: list[str] = Field(default_factory=list)      # "g:a old→new"
-    # 트리거 의존성(ArtifactSpec.when_present)이 있어서 새로 선언한 선택 사내 아티팩트와, replaces: true로 지운 트리거 선언
+    # 트리거 의존성(ArtifactSpec.when_present)이 있어서 새로 선언한 선택 사내 아티팩트
+    # 그리고 replaces: true로 지운 트리거 선언
     # Formats: "g:a → <pom> (for <matched g:a>[, …])" / "<matched g:a> removed from <pom> → g:a".
     optional_added: list[str] = Field(default_factory=list)
     optional_replaced: list[str] = Field(default_factory=list)
@@ -197,7 +198,7 @@ class RestructureResult(BaseModel):
     # 관리 버전보다 높은 명시 버전 중 as-is 빌드에서는 관리 버전 이하였거나 없던 것.
     # 레시피가 올린 버전이므로 지운다. "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"
     recipe_versions_dropped: list[str] = Field(default_factory=list)
-    # 어느 pom도 선언하지 않은 트리 안의 jar 중 재구성이 연결한 것과 그대로 둔 것. 저널과 인수인계에 쓴다
+    # 프로젝트 안에 있지만 어느 pom도 선언하지 않은 jar 중 재구성이 연결한 것과 그대로 둔 것. 저널과 인수인계에 쓴다
     # wired = {path, pom, coordinates, scope, placeholder, boot_poms};
     # skipped = {path, why}, why in superseded | container | unused | declared | skip.
     jars_wired: list[dict[str, Any]] = Field(default_factory=list)
@@ -230,7 +231,7 @@ class RestructureResult(BaseModel):
     jsp_jakarta_refs: int = 0
     jsp_jakarta_renamed: list[str] = Field(default_factory=list)
     # 회사 레이아웃에서 실제로 쓴 모듈 경로(만들지 않았으면 None), boot 모듈의 packaging, front 모듈로 옮긴 파일 수.
-    # boot_packaging은 jar이고, JSP가 있어 WAR로 만들었으면 war다
+    # boot_packaging은 보통 jar다. JSP가 있어서 WAR로 만들었으면 war다
     boot_module: Optional[str] = None
     comp_module: Optional[str] = None
     front_module: Optional[str] = None
@@ -315,8 +316,8 @@ class TriageContext(BaseModel):
     iteration: int
     stall_level: int = 0
     previous_attempts: list[FixAttempt] = Field(default_factory=list)   # 같은 클러스터 서명에 대한 시도
-    # 이 케이스가 다른 위치에서 저장 버전을 실행해 해결한 시도. 수정 루프가 채우고 이때 previous_attempts는
-    # 여기서 한 시도만 담는다. 비어 있으면 다시 실행할 것이 없다
+    # 이 케이스를 다른 위치에서 저장 버전으로 해결한 시도. 수정 루프가 채운다
+    # 이때 previous_attempts에는 이 위치에서 한 시도만 담긴다. 비어 있으면 다시 실행할 것이 없다
     resolved_elsewhere: list[FixAttempt] = Field(default_factory=list)
     # 이 실행에서 모든 위치를 합한 케이스의 LLM 요청 수. None이면 모르는 것이고 위치를 합한 한도를 두지 않는다
     # docs/INTERFACES.md "v2.1z-cd" rule 4.
@@ -355,25 +356,26 @@ class FixContext(BaseModel):
     case_id: str = ""                             # 클러스터의 케이스 id(L2 서명)
     signature_generic: str = ""
     script_base: Optional[ScriptBase] = None      # augment일 때 이전 버전과 이 프로젝트에서의 결과
-    # 프롬프트 "Dependency versions" 절에 넣을 정보. libraries.yml 항목과, 이 케이스 라이브러리의 저장소 버전
-    # (같은 메이저 릴리스, jakarta 빌드 여부, 더 높은 메이저)을 한 줄씩 둔다. 모르면 빈 목록이다
+    # 프롬프트 "Dependency versions" 절에 넣을 정보. libraries.yml 항목과 이 케이스 라이브러리의 저장소 버전을 한 줄씩 둔다
+    # 저장소 버전은 같은 메이저 릴리스, jakarta 빌드인지, 더 높은 메이저다. 모르면 빈 목록이다
     library_hints: list[str] = Field(default_factory=list)
     # 재구성 뒤의 프로젝트 정보를 한 줄씩 담는다.
     # Boot 전환 여부, 모듈과 부모, 생성 파일, starter, 사내 아티팩트 규칙, BOM import다.
-    # 값은 모두 RestructureResult와 cfg에서 가져오고, 재구성이 없었으면 빈 목록이다. Boot as-is pom 모드도 부모와
-    # 필수 아티팩트 정보는 넣는다. 프롬프트 머리 바로 뒤 "Project after the restructure" 절에 자르지 않고 넣는다
+    # 값은 모두 RestructureResult와 cfg에서 가져온다. 재구성이 없었으면 빈 목록이다
+    # Boot as-is pom 모드도 부모와 필수 아티팩트 정보는 넣는다
+    # 프롬프트 머리 바로 뒤 "Project after the restructure" 절에 자르지 않고 넣는다
     layout_facts: list[str] = Field(default_factory=list)
     # 이관 범위와 그 범위에서 LLM이 지켜야 할 사실. full이면 scope_facts는 빈 목록이다.
-    # jdk-jakarta면 시스템 프롬프트가 줄인 범위용 소개를 쓰고, scope_facts가 "Project after the restructure" 대신
+    # jdk-jakarta면 시스템 프롬프트가 범위를 줄인 실행용 소개를 쓴다. scope_facts는 "Project after the restructure" 대신
     # "Scope of this run" 절이 된다
     scope: Literal["full", "jdk-jakarta"] = "full"
     scope_facts: list[str] = Field(default_factory=list)
     # 이 케이스의 오류를 남긴 다른 케이스의 시도를 설명하는 절의 본문. 그런 시도가 없으면 빈 문자열이다.
-    # `earlier_fix_text`가 길이를 제한해 만들고 패커는 자르지 않고 그대로 넣는다
+    # `earlier_fix_text`가 길이를 제한해서 만든다. 패커는 자르지 않고 그대로 넣는다
     # Section title: "Earlier fix these errors come from (it is in the tree)".
     earlier_fix: str = ""
-    # 이 케이스의 이전 시도 중 오류를 없앴던(improved, build_ok) 시도. 패커는 이 시도를 "did NOT resolve it" 절에서
-    # 빼고 "These errors were resolved before and are back" 절에 따로 보여 준다.
+    # 이 케이스의 이전 시도 중 오류를 없앴던(improved, build_ok) 시도. 패커는 이 시도를 "did NOT resolve it" 절에서 뺀다
+    # 대신 "These errors were resolved before and are back" 절에 따로 보여 준다
     # 2단계 수정기를 위해 previous_attempts에도 그대로 남는다
     resolved_before: list[FixAttempt] = Field(default_factory=list)
 
@@ -393,10 +395,10 @@ class FixContext(BaseModel):
 @runtime_checkable
 class FixerLike(Protocol):
     """수정 스크립트를 만들어 주는 수정기의 Protocol(2단계 `fix.plugin`).
-    케이스 하나(L2, 여러 파일에 걸칠 수 있다)를 받아 수정 스크립트로 답한다. `ctx.script_mode`에 따라 다르다.
+    케이스 하나(L2, 여러 파일에 걸칠 수 있다)를 받아 수정 스크립트로 답한다. 동작은 `ctx.script_mode`에 따라 다르다.
     - new: 저장된 스크립트가 없을 때 새로 만든다
-    - augment: `ctx.script_base`를 고친 완전한 새 스크립트를 만든다. 답은 기준 스크립트를 대신하고,
-      기준 스크립트의 변경을 되돌린 트리에서 실행된다
+    - augment: `ctx.script_base`를 고친 완전한 새 스크립트를 만든다. 답은 기준 스크립트를 대신한다.
+      기준 스크립트의 변경을 되돌린 프로젝트에서 실행된다
     - `<need_file>`로 파일을 더 받는 왕복은 수정기 안에서 끝낸다
     실패하면 예외를 던지지 않고 ScriptProposal(code="", error=…)을 반환한다.
 
@@ -409,11 +411,12 @@ ScriptFixerLike = FixerLike          # FixerLike의 다른 이름
 
 @runtime_checkable
 class VerifyGuideLike(Protocol):
-    """수정기가 선택적으로 제공하는 운영자 확인 가이드 기능의 Protocol. 메이저 업그레이드나 라이브러리 교체
-    답에 운영자 확인 사항이 없으면 루프가 한 번 더 요청한다(`libraries.verify_guide_llm`).
-    구현이 없거나 실패하면 sbmig가 diff로 가이드를 만든다. 예외를 던지지 않는다.
-    - changes: 적용한 diff에서 읽은 DependencyChange 목록, diff: 그 diff(길이 제한 있음)
-    - 보고서 언어로 쓴 가이드 문장을 반환하고, 실패하면 빈 문자열을 반환한다
+    """수정기가 선택적으로 제공하는 운영자 확인 가이드 기능의 Protocol.
+    메이저 업그레이드나 라이브러리 교체 답에 운영자 확인 사항이 없으면 루프가 한 번 더 요청한다.
+    설정은 `libraries.verify_guide_llm`이다. 구현이 없거나 실패하면 sbmig가 diff로 가이드를 만든다.
+    예외를 던지지 않는다.
+    - changes는 적용한 diff에서 읽은 DependencyChange 목록이다. diff는 그 diff다(길이 제한 있음)
+    - 보고서 언어로 쓴 가이드 문장을 반환한다. 실패하면 빈 문자열을 반환한다
 
     Fallback guide: `sbmig.build.depchanges.synthesized_guide`."""
     def verify_guide(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, changes: list[DependencyChange],
@@ -425,11 +428,11 @@ class VerifyGuideLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class ScriptRunnerLike(Protocol):
-    """수정 스크립트 실행기의 Protocol. check는 정적 검사만 하고, run은 검사 후 별도 `python -I`
-    프로세스에서 헬퍼 API `p`로 스크립트를 실행한다.
-    변경은 커밋하지 않은 채 두고, 커밋할지 되돌릴지는 호출하는 쪽이 정한다. 예외를 던지지 않는다.
-    - check: 문제 목록을 반환하고, 비어 있으면 허용이다
-    - run: `p.errors`에 ``errors``를 넣고, ``timeout_s``(기본 script.timeout_seconds)가 지나면 강제 종료한다"""
+    """수정 스크립트 실행기의 Protocol.
+    check는 정적 검사만 한다. run은 검사한 뒤 별도 `python -I` 프로세스에서 헬퍼 API `p`로 스크립트를 실행한다.
+    변경은 커밋하지 않고 둔다. 커밋할지 되돌릴지는 호출하는 쪽이 정한다. 예외를 던지지 않는다.
+    - check: 문제 목록을 반환한다. 비어 있으면 통과다
+    - run: `p.errors`에 ``errors``를 넣는다. ``timeout_s``(기본 script.timeout_seconds)가 지나면 강제 종료한다"""
     def check(self, code: str) -> list[str]: ...
     def run(self, ws: Workspace, code: str, *, errors: Iterable[BuildError] = (),
             timeout_s: Optional[int] = None) -> ScriptRunResult: ...
@@ -438,7 +441,7 @@ class ScriptRunnerLike(Protocol):
 @runtime_checkable
 class ScriptStoreLike(Protocol):
     """케이스별 수정 스크립트 저장소의 Protocol. 구현은 sbmig.errors.cases.CaseStore다.
-    - best: 검증된(proven) 버전 중 최신을, 없으면 미검증(unverified) 버전 중 최신을 고른다.
+    - best: 검증된(proven) 버전 중 최신을 고른다. 없으면 미검증(unverified) 버전 중 최신이다.
       폐기된(retired) 버전은 고르지 않는다
     - credit: 재빌드 결과를 그 버전에 기록한다
     - find는 케이스가 없으면 None을, best는 고를 버전이 없으면 None을 반환한다
@@ -473,7 +476,8 @@ class StructureReviewerLike(Protocol):
 class KnowledgeBaseLike(Protocol):
     """파일 KB의 Protocol. 구현은 CaseStore를 감싼 파사드인 sbmig.kb.FileKnowledgeBase다.
     케이스 저장소(cases), 조회(match), 실행 결과 기록(record_run), cases.md 재생성(reindex)을 제공한다.
-    `sbmig.api.migrate(kb=False)`이거나 sbmig.kb를 불러올 수 없으면 아무것도 반환하지 않는 NullKnowledgeBase를 쓴다.
+    `sbmig.api.migrate(kb=False)`이거나 sbmig.kb를 불러올 수 없으면 NullKnowledgeBase를 쓴다.
+    NullKnowledgeBase는 데이터가 없는 빈 KB다.
 
     `match` returns a CaseHit for a stored script or a pinned block; NullKnowledgeBase lives in sbmig.loop."""
     cases: Any

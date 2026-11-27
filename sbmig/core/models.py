@@ -1,12 +1,10 @@
-"""패키지끼리 주고받는 공유 데이터 모델을 모아 둔 모듈. pydantic 모델, Enum, Literal이 모두 여기 있다.
-데이터가 만들어지는 순서는 분석(ProjectProfile) -> 계획(MigrationPlan) -> 빌드(BuildResult)
--> 수정 루프(ErrorCluster, FixAttempt, ScriptProposal) -> 오류 목록(ErrorEntry, FixTry)과 KB 케이스
--> 보고서(RunReport) -> 플릿(FleetState)이다.
-- 플러그인, report.json, KB 파일이 이 형태를 읽으므로 바꾸면 docs/INTERFACES.md에 기록한다
-- 경로 필드는 프로젝트 루트 기준 상대 경로다. `_abs`로 끝나는 필드와 로그, 출력 경로만 예외다
-- ErrorCaseRecord / FixAttemptRecord / CatalogCase 계열, ScriptMeta, FixLabel은 이전 KB 기록을 읽을 때만 쓴다.
-  지금 코드는 채우지 않는다
+"""패키지끼리 주고받는 데이터 모델을 모아 둔 모듈. pydantic 모델, Enum, Literal이 모두 여기 있다.
 
+Data flows analysis (ProjectProfile) -> plan (MigrationPlan) -> build (BuildResult) -> fix loop
+(ErrorCluster, FixAttempt, ScriptProposal) -> error list (ErrorEntry, FixTry) and KB cases -> report
+(RunReport) -> fleet (FleetState). Plugins, report.json and the KB files read these shapes: a change is
+recorded in docs/INTERFACES.md. The ErrorCaseRecord / FixAttemptRecord / CatalogCase family, ScriptMeta and
+FixLabel only read older KB records; current code never fills them.
 Paths are relative to Workspace.root unless the field name ends with `_abs` or is a log / output path.
 """
 from __future__ import annotations
@@ -65,7 +63,7 @@ class StepKind(str, Enum):
 
 class ErrorKind(str, Enum):
     """빌드 로그 파서가 오류에 붙이는 종류.
-    L2 서명의 첫 부분이므로 케이스 분류, 차단 정책, 보고서 묶음에 쓰인다."""
+    L2 서명의 첫 부분이다. 케이스 분류, 차단 정책, 보고서 묶음에 쓰인다."""
     COMPILE = "compile"
     TEST_COMPILE = "test_compile"
     DEPENDENCY_RESOLUTION = "dependency_resolution"
@@ -133,10 +131,10 @@ class BlockReason(str, Enum):
     # reactor에 같은 모듈이 두 번 들어간 pom 구조 문제. 접수에서 중복을 없애고, 그래도 남으면 LLM 없이 인수인계한다
     REACTOR_DUPLICATE = "reactor_duplicate"
     # 저장소가 응답하지 않아 의존성을 받지 못한 경우다(연결 타임아웃, 5xx, "Could not transfer artifact").
-    # 프로젝트 문제가 아니므로 LLM에 요청하지 않고 "찾을 수 없음"으로 보지 않으며 저장 스크립트 결과에도 넣지 않는다
+    # 프로젝트 문제가 아니다. LLM에 요청하지 않고, "찾을 수 없음"으로 보지 않고, 저장 스크립트 결과에도 넣지 않는다
     REPOSITORY_UNREACHABLE = "repository_unreachable"
-    # Windows에서 다른 프로세스가 target/의 파일을 잠가 빌드가 실패한 경우다. 빌드 환경 문제이므로 LLM에 요청하지 않는다.
-    # 빌드 실행기가 이미 다시 시도했으므로 바로 인수인계한다
+    # Windows에서 다른 프로세스가 target/의 파일을 잠가 빌드가 실패한 경우다. 빌드 환경 문제라서 LLM에 요청하지 않는다.
+    # 빌드 실행기가 이미 다시 시도했다. 바로 인수인계한다
     FILE_LOCK = "file_lock"
     # LLM이 수정 없이 프로젝트 밖의 문제라고 답한 경우다. 원인이 같은 다른 케이스는 LLM을 호출하지 않고 차단한다
     NEEDS_OWNER = "needs_owner"
@@ -171,7 +169,7 @@ class BlockedItem(BaseModel):
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # pom 없는 Tomcat 디렉토리를 읽기만 하는 `sbmig inventory`의 결과.
-# 그런 디렉토리는 접수에서 거부하므로 거부 안내를 쓸 때만 쓴다
+# 그런 디렉토리는 접수에서 거부한다. 거부 안내를 쓸 때만 쓴다
 # ---------------------------------------------------------------------------
 class JarInfo(BaseModel):
     """`sbmig inventory`가 찾은 WEB-INF/lib의 jar 하나를 담는 클래스.
@@ -256,9 +254,9 @@ class WebappInventory(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# web.xml 해석 결과. 내장 Tomcat과 회사 Boot WAR는 web.xml을 읽지 않으므로 재구성이 이 값으로 등록
-# 빈(WebXmlRegistrations)을 만든다
-# Servlet 3 이전 프로젝트는 @WebServlet이 없으므로 이 값이 없으면 서블릿과 필터 매핑이 모두 사라진다
+# web.xml 해석 결과. 내장 Tomcat과 회사 Boot WAR는 web.xml을 읽지 않는다
+# 그래서 재구성이 이 값으로 등록 빈(WebXmlRegistrations)을 만든다
+# Servlet 3 이전 프로젝트는 @WebServlet이 없다. 이 값이 없으면 서블릿과 필터 매핑이 모두 사라진다
 # ---------------------------------------------------------------------------
 class WebXmlServlet(BaseModel):
     """web.xml의 `<servlet>` 하나와 그 매핑을 담는 데이터 클래스.
@@ -441,7 +439,7 @@ class SourceStats(BaseModel):
     jsp_javax_files: int = 0                                     # import나 스크립틀릿에 javax EE 타입이 있는 JSP, tag 수
     # pom들의 웹 디렉토리. `src/main/webapp`이 있으면 넣고 war 플러그인의 `<warSourceDirectory>`, `<webResources>`도 넣는다.
     # jsp_paths, web_static_dirs, web_static_count도 이 디렉토리를 포함한다.
-    # 디렉토리 종류는 기록하지 않으므로 재구성이 pom을 다시 읽는다(`source_scanner.pom_web_dirs`)
+    # 디렉토리 종류는 기록하지 않는다. 재구성이 pom을 다시 읽는다(`source_scanner.pom_web_dirs`)
     webapp_dirs: list[str] = Field(default_factory=list)
     # 웹 디렉토리나 classpath 리소스 아래 5MB(LARGE_MEDIA_BYTES) 이상 미디어, 압축 파일 목록과 전체 바이트 수.
     # 목록은 정렬해서 20개까지 두고 재구성 안내에 쓴다
@@ -540,10 +538,10 @@ class ServiceInfo(BaseModel):
 class AdfSummary(BaseModel):
     """Oracle ADF(JDeveloper) 프로젝트인지에 대한 판단과 규모를 담는 데이터 클래스.
     분석 단계가 ``sbmig.analyze.adf.detect_adf``로 모아 ``ProjectProfile.adf``와 inventory에 남긴다.
-    - 근거 네 종류(``bc4j``, ``java``, ``model``, ``faces``) 중 둘 이상이면 ``is_adf``로 변환을 중단하고,
+    - 근거 네 종류(``bc4j``, ``java``, ``model``, ``faces``) 중 둘 이상이면 ``is_adf``로 변환을 중단한다.
       하나면 ``traces``로 표시하고 계속한다
     - 종류별 근거 경로는 사람이 판단을 검토할 때 쓰는 자료다
-    - ADF는 변환하지 않으므로 규모는 집계용 정보다
+    - ADF는 변환하지 않는다. 규모는 집계용 정보다
 
     `is_adf` rejects the run with "ADF 프로젝트라 변환이 불가능합니다"; `traces` is a soft flag."""
     is_adf: bool = False
@@ -574,7 +572,7 @@ class FrameworkEvidence(BaseModel):
     """사내 프레임워크 아티팩트를 프로젝트의 어디에서 찾았는지 담는 클래스.
     - direct: 프로젝트 pom의 `<dependencies>`에 선언돼 있다
     - parent: 프로젝트 pom에는 없고 프로젝트 밖 부모 pom에서 들어온다
-    - bundled: 어느 pom도 선언하지 않은 트리 안의 jar다
+    - bundled: 프로젝트 안에 있지만 어느 pom도 선언하지 않은 jar다
     - transitive: 다른 의존성이 끌어온다(`mvn dependency:tree`)"""
     source: Literal["direct", "parent", "bundled", "transitive"]
     artifact: str                                  # "g:a". 좌표를 모르는 bundled jar면 파일 이름
@@ -598,17 +596,17 @@ class FrameworkUse(BaseModel):
     reason: str = ""                               # 이 범위를 고른 이유. 영어 한 문장, 계획 메모와 저널에 쓴다
     # 화면과 보고서에 보여 줄 프레임워크 이름(FrameworkConfig.display_name). 정하지 못하면 빈 문자열이다
     name: str = ""
-    # 이 실행에서 빌드 오류 수정 루프를 실행하는지 여부(framework.fix_loop). 줄인 범위가 아니면 뜻이 없다
+    # 이 실행에서 빌드 오류 수정 루프를 실행하는지(framework.fix_loop). 줄인 범위가 아니면 뜻이 없다
     fix_loop: bool = False
 
     @property
     def found(self) -> bool:
-        """프레임워크 아티팩트를 한 곳이라도 찾았는지 여부를 반환한다."""
+        """프레임워크 아티팩트를 한 곳이라도 찾았으면 True를 반환한다."""
         return bool(self.evidence)
 
     @property
     def reduced(self) -> bool:
-        """JDK와 jakarta만 올리는 범위로 실행하는지 여부를 반환한다."""
+        """JDK와 jakarta만 올리는 범위로 실행하면 True를 반환한다."""
         return self.scope == "jdk-jakarta"
 
     def keys(self) -> list[str]:
@@ -652,7 +650,7 @@ class ProjectProfile(BaseModel):
     boot_modules: list[str] = Field(default_factory=list)      # Boot 앱 모듈 디렉토리
     # Oracle ADF 판단 결과와 규모. 근거가 하나라도 있을 때만 채운다
     adf: Optional[AdfSummary] = None
-    # 트리(WEB-INF/lib, lib/ 등)에 있는데 어느 pom도 선언하지 않은 jar. as-is IDE 빌드는 썼지만 Maven은 모른다.
+    # 프로젝트(WEB-INF/lib, lib/ 등)에 있는데 어느 pom도 선언하지 않은 jar. as-is IDE 빌드는 썼지만 Maven은 모른다.
     # `scan_bundled_jars`가 채우고 수정 루프가 `sbmig-bundled`로 연결한다
     bundled_jars: list["JarCoordinate"] = Field(default_factory=list)
     # 사내 프레임워크 검사 결과. framework.artifacts가 비어 있으면 None이다. 계획은 `framework.scope`를 보고 정한다
@@ -660,7 +658,7 @@ class ProjectProfile(BaseModel):
 
     @property
     def reduced_scope(self) -> bool:
-        """JDK와 jakarta만 올리는 범위(프레임워크 프로젝트)로 실행하는지 여부를 반환한다."""
+        """JDK와 jakarta만 올리는 범위(프레임워크 프로젝트)로 실행하면 True를 반환한다."""
         return self.framework is not None and self.framework.reduced
 
     def has_library(self, name: str) -> bool:
@@ -957,7 +955,7 @@ class LLMCost(BaseModel):
 # ---------------------------------------------------------------------------
 # 수정 스크립트.
 # LLM이 쓴 `def fix(p)`를 AST로 정적 검사한 뒤 별도 `python -I` 프로세스에서 제한된 API `p`로 실행한다.
-# 저장 위치는 `<kb>/cases/<case_id>/fix_v<N>.py`와 case.json(CaseScript)이고 실행은 sbmig.script가 맡는다
+# 저장 위치는 `<kb>/cases/<case_id>/fix_v<N>.py`와 case.json(CaseScript)이다. 실행은 sbmig.script가 맡는다
 # ---------------------------------------------------------------------------
 # new는 신규 작성(LLM), reuse는 저장된 스크립트 재사용(LLM 없음), augment는 이전 버전 보강(LLM)이다
 ScriptMode = Literal["new", "reuse", "augment"]
@@ -968,7 +966,7 @@ ScriptRunStatus = Literal["ok", "error", "timeout", "rejected"]
 
 class ScriptRunResult(BaseModel):
     """수정 스크립트를 한 번 실행한 결과를 담는 데이터 클래스. 상태, 바꾼 파일, p.log 줄, 오류를 담는다.
-    이것은 스크립트 스스로의 보고이고, 정확한 변경 내용은 수정 루프가 남기는 git diff다.
+    이것은 스크립트가 스스로 보고한 내용이다. 정확한 변경 내용은 수정 루프가 남기는 git diff에 있다.
 
     Produced by sbmig.script.ScriptRunner.run."""
     status: ScriptRunStatus = "ok"
@@ -1026,7 +1024,7 @@ class ScriptBase(BaseModel):
     history: list[str] = Field(default_factory=list)             # 이전 버전 이력. 예: "v1: 2 ok / 1 failed"
     session_id: Optional[str] = None               # 기준 시도의 답을 받은 게이트웨이 세션. 보강이 이어 쓴다
     # 그 세션을 연 모델. 빈 문자열이면 게이트웨이 기본 모델이다.
-    # 세션은 모델을 바꿀 수 없으므로 모델이 다르면 새 세션을 연다
+    # 세션은 모델을 바꿀 수 없다. 모델이 다르면 새 세션을 연다
     session_model: str = ""
 
 
@@ -1083,7 +1081,7 @@ class ScriptProposal(BaseModel):
 
     Returned by FixerLike.propose_script (tier-2 seam). `edits` are applied directly, `code` is stored for
     reuse."""
-    code: str = ""                                 # <script> 본문. `def fix(p)`가 있어야 하고, 빈 문자열이면 스크립트 없음
+    code: str = ""                                 # <script> 본문. `def fix(p)`가 있어야 한다. 빈 문자열이면 스크립트 없음
     analysis: str = ""
     solution: str = ""
     edits: list[Edit] = Field(default_factory=list)
@@ -1099,8 +1097,8 @@ class ScriptProposal(BaseModel):
     requested_files: list[str] = Field(default_factory=list)
     raw_response: str = ""
     error: str = ""                                # 스크립트가 없는 이유. 해석할 수 없는 답, 전송 실패, 거절 등
-    # LLM의 <blocked> 답. 프로젝트 안에서 고칠 수 없는 이유이며 편집도 스크립트도 없다.
-    # 루프가 declined로 분류하고 script.max_declines_per_case를 넘으면 needs_owner로 차단한다
+    # LLM의 <blocked> 답. 프로젝트 안에서 고칠 수 없는 이유다. 편집도 스크립트도 없다.
+    # 루프는 이 답을 declined로 분류한다. script.max_declines_per_case를 넘으면 needs_owner로 차단한다
     blocked_reason: str = ""
 
 
@@ -1154,7 +1152,7 @@ class DependencyChange(BaseModel):
 
 class VersionCandidate(BaseModel):
     """저장소에 있는 릴리스 하나를 담는 데이터 클래스.
-    jakarta 빌드 여부, 정식 릴리스 전 버전인지 여부, pom에 기록된 최소 Java 버전을 담는다."""
+    jakarta 빌드인지, 정식 릴리스 전 버전인지, pom에 기록된 최소 Java 버전을 담는다."""
     version: str
     jakarta: Optional[bool] = None                 # pom이 jakarta.*에 의존하는지. 확인하지 않았으면 None
     prerelease: bool = False                       # milestone, RC, alpha, beta, SNAPSHOT
@@ -1163,7 +1161,7 @@ class VersionCandidate(BaseModel):
 
 class RepositoryVersions(BaseModel):
     """설정된 저장소에 있는 라이브러리 하나의 버전 목록을 담는 데이터 클래스.
-    수정 프롬프트의 "Dependency versions"에 정보로 넣어 LLM이 같은 메이저 안에서 버전을 고르게 한다.
+    수정 프롬프트의 "Dependency versions"에 넣는다. LLM이 같은 메이저 안에서 버전을 고르게 하려는 정보다.
 
     Repository = settings.xml mirror / build.repository_url / Maven Central
     (sbmig.build.repo_versions.RepositoryLookup)."""
@@ -1184,7 +1182,7 @@ class RepositoryVersions(BaseModel):
 
 class OperatorCheck(BaseModel):
     """운영자 확인이 필요한 항목을 담는 데이터 클래스.
-    최종 트리에 남은 메이저 업그레이드나 라이브러리 교체와 그 확인 가이드다.
+    최종 결과에 남은 메이저 업그레이드나 라이브러리 교체와 그 확인 가이드다.
     실행이 끝날 때 시도와 구조 검토에서 만든다. 되돌린 시도의 변경은 넣지 않는다.
 
     Shown as the first Handover block "운영자 확인 필요", report.json `operator_checks`,
@@ -1201,7 +1199,7 @@ class OperatorCheck(BaseModel):
 
 # ---------------------------------------------------------------------------
 # 오류 목록. 실행 중 생긴 빌드 오류나 pom 수정 한 건이 ErrorEntry 하나다
-# 실행 디렉토리의 errors.jsonl에 기록하고, 실행이 끝나면 KB의 errors.jsonl에 추가한다
+# 실행 디렉토리의 errors.jsonl에 기록한다. 실행이 끝나면 KB의 errors.jsonl에도 추가한다
 # ---------------------------------------------------------------------------
 
 
@@ -1267,7 +1265,7 @@ class ErrorEntry(BaseModel):
     status: EntryStatus = "open"
     tries: list[FixTry] = Field(default_factory=list)
     # 오류가 해결된 곳. "r3 try 2", "build", "review" 중 하나다.
-    # "build"는 자기 시도 없이 사라진 경우이며, 해결했을 것으로 보이는 시도를 resolved_by에 남긴다
+    # "build"는 자기 시도 없이 사라진 경우다. 해결했을 것으로 보이는 시도를 resolved_by에 남긴다
     resolved: str = ""
     # resolved가 "build"일 때 같은 라운드에서 고쳤을 시도. 같은 파일, 모듈 pom, 루트 순으로 가까운 것이 먼저다
     resolved_by: list[ResolvedBy] = Field(default_factory=list)
@@ -1304,7 +1302,7 @@ class ScriptRun(BaseModel):
     n: int = 0                                     # 케이스와 실행 안에서의 시도 번호
     result: str = ""                               # 평가한 AttemptOutcome
     reason: str = ""                               # 결과의 이유(시도 메모). 그냥 해결했으면 빈 문자열
-    # 이 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위를 기록하기 전의 실행이며 full로 본다
+    # 이 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위를 기록하기 전의 실행이다. full로 본다
     scope: str = ""
     errors_before: Optional[int] = None            # 실행 전 케이스 오류 수
     errors_left: Optional[int] = None              # 재빌드 뒤 남은 오류 수
@@ -1337,9 +1335,9 @@ class CaseScript(BaseModel):
     # ok로 끝난 직후 다시 실행했을 때 또 파일을 바꾼 스크립트(비멱등). 기록은 남기지만 재사용 대상에서는 뺀다
     non_idempotent: bool = False
     # 다른 케이스와 서로의 수정을 되돌린 시도에 쓰인 버전. LLM 없이 혼자 재사용하지 않는다.
-    # 어느 범위의 실행이든 표시하고, 재사용이 아닌 같은 범위의 성공이 기록되거나 `sbmig kb cases activate`하면 지운다
+    # 어느 범위의 실행이든 표시한다. 같은 범위에서 재사용이 아닌 성공이 기록되거나 `sbmig kb cases activate`하면 지운다
     round_trip: bool = False
-    # 이 스크립트를 만든 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위 기록 전의 스크립트이며 full로 본다.
+    # 이 스크립트를 만든 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위 기록 전의 스크립트다. full로 본다.
     # 재사용할 버전을 고를 때 같은 범위의 것을 먼저 쓴다. 다른 범위에서 되돌려진 것은 이 버전의 실패로 세지 않는다
     scope: str = ""
 
@@ -1537,7 +1535,7 @@ class KBMatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 이전 KB의 오류 사례 기록. 지금은 ErrorEntry가 대신하므로 아래 모델은 채우지 않는다
+# 이전 KB의 오류 사례 기록. 지금은 ErrorEntry가 대신한다. 아래 모델은 채우지 않는다
 # 이전 KB와 report.json을 읽기 위해 남겨 둔 형식이다
 # 파일은 kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.jsonl이다
 # ---------------------------------------------------------------------------
@@ -1650,7 +1648,7 @@ class ErrorCaseRecord(BaseModel):
     project_fingerprint: str = ""
     run_id: str = ""
     case_type: CaseType = CaseType.UNKNOWN
-    # 오류 내용. 상대 경로로 바꾸고 비밀 값은 마스킹하며 raw는 2000자까지 둔다
+    # 오류 내용. 경로는 상대 경로로 바꾸고 비밀 값은 마스킹한다. raw는 2000자까지 둔다
     error_kind: ErrorKind = ErrorKind.UNKNOWN
     message: str = ""
     file: Optional[str] = None
@@ -1676,7 +1674,7 @@ class ErrorCaseRecord(BaseModel):
     resolver_id: str = ""
     resolved_by: Optional[str] = None              # FixAttemptRecord id. plan_step이면 "step:<step id>"
     # 해결에 들어간 모든 시도를 실행 순서대로 둔다. resolved_by도 이 안에 있다.
-    # 적용돼 트리에 남았고 이 오류를 겨냥했거나 그 파일을 바꾼 시도다. import를 넣은 앞의 no_change 시도도 들어간다
+    # 적용돼서 프로젝트에 남았고, 이 오류를 겨냥했거나 그 파일을 바꾼 시도다. import를 넣은 앞의 no_change 시도도 들어간다
     resolution_attempts: list[str] = Field(default_factory=list)
     targeted: bool = False                         # 해결한 시도의 클러스터에 이 오류가 있었는지
     description: str = ""                          # 해결한 방법이나 시도한 내용. status에 따라 다르다
@@ -1714,7 +1712,7 @@ class ErrorCaseRecord(BaseModel):
 # `human` 블록은 덮어쓰지 않고 나머지 필드는 다시 계산한다
 # ---------------------------------------------------------------------------
 CaseStatus = Literal["observed", "candidate", "active", "rejected"]
-# script는 케이스의 가장 좋은 저장 스크립트를 실행하고, block은 시도하지 않으며, hint는 힌트만 프롬프트에 넣는다
+# script는 케이스의 가장 좋은 저장 스크립트를 실행한다. block은 시도하지 않는다. hint는 힌트만 프롬프트에 넣는다
 CaseActionKind = Literal["hint", "block", "script"]
 
 
@@ -1772,7 +1770,7 @@ class CaseAction(BaseModel):
     """KB 조회가 케이스에 대해 정한 행동을 담는 데이터 클래스.
     FileKnowledgeBase.match가 만들고 트리아지가 따른다.
     - script: 저장된 스크립트 버전을 실행한다
-    - block: 사람이 차단으로 고정했으므로 시도하지 않는다
+    - block: 사람이 차단으로 고정했다. 시도하지 않는다
     - hint: 힌트만 준다"""
     kind: CaseActionKind = "hint"
     block_reason: str = ""                                    # block일 때 BlockReason 값. suggestion과 함께 쓴다
@@ -1795,7 +1793,7 @@ class CaseEvidence(BaseModel):
 
 
 class CaseHuman(BaseModel):
-    """이전 카탈로그를 읽기 위한 데이터 클래스. 사람이 편집하는 부분이므로 자동 재계산이 덮어쓰지 않는다.
+    """이전 카탈로그를 읽기 위한 데이터 클래스. 사람이 편집하는 부분이라서 자동 재계산이 덮어쓰지 않는다.
     값이 있으면 자동으로 정한 값보다 우선한다."""
     name: Optional[str] = None
     status: Optional[CaseStatus] = None            # 사람이 정한 상태. 예: rejected, active
@@ -1899,8 +1897,8 @@ class FleetState(BaseModel):
 # ---------------------------------------------------------------------------
 # 라이브러리 권고(knowledge/libraries/advisories.yml, sbmig.advisory)와 인수인계 요약
 # ---------------------------------------------------------------------------
-# 500개 프로젝트가 모두 완벽할 수는 없으므로 block 정책은 일부러 두지 않는다.
-# 권고는 guide뿐이며 수정 프롬프트 힌트와 보고서 인수인계 섹션으로 전달한다
+# 500개 프로젝트가 모두 완벽할 수는 없다. 그래서 block 정책은 일부러 두지 않는다.
+# 권고는 guide뿐이다. 수정 프롬프트 힌트와 보고서 인수인계 섹션으로 전달한다
 AdvisoryPolicy = Literal["guide"]              # 권고는 LLM 힌트와 인수인계로만 쓴다
 # 권고 상태
 # - eol: 개발이 끝난 라이브러리(springfox, hystrix, sleuth, ribbon, zuul 등)
@@ -1952,7 +1950,7 @@ class AdvisoryFinding(BaseModel):
     status: AdvisoryStatus
     title: str
     summary: str = ""
-    policy: AdvisoryPolicy = "guide"               # 항상 guide. report.json을 읽는 쪽을 위해 남긴다
+    policy: AdvisoryPolicy = "guide"               # 항상 guide다. report.json을 읽는 쪽을 위해 남긴다
     detected_version: Optional[str] = None
     evidence: list[str] = Field(default_factory=list)     # LibraryUsage의 근거 문자열
     artifacts: list[str] = Field(default_factory=list)    # as-is pom에서 찾은 "g:a"
@@ -1997,7 +1995,7 @@ class MergeConflict(BaseModel):
 class VersionChange(BaseModel):
     """인수인계 '바뀐 버전' 표의 한 줄을 담는 데이터 클래스.
     as-is pom과 최종 pom의 버전을 g:a 기준으로 비교한다.
-    carried_over는 새 부모나 BOM이 관리하지 않아 as-is 버전으로 고정한 것이므로 소유 팀이 확인해야 한다."""
+    carried_over는 새 부모나 BOM이 관리하지 않아서 as-is 버전으로 고정한 것이다. 소유 팀이 확인해야 한다."""
     kind: Literal["parent", "dependency", "bom", "plugin", "property"] = "dependency"
     key: str                                       # "g:a". property면 속성 이름
     before: Optional[str] = None                   # as-is 버전. 선언값, 없으면 as-is effective pom이 관리한 값
@@ -2044,7 +2042,7 @@ class HandoverSummary(BaseModel):
 # ---------------------------------------------------------------------------
 class CodeChange(BaseModel):
     """자동 변환 뒤에 sbmig가 고친 파일 하나를 담는 데이터 클래스. 구조 검토와 수정 단계가 남긴 최종 변경이다.
-    라운드별 시도가 아니라 변환 직후 상태와 최종 상태를 비교한 결과이므로, 한 파일을 여러 번 고쳐도 한 건이다.
+    라운드별 시도가 아니라 변환 직후 상태와 최종 상태를 비교한 결과다. 한 파일을 여러 번 고쳐도 한 건이다.
     보고서의 "코드 수정 내역"이 읽는다.
 
     Built at finalize by `sbmig.report.changes.collect_code_changes`."""
@@ -2163,15 +2161,14 @@ class RunReport(BaseModel):
     code_changes: list[CodeChange] = Field(default_factory=list)
     code_changes_total: int = 0                    # 변환 뒤 바뀐 파일 전체 수. 목록보다 많을 수 있다
     code_changes_base: str = ""                    # diff의 기준 커밋. 모으지 않았으면 빈 문자열
-    # 운영자 확인 필요 항목. 최종 트리에 남은 메이저 업그레이드와 라이브러리 교체, 그 가이드
+    # 운영자 확인 필요 항목. 최종 결과에 남은 메이저 업그레이드와 라이브러리 교체, 그 가이드
     operator_checks: list[OperatorCheck] = Field(default_factory=list)
     # 빌드 성공 뒤 이어서 실행한 취약점 조치의 요약(``sbmig.remediations.chain.summary``).
-    # 이관의 성공 여부나 종료 코드에는 쓰지 않으며, 보고서의 "취약점 조치" 절과 SBMIG-RESULT의
-    # remediation=만 이 값을 읽는다
+    # 이관의 성공 여부나 종료 코드에는 쓰지 않는다. 보고서의 "취약점 조치" 절과 SBMIG-RESULT의 remediation=만 이 값을 읽는다
     remediation: Optional[dict[str, Any]] = None
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal 등의 경로
     timings_s: dict[str, float] = Field(default_factory=dict)
 
 
-# MigrationPlan이 아래에서 정의하는 LLMUsage를 문자열로 참조하므로 모든 모델을 정의한 뒤에 다시 빌드한다
+# MigrationPlan은 아래에서 정의하는 LLMUsage를 문자열로 참조한다. 그래서 모든 모델을 정의한 뒤에 다시 빌드한다
 MigrationPlan.model_rebuild()
