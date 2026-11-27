@@ -1,10 +1,11 @@
 """빌드 오류를 케이스별로 묶고 케이스마다 할 일(스크립트, 차단, 건너뜀)을 정하는 패키지.
-검증 빌드가 실패하면 수정 루프(``sbmig.loop.fixloop``)가 라운드마다 ``Triager``를 호출한다.
-- ``cluster_cases``: 오류를 L2 서명별로 묶고 근본 원인을 앞에 둔다
-- ``DecisionEngine``: 재사용 -> 보강 -> 신규 순서로 시도를 정하고 차단 정책을 적용한다
-- ``classify_blocked``: 코드로 고칠 수 없는 오류를 가려낸다
 
-Error clustering by case, the decision engine (fix-script ladder), blocked classification."""
+Error clustering by case, the decision engine (fix-script ladder), blocked classification.
+
+After a failed verify build the fix loop (``sbmig.loop.fixloop``) calls ``Triager`` every round.
+``cluster_cases`` groups the errors by L2 signature, root causes first. ``DecisionEngine`` picks the try in
+the order reuse -> augment -> new and applies the blocked policy. ``classify_blocked`` finds the errors no
+code change in the project fixes."""
 from .blocked import BlockedCandidate, classify_blocked, extract_owner, is_project_class
 from .cluster import (BASE_PRIORITY, CASE_PREFIX, CAUSE_RANK, RESOLUTION_KINDS, case_id_of, cause_rank, cluster_cases,
                       cluster_errors, cluster_id, cluster_label, error_class, is_coarse_l2, l2_case_id,

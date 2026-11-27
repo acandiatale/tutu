@@ -1,13 +1,9 @@
 """한 빌드의 오류를 케이스(L2 서명) 단위로 묶고 근본 원인이 앞에 오도록 정렬하는 모듈.
-수정 루프가 빌드마다 ``Triager.cluster``를 통해 ``cluster_cases``를 호출한다. 오류 목록, KB 케이스, 시도
-결과 평가가 같은 키를 보도록 루프와 오케스트레이터는 빌드 직후 ``refine_signatures``를 먼저 적용한다.
-- ``case_id_of`` / ``l2_case_id``: 케이스 ID는 ``sha1(L2)[:10]``이고 KB 폴더 ``cases/<case_id>/``의 이름이 된다
-- 케이스 ID 계산식은 ``sbmig.errors.common``과 같아야 한다. 다르면 클러스터와 오류 목록의 케이스가 어긋난다
-- ``refine_signature``: ``build`` / ``other`` 같은 포괄적인 컴파일 L2를 오류 원문 줄로 세분화한다
-- 세분화하지 않으면 무관한 실패가 한 케이스가 되어 저장된 스크립트가 엉뚱한 문제에 재사용된다
-- ``cause_rank``: 라이브러리 하나가 빠지면 결과 케이스가 여러 개 생기므로 원인 케이스를 먼저 고친다
 
 Error clustering (ARCHITECTURE §4).
+
+The fix loop reaches ``cluster_cases`` through ``Triager.cluster`` after every build. The case id formula
+must stay the one of ``sbmig.errors.common``, or the clusters and the error list name different cases.
 
 docs/INTERFACES.md "Script fix loop (L)": the fix loop works on **cases** — `cluster_cases` groups the errors
 of a build by their L2 signature (`signature_generic`) ACROSS files, so one fix script fixes the same cause in
@@ -100,7 +96,7 @@ def cluster_id(kind: ErrorKind, key: str) -> str:
 def module_index(profile: Optional[ProjectProfile], module: Optional[str], file: Optional[str] = None) -> Optional[int]:
     """모듈의 reactor 순번(``profile.poms`` 안의 위치)을 반환한다.
     모듈 이름으로 찾지 못하면 파일을 포함하는 가장 깊은 pom 디렉토리로 찾는다.
-    앞 모듈의 컴파일 오류를 먼저 고치기 위해 사용한다. 분석기가 ``profile.poms``를 reactor 순서로 둔다."""
+    앞 모듈의 컴파일 오류를 먼저 고칠 때 쓴다. 분석기가 ``profile.poms``를 reactor 순서로 둔다."""
     if profile is None or not profile.poms:
         return None
     if module:
@@ -123,8 +119,8 @@ def module_index(profile: Optional[ProjectProfile], module: Optional[str], file:
 def priority_for(kind: ErrorKind, profile: Optional[ProjectProfile], module: Optional[str],
                  file: Optional[str]) -> int:
     """클러스터의 우선순위를 계산한다(낮을수록 먼저).
-    종류별 기본값(parent, pom, 의존성, 플러그인, 컴파일 순)에 컴파일 계열은 reactor 순번을 더하고 모르는
-    모듈은 40을 더한다. parent와 의존성이 풀려야 컴파일 오류가 의미가 있기 때문이다."""
+    종류별 기본값은 parent, pom, 의존성, 플러그인, 컴파일 순이다. parent와 의존성이 풀려야 컴파일 오류가
+    의미가 있기 때문이다. 컴파일 계열은 reactor 순번을 더하고, 모르는 모듈이면 40을 더한다."""
     base = BASE_PRIORITY.get(kind, 99)
     if kind in FILE_KINDS:
         idx = module_index(profile, module, file)
@@ -134,7 +130,7 @@ def priority_for(kind: ErrorKind, profile: Optional[ProjectProfile], module: Opt
 
 def cluster_errors(errors: list[BuildError], profile: Optional[ProjectProfile] = None) -> list[ErrorCluster]:
     """이전 방식(파일, 아티팩트, 모듈 단위)으로 오류를 묶는다.
-    수정 루프는 사용하지 않고 루프 밖의 호출자만 사용한다."""
+    수정 루프 밖의 호출자만 쓴다."""
     groups: dict[tuple[ErrorKind, str], list[BuildError]] = {}
     for e in errors:
         groups.setdefault((e.kind, cluster_key(e)), []).append(e)
@@ -184,8 +180,8 @@ def _posix(path: Optional[str]) -> str:
 
 def l2_case_id(signature_generic: Optional[str]) -> str:
     """L2 서명의 케이스 ID ``sha1(signature_generic)[:10]``를 반환한다. 서명이 없으면 빈 문자열을 반환한다.
-    ``ErrorEntry.case_id``와 KB 폴더 ``<kb>/cases/<case_id>/``가 이 값을
-    쓰므로 계산 방식을 바꾸면 쌓아 둔 KB와 매칭되지 않는다.
+    ``ErrorEntry.case_id``와 KB 폴더 ``<kb>/cases/<case_id>/``가 이 값을 쓴다.
+    계산 방식을 바꾸면 쌓아 둔 KB와 맞지 않게 된다.
 
     Contract: docs/v2/PLAN-v2.1.md §3.3; the same formula as sbmig.errors.common.case_id_for."""
     if not signature_generic:
@@ -210,10 +206,10 @@ def case_files(c: ErrorCluster) -> list[str]:
     return list(dict.fromkeys(_posix(e.file) for e in c.errors if e.file))
 
 
-# 앞쪽 원인이 고쳐지면 뒤쪽 오류는 대개 사라지므로 없는 패키지나 클래스,
-# import 줄, 심볼, 타입 불일치, override 순서로 고친다
-# 오류 종류는 L2의 두 번째 칸이고, 없으면 sbmig.build.signatures.classify_javac로 정한다.
-# location이 패키지인 cannot_find_symbol은 import 줄이므로 같은 심볼의 본문 사용보다 먼저 고친다
+# 앞쪽 원인을 고치면 뒤쪽 오류는 대개 사라진다. 그래서 없는 패키지나 클래스, import 줄, 심볼,
+# 타입 불일치, override 순서로 고친다
+# 오류 종류는 L2의 두 번째 칸이다. 없으면 sbmig.build.signatures.classify_javac로 정한다
+# location이 패키지인 cannot_find_symbol은 import 줄이다. 같은 심볼의 본문 사용보다 먼저 고친다
 CAUSE_RANK: dict[str, int] = {
     "package_does_not_exist": 0,
     "cannot_access": 1, "class_not_found_in_package": 1,
@@ -246,7 +242,7 @@ def error_class(e: BuildError) -> str:
 
 def cause_rank(c: ErrorCluster) -> int:
     """케이스에서 가장 원인에 가까운 오류를 기준으로 근본 원인 순위를 반환한다.
-    컴파일 계열이 아니면 기본 우선순위가 이미 앞에 두므로 0을 반환한다."""
+    컴파일 계열이 아니면 0을 반환한다. 기본 우선순위가 이미 앞에 두기 때문이다."""
     if c.kind not in FILE_KINDS:
         return 0
     return min((CAUSE_RANK.get(error_class(e), OTHER_CAUSE_RANK) for e in c.errors), default=OTHER_CAUSE_RANK)
@@ -282,7 +278,7 @@ def is_coarse_l2(e: BuildError) -> bool:
 
 def _normalize_line(text: str, module: Optional[str]) -> str:
     """세분화 키 줄을 L2처럼 정규화한다.
-    URL, 경로, 위치, 16진수, 버전, 숫자를 가리고 프로젝트 타입은 ``*``로 바꾸고 소문자로 만든다."""
+    URL, 경로, 위치, 16진수, 버전, 숫자를 가린다. 프로젝트 타입은 ``*``로 바꾸고 소문자로 만든다."""
     try:
         from sbmig.build.signatures import _mask_project_types, normalize_message
     except Exception:  # pragma: no cover - the build package is ours
@@ -307,7 +303,7 @@ def refined_key_line(e: BuildError) -> str:
 
 def refine_signature(e: BuildError) -> BuildError:
     """포괄적인 컴파일 L2에 세분화 키를 붙인다(제자리 수정).
-    키를 현재 L2가 아니라 ``raw``에서 계산하므로 여러 번 호출해도 결과가 같다.
+    키는 현재 L2가 아니라 ``raw``에서 계산한다. 그래서 여러 번 호출해도 결과가 같다.
     L1이 L2와 같았으면 시도 결과 평가가 두 실패를 구분하도록 L1도 바꾼다."""
     if not is_coarse_l2(e):
         return e
@@ -335,8 +331,8 @@ def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = 
                   scope: Optional[str] = None) -> list[ErrorCluster]:
     """파일을 가리지 않고 케이스(L2)마다 클러스터 하나를 만든다.
     스크립트 하나가 모든 파일의 같은 원인을 고치기 위해서다.
-    MSA 서비스별 루프면 두 서비스의 시도 횟수가 섞이지 않도록 id 뒤에 ``@<scope>``를 붙이고, KB 키인
-    ``case_id``는 그대로 둔다.
+    MSA 서비스별 루프면 id 뒤에 ``@<scope>``를 붙인다. 두 서비스의 시도 횟수가 섞이지 않게 하기 위해서다.
+    KB 키인 ``case_id``는 그대로 둔다.
     정렬 순서: 우선순위 -> 근본 원인 -> 오류 수 -> id.
 
     `scope` = a targeted loop's build target. Catch-all compile L2s are refined first (`refine_signature`)."""

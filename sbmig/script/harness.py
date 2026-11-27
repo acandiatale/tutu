@@ -1,10 +1,9 @@
-"""별도 프로세스에서 수정 스크립트를 실행하는 모듈. 부모 프로세스가 import하지 않고 파일로 실행한다.
-실행 명령은 ``<python> -I -X utf8 harness.py <payload.json>``이다.
-- ``-I``는 PYTHON* 환경 변수, 사용자 site, 현재 디렉토리를 무시하므로 의도하지 않은 import를 막는다
-- sbmig 소스 루트는 payload로 받아 sys.path에 넣는다.
-  허용된 표준 모듈을 먼저 로드해 두므로 루트에 같은 이름의 파일이 있어도 가려지지 않는다
-- LLM 코드는 최소한의 builtins와 검사를 거치는 ``__import__``로 실행하며, sbmig 자체는 import할 수 없다
-- 결과 JSON은 원자적으로 쓰고, 로그와 바뀐 파일은 저널에 줄마다 flush하므로 시간 초과로 종료돼도 남는다
+"""수정 스크립트를 별도 프로세스에서 실행하는 모듈.
+
+The parent never imports this file; it runs it as ``<python> -I -X utf8 harness.py <payload.json>``. ``-I``
+ignores the PYTHON* variables, the user site and the current directory, so nothing unintended is imported.
+The LLM's code gets a minimal set of builtins and the guarded ``__import__``; sbmig itself cannot be imported.
+The journal is flushed per line, so the log and the changed files survive a kill after a timeout.
 
 The sbmig root goes on sys.path only after the whitelisted stdlib modules (`preload`) are loaded. The
 guarded `__import__` applies the same rule as the static check (`sbmig.script.check.import_allowed`).
@@ -22,7 +21,7 @@ import sys
 import traceback
 import types
 
-SCRIPT_FILENAME = "fix_script.py"         # traceback에 쓰는 스크립트 파일 이름, 이 이름의 프레임만 보고한다
+SCRIPT_FILENAME = "fix_script.py"         # traceback에 쓰는 스크립트 파일 이름. 이 이름의 프레임만 보고한다
 MAX_TRACE_FRAMES = 8
 EXIT_HARNESS_FAILED = 3
 
@@ -50,7 +49,7 @@ def safe_builtins(print_fn, import_fn) -> dict:
 
 def guarded_import(allowed, extra_imports):
     """스크립트에서 쓸 ``__import__``를 만든다.
-    ``allowed(name, fromlist, extra)``가 허용한 모듈만 import하고 상대 import는 막는다."""
+    ``allowed(name, fromlist, extra)``가 허용한 모듈만 import한다. 상대 import는 막는다."""
     real_import = builtins.__import__
 
     def _import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -123,7 +122,7 @@ def run(payload: dict) -> dict:
                 pass
     except BaseException as exc:                         # noqa: BLE001  # 어떤 실패든 스크립트 결과로 보고한다
         result.update(status="error", error=describe(exc, code))
-    # 거부된 경로는 다음 시도가 알아야 할 스크립트 버그이므로 스크립트가 PathRefused를 잡았더라도 실패로 처리한다
+    # 경로가 거부됐으면 스크립트가 PathRefused를 잡았어도 실패로 본다. 다음 시도가 알아야 할 스크립트 버그다
     if result["status"] == "ok" and helper._refusals:
         result.update(status="error", error=f"PathRefused: {helper._refusals[0]} (caught by the script)")
     result.update(changed_files=list(helper._changed), log=list(helper._log), log_dropped=helper._dropped)
@@ -132,7 +131,7 @@ def run(payload: dict) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    """하네스의 진입점으로, payload를 읽어 ``run``을 실행하고 결과를 파일에 쓴다.
+    """payload를 읽어 ``run``을 실행하고 결과를 파일에 쓴다. 하네스의 진입점이다.
     하네스 자체가 실패하면 traceback을 stderr로 출력하고 종료 코드 3을 반환한다."""
     # Windows 콘솔 코드페이지와 상관없이 한글 로그와 경로가 깨지지 않도록 UTF-8로 맞춘다
     for stream in (sys.stdout, sys.stderr):

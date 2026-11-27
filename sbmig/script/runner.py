@@ -1,11 +1,7 @@
-"""수정 스크립트를 정적 검사한 뒤 별도 ``python -I`` 프로세스에서 하나씩 실행하는
-``ScriptRunner``(ScriptRunnerLike) 모듈.
-수정 루프, ``apply_edits``, 구조 검토가 호출한다.
-- 코드와 payload는 프로젝트 밖 임시 디렉토리에 두고, 그 디렉토리를 cwd로 실행한다
-- ``script.timeout_seconds``를 넘기면 Maven과 같은 방식으로 프로세스 트리 전체를 종료한다
-- 강제 종료되거나 비정상 종료된 자식 프로세스도 저널을 통해 바뀐 파일과 로그를 보고한다
-- 변경은 커밋하지 않으며, 커밋과 되돌리기는 호출자가 한다
-- 자식 환경에서 KEY / TOKEN / SECRET / ``LLM_*`` 같은 변수를 빼고 실행하며, 예외를 던지지 않는다
+"""수정 스크립트를 정적 검사한 뒤 별도 ``python -I`` 프로세스에서 실행하는 모듈.
+
+Callers: the fix loop, ``apply_edits`` and the structure review. Nothing is committed here; the caller commits
+or rolls back. The child's environment has no KEY / TOKEN / SECRET / ``LLM_*``-like variables. Nothing raises.
 
 Command: `<python> -I -X utf8 sbmig/script/harness.py <payload>` in its own process group, cwd = a
 fresh temp directory holding the code and the JSON payload. After `timeout_s` (default
@@ -42,14 +38,14 @@ SBMIG_ROOT = Path(__file__).resolve().parents[2]          # `sbmig` 패키지가
 STDERR_TAIL_CHARS = 2000
 IS_WINDOWS = os.name == "nt"
 _CREATE_NO_WINDOW = 0x08000000
-# 스크립트는 환경 변수를 읽을 수 없지만 키는 아예 넘기지 않기 위해 이 변수들을 뺀다
+# 스크립트는 환경 변수를 읽을 수 없다. 그래도 키는 아예 넘기지 않도록 이 변수들을 뺀다
 _SECRET_ENV_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH)|^LLM_", re.IGNORECASE)
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    """프로세스 트리 전체를 종료할 수 있도록 별도 프로세스 그룹으로 실행하는 인자를 만든다.
-    POSIX는 새 세션으로 실행한다. Windows는 새 프로세스 그룹과 숨은 콘솔을 붙이므로 운영자의 Ctrl+C가
-    자식에게 전달되지 않고, 종료는 `taskkill /T /F`로 한다."""
+    """자식을 별도 프로세스 그룹으로 실행하는 인자를 만든다. 나중에 자식의 자식까지 한꺼번에 종료하기 위해서다.
+    POSIX는 새 세션으로 실행한다. Windows는 새 프로세스 그룹과 숨은 콘솔을 붙인다.
+    그래서 운영자의 Ctrl+C가 자식에게 가지 않는다. 종료는 `taskkill /T /F`로 한다."""
     if IS_WINDOWS:
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200) | getattr(subprocess, "CREATE_NO_WINDOW",
                                                                                    _CREATE_NO_WINDOW)
@@ -122,7 +118,7 @@ def _read_journal(path: Path) -> tuple[list[str], list[str]]:
 
 class ScriptRunner:
     """작업 공간에서 LLM 수정 스크립트를 실행하는 클래스.
-    ``check``는 정적 검사만 하고, ``run``은 검사를 통과하면 별도 프로세스에서 실행한다.
+    ``check``는 정적 검사만 한다. ``run``은 검사를 통과한 스크립트를 별도 프로세스에서 실행한다.
 
     Contract: docs/INTERFACES.md "Script contract (S)"."""
 
@@ -133,7 +129,7 @@ class ScriptRunner:
 
     def check(self, code: str) -> list[str]:
         """정적 검사만 해서 문제 목록을 반환한다.
-        ``script.extra_allowed_imports``와 ``script.max_code_chars``를 적용하며, 빈 목록이면 통과다."""
+        ``script.extra_allowed_imports``와 ``script.max_code_chars``를 적용한다. 빈 목록이면 통과다."""
         s = self.cfg.script
         return check_script(code, extra_imports=s.extra_allowed_imports, max_chars=s.max_code_chars)
 
@@ -164,7 +160,7 @@ class ScriptRunner:
         """코드와 payload를 새 임시 디렉토리에 쓰고 하네스를 실행해 결과를 모은다.
         임시 디렉토리는 항상 지운다."""
         s = self.cfg.script
-        limit = timeout_s or s.timeout_seconds                # 0이나 None이면 설정값을 쓰고, 설정값 0은 제한 없음
+        limit = timeout_s or s.timeout_seconds                # 0이나 None이면 설정값을 쓴다. 설정값이 0이면 제한이 없다
         timeout = float(limit) if limit else None
         python = s.python or sys.executable
         if not python:
@@ -192,8 +188,8 @@ class ScriptRunner:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def _spawn(self, cmd: list[str], cwd: Path, timeout: Optional[float]) -> tuple[Optional[int], bool, str]:
-        """자식 프로세스를 실행하고 끝날 때까지 기다려 (종료 코드, 시간 초과 여부, 출력 뒷부분)을 반환한다.
-        시간 초과이면 트리 전체를 종료한다. 출력은 stderr 뒤에 stdout을 붙인 뒷부분이다."""
+        """자식 프로세스를 실행하고 끝날 때까지 기다린다. 종료 코드, 시간 초과인지, 출력 뒷부분을 반환한다.
+        시간 초과이면 자식이 띄운 프로세스까지 모두 종료한다. 출력은 stderr 뒤에 stdout을 붙인 뒷부분이다."""
         try:
             proc = subprocess.Popen(cmd, cwd=str(cwd), env=_child_env(), stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_popen_kwargs())
@@ -227,7 +223,7 @@ class ScriptRunner:
         """결과 JSON으로 ``ScriptRunResult``를 만든다. 결과 파일이 없으면 저널과 stderr로 만든다."""
         cap = int(self.cfg.script.log_lines)
         data: Optional[dict[str, Any]] = None
-        # 시간 초과로 종료했으면 결과 파일이 있어도 timeout으로 보고하고, 바뀐 파일과 로그는 저널에서 읽는다
+        # 시간 초과로 종료했으면 결과 파일이 있어도 timeout으로 보고한다. 바뀐 파일과 로그는 저널에서 읽는다
         if not timed_out and result_path.is_file():
             try:
                 data = json.loads(result_path.read_text(encoding="utf-8"))

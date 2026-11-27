@@ -1,16 +1,13 @@
-"""시도에서 바꾼 내용을 현업이 읽을 수 있게 기록하는 모듈.
-수정 기록(``EditNote``)과 변경 조각(``EditHunk``)을 다룬다.
-LLM은 ``where`` / ``change``를 쓰고, sbmig는 적용된 diff에서 줄 범위(``lines``)와 변경 조각을 붙인다.
-답변 파서, 수정 루프(``sbmig.loop.notes``), ``sbmig.fix.fixer``의 ``merge_notes``,
-재색인(``attach_hunks``)이 호출한다.
-- LLM이 설명하지 않은 파일도 diff로 기록을 만들어, 설명 없이 diff만 남는 파일이 없게 한다
-- 기록마다 그 파일의 모든 변경 조각을 diff 순서로 붙인다. ``where``가 한 곳만 가리켜도 diff 전체를 따른다
-- 줄 번호는 추가와 수정이면 새 파일, 삭제이면 이전 파일 기준이다
-- 잘린 diff는 읽을 수 있는 데까지 읽고, 이상한 입력에도 예외를 던지지 않는다
+"""시도에서 바꾼 내용을 현업이 읽을 수 있는 수정 기록으로 남기는 모듈.
+LLM이 쓴 설명과 실제로 적용된 diff를 합쳐 파일마다 기록을 만든다.
 
 The LLM writes `where` / `change` (each `<edits>` item's `desc`, the `<changes>` list for a
 script, `EditNote(source="llm")`); sbmig adds `lines` from the applied unified diff and, for every
 file the diff touched that the LLM did not describe, a note from the diff itself (`source="diff"`).
+
+Callers: the answer parsers, the fix loop (``sbmig.loop.notes``), ``sbmig.fix.fixer`` (``merge_notes``) and
+the reindex (``attach_hunks``). Line numbers of added and changed runs count in the new file, of removed runs
+in the old file. Nothing here raises on odd input.
 
 * answer_notes(changes, edits): the `<changes>` list first, then each edit's `desc` for a path the
   list did not describe (the fix / review parsers).
@@ -42,7 +39,7 @@ from typing import Any, Optional
 
 from sbmig.core.models import EditHunk, EditNote
 
-MAX_RUNS_SHOWN = 8                  # 파일당 `lines` / `change`에 보여 줄 변경 구간 수, 넘으면 "… +N"
+MAX_RUNS_SHOWN = 8                  # 파일당 `lines` / `change`에 보여 줄 변경 구간 수. 넘으면 "… +N"
 WHERE_CHARS = 300
 CHANGE_CHARS = 600
 DIFF_CUT_LINE = "… (diff cut: errors.diff_chars)"   # diff가 중간에 잘린 변경 조각의 마지막 줄
@@ -55,7 +52,7 @@ _SIMPLE_ESC = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "a": "\a", "b": "\b",
 
 def describe_language(cfg: Any) -> str:
     """프롬프트에서 요구할 변경 설명(`desc`, `<changes>`)의 언어를 정한다.
-    ``report.language``가 ``ko``이면 한국어, 아니면 프로젝트 주석의 언어를 따르고 판단하기 어려우면 한국어로 한다."""
+    ``report.language``가 ``ko``이면 한국어다. 아니면 프로젝트 주석의 언어를 따르고, 판단하기 어려우면 한국어다."""
     lang = str(getattr(getattr(cfg, "report", None), "language", "") or "").lower()
     if lang == "ko":
         return "Korean (한국어)"
@@ -78,8 +75,8 @@ def _norm(path: str) -> str:
 
 def same_path(a: str, b: str) -> bool:
     """두 경로가 같은 파일을 가리키는지 반환한다.
-    대소문자와 구분자를 무시하고, 폴더를 포함한 짧은 경로가 긴 경로의 뒷부분과 같아도 같은 파일로 본다.
-    폴더 없이 ``pom.xml``만 있으면 어느 파일인지 모호하므로 뒷부분 일치로 보지 않는다.
+    대소문자와 구분자는 무시한다. 폴더가 들어간 짧은 경로가 긴 경로의 뒷부분과 같아도 같은 파일로 본다.
+    폴더 없이 ``pom.xml``만 있으면 어느 파일인지 알 수 없어서 뒷부분 일치로 보지 않는다.
 
     `comp-jar/pom.xml` matches `module/comp-jar/pom.xml`; a bare `pom.xml` does not."""
     x, y = _norm(a).lower(), _norm(b).lower()
@@ -100,7 +97,7 @@ def _base(path: str) -> str:
 # ---------------------------------------------------------------------------
 def answer_notes(changes: Iterable[EditNote], edits: Iterable[Any]) -> list[EditNote]:
     """답변 하나에서 LLM이 쓴 수정 기록을 모은다.
-    ``<changes>`` 목록을 먼저 두고, 목록에 없는 경로의 편집은 ``desc``로 기록을 하나씩 더한다. 순서는 유지한다."""
+    ``<changes>`` 목록을 먼저 둔다. 목록에 없는 경로의 편집은 ``desc``로 기록을 하나씩 더한다. 순서는 그대로다."""
     out = [x for x in (_as_note(n) for n in changes or ()) if x is not None]
     edits = list(edits or ())
     described = [n.path for n in out if n.path]
@@ -171,7 +168,7 @@ def note_from_text(text: str) -> Optional[EditNote]:
 
 def notes_from_json(obj: Any) -> tuple[list[EditNote], list[str]]:
     """파싱한 ``<changes>`` JSON을 (기록 목록, 문제 목록)으로 바꾼다.
-    텍스트가 없는 항목은 문제로 기록하고 건너뛴다. 기록은 설명일 뿐이므로 거부하는 항목은 없다.
+    텍스트가 없는 항목은 문제 목록에 넣고 건너뛴다. 기록은 설명일 뿐이라서 거부하는 항목은 없다.
 
     Accepted: a list of `{"path", "where", "change"}` (also `file` / `location` / `desc` … spellings), a
     `{"changes": [...]}` wrapper, one object, or plain strings."""
@@ -237,7 +234,7 @@ class _FileDiff:
 
 def _unquote(raw: str) -> str:
     """git이 출력한 경로를 원래 문자열로 복원한다.
-    한글 파일 이름처럼 따옴표와 8진 이스케이프로 나온 경로도 처리한다.
+    한글 파일 이름처럼 따옴표와 8진 이스케이프로 나온 경로도 복원한다.
 
     Quoted form from core.quotepath: `"a/\\355\\225\\234.java"`; a plain path may carry a trailing tab."""
     s = raw.rstrip("\t\r\n ")
@@ -275,7 +272,7 @@ def _side(raw: str, prefix: str) -> str:
 
 def _parse_diff(diff_text: str) -> list[_FileDiff]:
     """unified diff를 파일과 변경 구간으로 나눈다.
-    변경 구간은 헤더에 표시된 줄 수를 다 읽으면 끝나므로 ``-- a/x``로 시작하는 삭제 줄을 파일 헤더로 읽지 않는다.
+    변경 구간은 헤더에 나온 줄 수를 다 읽으면 끝난다. 그래서 ``-- a/x``로 시작하는 삭제 줄을 파일 헤더로 읽지 않는다.
     줄 수를 다 읽기 전에 헤더가 나오면 잘린 diff로 보고 표시를 남긴다."""
     files: list[_FileDiff] = []
     cur: Optional[_FileDiff] = None
@@ -329,7 +326,7 @@ def _parse_diff(diff_text: str) -> list[_FileDiff]:
                     old_ln, old_left = old_ln + 1, old_left - 1
                     cur.removed += 1
                 continue
-            old_left = new_left = 0                                  # 줄 수를 다 읽기 전에 헤더가 나왔으므로 잘린 구간이다
+            old_left = new_left = 0                                  # 줄 수를 다 읽기 전에 헤더가 나왔다. 잘린 구간이다
             cut_short = True
         close_run(cut_short)
         if line.startswith("\\"):
@@ -408,7 +405,7 @@ def _run_text(kind: str, first: int, count: int) -> str:
 
 def _clip(lines: list[str], max_lines: int) -> tuple[list[str], bool]:
     """줄 목록을 최대 ``max_lines``줄로 자르고, 잘렸으면 남은 줄 수를 알리는 줄을 끝에 붙인다.
-    (줄 목록, 잘림 여부)를 반환한다. ``max_lines``가 0이면 자르지 않는다."""
+    잘렸는지도 함께 반환한다. ``max_lines``가 0이면 자르지 않는다."""
     if max_lines > 0 and len(lines) > max_lines:
         return lines[:max_lines] + [f"… (+{len(lines) - max_lines} lines)"], True
     return list(lines), False
@@ -496,7 +493,7 @@ def hunks_from_diff(diff_text: str, *, max_lines: int = 0) -> dict[str, list[Edi
 # ---------------------------------------------------------------------------
 def _match(note_path: str, files: Sequence[_FileDiff]) -> Optional[int]:
     """LLM 기록이 가리키는 diff 파일의 번호를 찾는다.
-    정확한 일치, 뒷부분 일치, 파일 이름 순으로 찾고, 각 단계에서 후보가 하나일 때만 고른다.
+    정확한 일치, 뒷부분 일치, 파일 이름 순으로 찾는다. 각 단계에서 후보가 하나일 때만 고른다.
     대소문자는 구분하지 않는다. 찾지 못하거나 모호하면 None을 반환한다."""
     want = _norm(note_path).lower()
     if not want:
@@ -532,7 +529,7 @@ def _copies(hunks: Sequence[EditHunk]) -> list[EditHunk]:
 
 
 def merge_notes(llm_notes: Iterable[EditNote], diff_text: str, *, max_lines: int = 0) -> list[EditNote]:
-    """시도 하나의 수정 기록을 만든다. LLM 기록의 복사본에 diff의 ``lines``와 그 파일의 변경 조각을 붙이고,
+    """시도 하나의 수정 기록을 만든다. LLM 기록의 복사본에 diff의 ``lines``와 그 파일의 변경 조각을 붙인다.
     어느 기록에도 없는 파일은 diff로 만든 기록을 뒤에 더한다.
     diff에 바뀐 파일이 있으면 결과는 비어 있지 않다. diff가 없으면 LLM 기록을 그대로 반환한다.
 
@@ -574,7 +571,7 @@ def merge_notes(llm_notes: Iterable[EditNote], diff_text: str, *, max_lines: int
 
 
 def attach_hunks(notes: Iterable[Any], diff_text: str, *, max_lines: int = 0) -> list[EditNote]:
-    """변경 조각이 없는 이전 기록을 재색인할 때 ``diff_text``에서 그 파일의 조각을 찾아 붙인다.
+    """변경 조각이 없는 이전 기록에 ``diff_text``에서 찾은 그 파일의 조각을 붙인다. 재색인할 때 쓴다.
     파일을 찾는 방식은 ``merge_notes``와 같다.
     조각이 이미 있는 기록, diff에 없는 파일, 기록이 아닌 항목은 그대로 둔다. 예외를 던지지 않는다.
     diff가 비었거나 읽을 수 없으면 입력을 그대로 반환한다."""

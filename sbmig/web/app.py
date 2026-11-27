@@ -1,10 +1,9 @@
 """프로젝트 zip을 받아 이관을 실행하고 진행 상황을 SSE로 보여 주는 FastAPI 웹 앱 모듈.
-``sbmig serve`` 또는 ``uvicorn sbmig.web.app:app``으로 띄운다. 라우트는 요청을 :class:`~sbmig.web.runs.RunManager`에 넘긴다.
-- SSE 생성기는 스레드풀 스레드에서 기다리므로 이벤트 루프를 막지 않는다(스레드 한도 256)
-- ``result.zip``에 회사 소스가 들어 있으므로 토큰이 있으면 모든 요청에 토큰을 요구한다
-- 토큰이 없으면 같은 PC(루프백)의 요청만 받는다. 열린 모드(``SBMIG_WEB_OPEN=1``)면 사내망 전체를 받는다
-- 모든 모드에서 다른 사이트의 페이지가 보낸 상태 변경 요청은 403으로 거부한다
-- 같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이므로 토큰을 켜야 한다
+
+The routes hand the work to :class:`~sbmig.web.runs.RunManager`. An SSE generator waits in a thread-pool
+thread (at most 256), so it never blocks the event loop. A token, when set, guards every request because
+``result.zip`` holds company source. Behind a reverse proxy on the same PC every client looks like loopback:
+switch the token on there.
 
     uvicorn sbmig.web.app:app --port 8765          (env SBMIG_WEB_OUT, SBMIG_WEB_REPO_ROOT)
     sbmig serve --port 8765                         (same app, via uvicorn.run)
@@ -151,7 +150,7 @@ def is_loopback_host(host: str | None) -> bool:
 
 def _remote_client(scope: Scope) -> bool:
     """요청한 클라이언트가 루프백이 아닌 IP에서 왔는지 확인한다. IP가 없으면(유닉스 소켓, 테스트) 로컬로 본다.
-    같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이므로 이때는 토큰을 켜야 한다."""
+    같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보인다. 그때는 토큰을 켜야 한다."""
     client = scope.get("client")
     host = client[0] if client else None
     try:
@@ -245,7 +244,7 @@ def _origin_host(origin: str) -> str:
 
 
 def _allowed_origin_hosts() -> set[str]:
-    """``SBMIG_WEB_ALLOWED_ORIGINS``에 적힌 호스트 집합을 반환한다. 다른 호스트의 화면에서 이 API를 써야 할 때만 쓴다.
+    """``SBMIG_WEB_ALLOWED_ORIGINS``에 있는 호스트 집합을 반환한다. 다른 호스트의 화면에서 이 API를 써야 할 때만 쓴다.
     요청마다 웹 파드의 환경 변수를 다시 읽는다.
 
     Comma-separated `host` / `host:port` (a full origin `https://host` is accepted too): a portal on another
@@ -267,7 +266,7 @@ def _cookie_value(token: str) -> str:
 
 class TokenGuard:
     """웹 요청의 접근을 제어하는 미들웨어 클래스. 규칙은 모듈 docstring에 있다.
-    응답 본문을 감싸지 않도록 순수 ASGI로 작성해서 SSE 스트림이 그대로 지나간다."""
+    응답 본문을 감싸지 않도록 순수 ASGI로 작성했다. 그래서 SSE 스트림이 그대로 지나간다."""
 
     def __init__(self, app: ASGIApp, token: str | None = None, open_network: bool = False):
         self.app = app
@@ -279,13 +278,13 @@ class TokenGuard:
         """요청 하나의 접근 권한을 검사한다. lifespan처럼 http, websocket이 아닌 요청은 그대로 넘긴다.
         - 다른 사이트에서 온 상태 변경 요청은 토큰과 상관없이 403을 반환한다
         - 토큰이 없으면 열린 모드가 아닐 때 원격 클라이언트에 403을 반환한다
-        - 토큰이 있으면 Bearer 헤더나 쿠키가 맞을 때 통과시키고, 아니면 401을 반환한다
+        - 토큰이 있으면 Bearer 헤더나 쿠키가 맞을 때 통과시킨다. 아니면 401을 반환한다
         - ``?token=``이 맞으면 쿠키를 설정한다. 페이지는 토큰을 뺀 주소로 303 이동하고, API는 Set-Cookie를 붙인다"""
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         req = Request(scope)
-        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 조치 재개를 보내지 못하게 토큰 검사보다 먼저 거부한다
+        # 토큰 검사보다 먼저 거부한다. 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 조치 재개를 보내면 안 된다
         if cross_site_request(scope):
             await self._deny(scope, receive, send, req, 403, CROSS_SITE_MESSAGE)
             return
@@ -319,7 +318,7 @@ class TokenGuard:
                 await resp(scope, receive, send)
                 return
 
-            # 순수 ASGI라 응답 객체가 없으므로 첫 메시지(http.response.start)의 헤더에 Set-Cookie를 넣는다
+            # 순수 ASGI라 응답 객체가 없다. 그래서 첫 메시지(http.response.start)의 헤더에 Set-Cookie를 넣는다
             async def send_with_cookie(message):
                 if message["type"] == "http.response.start":
                     tmp = PlainTextResponse("")
@@ -336,7 +335,7 @@ class TokenGuard:
 
     @staticmethod
     async def _deny(scope: Scope, receive: Receive, send: Send, req: Request, status: int, message: str) -> None:
-        """거부 응답을 보낸다. 웹소켓은 1008로 닫고, 페이지에는 안내 HTML을, API에는 JSON ``{"error": …}``를 보낸다."""
+        """거부 응답을 보낸다. 웹소켓은 1008로 닫는다. 페이지에는 안내 HTML을, API에는 JSON ``{"error": …}``를 보낸다."""
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -351,7 +350,7 @@ class TokenGuard:
 
 def resolve_max_upload(max_upload_mb: int | None = None) -> int:
     """업로드 크기 상한(바이트)을 정한다.
-    인자(``sbmig serve --max-upload-mb``), ``$SBMIG_MAX_UPLOAD_MB``, 기본값 512 MB 순으로 정한다.
+    인자(``sbmig serve --max-upload-mb``) -> ``$SBMIG_MAX_UPLOAD_MB`` -> 기본값 512 MB 순으로 정한다.
     0이면 상한이 없다. 음수나 숫자가 아닌 값은 경고를 남기고 기본값을 쓴다."""
     source = "--max-upload-mb"
     if max_upload_mb is None:
@@ -384,7 +383,7 @@ def _ensure_console_logging() -> None:
     from sbmig.cli import harden_console_streams, install_redaction_if_requested
 
     harden_console_streams()                 # cp949 콘솔에서 줄표 하나 때문에 "Logging error"가 나지 않게 한다
-    # SBMIG_REDACT_OUTPUT=1이면 기록할 때 마스킹해야 하므로 uvicorn으로 바로 띄운 경우에도 여기서 설치한다.
+    # SBMIG_REDACT_OUTPUT=1이면 기록할 때 마스킹해야 한다. 그래서 uvicorn으로 바로 띄운 경우에도 여기서 설치한다.
     # 설치하지 못하면 서버를 띄우지 않는다
     install_redaction_if_requested()
     root = logging.getLogger("sbmig")
@@ -401,7 +400,7 @@ def _ensure_console_logging() -> None:
 
 def _check_id(run_id: str) -> str:
     """URL의 실행 ID가 ``RUN_ID_RE`` 형식인지 검사하고 그대로 반환한다.
-    ``..`` 등으로 출력 폴더 밖을 가리키지 못하도록 형식이 틀리면 HTTPException(400)을 던진다."""
+    형식이 틀리면 HTTPException(400)을 던진다. ``..`` 등으로 출력 폴더 밖을 가리키지 못하게 하기 위해서다."""
     if not RUN_ID_RE.match(run_id):
         raise HTTPException(400, "bad run id")
     return run_id
@@ -409,7 +408,7 @@ def _check_id(run_id: str) -> str:
 
 def _sse(event: str, data: Any) -> bytes:
     """SSE 이벤트 하나(``event:`` + ``data:`` JSON + 빈 줄)를 바이트로 만든다.
-    한글을 그대로 내보내려고 ``ensure_ascii=False``를 쓰고, NaN이나 무한대는 브라우저가 읽도록 null로 쓴다."""
+    한글은 그대로 내보낸다(``ensure_ascii=False``). NaN이나 무한대는 브라우저가 읽을 수 있게 null로 쓴다."""
     return f"event: {event}\ndata: {finite_dumps(data, ensure_ascii=False, default=str)}\n\n".encode()
 
 
@@ -427,7 +426,7 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
         if callable(close):
             try:
                 close()
-            except ValueError:      # "generator already executing"이면 스레드가 next()를 실행 중이고 곧 스스로 끝난다
+            except ValueError:      # "generator already executing"이면 스레드가 next()를 실행 중이다. 곧 스스로 끝난다
                 pass
 
 
@@ -444,7 +443,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
                      max_parallel=max_parallel)
-    # 취약점 조치는 이관과 같은 기본 설정을 쓴다. in-process에서만 이 프로세스의 작업 스레드로 실행하고,
+    # 취약점 조치는 이관과 같은 기본 설정을 쓴다. in-process에서만 이 프로세스의 작업 스레드로 실행한다.
     # Job 모드에서는 빌드 파드가 실행한 결과를 보여 주고 재개 요청만 받는다
     from sbmig.remediations.api import create_router as create_remediation_router
     from sbmig.remediations.service import RemediationManager
@@ -460,7 +459,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     else:
         access = "no token: loopback clients only"
 
-    # SSE 스트림마다 스레드를 하나 쓰므로 시작할 때 스레드 한도를 늘린다.
+    # SSE 스트림마다 스레드를 하나 쓴다. 그래서 시작할 때 스레드 한도를 늘린다.
     # 종료할 때는 이관에 중지를 요청하고 남은 Maven, OpenRewrite 프로세스를 강제 종료한다
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -476,7 +475,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                         "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",
                         OPEN_ENV)
         yield
-        # 뒤의 RunManager.shutdown이 남은 Maven을 종료하므로 조치를 먼저 정리한다
+        # 조치를 먼저 정리한다. 뒤의 RunManager.shutdown이 남은 Maven을 종료하기 때문이다
         log.info("remediations shut down: %s", rem_mgr.shutdown())
         info = mgr.shutdown()
         log.info("sbmig web UI shut down: %s", info)
@@ -521,10 +520,10 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                 # 기본 설정이 사내 프레임워크를 지정하면 화면이 업로드 전에 줄인 범위를 알린다
                 "framework": mgr.framework_info()}
 
-    # 화면이 슬롯 부족 알림과 대기 순번을 표시할 수 있도록 실행 목록과 함께 동시 실행 현황을 반환한다
+    # 실행 목록과 함께 동시 실행 현황을 반환한다. 화면이 슬롯 부족 알림과 대기 순번을 보여 줄 때 쓴다
     @app.get("/api/runs")
     def runs(days: str | None = None, keep: str | None = None) -> Any:
-        # 최근 며칠 안의 실행만 보낸다. 음이 아닌 정수만 받고, 0이나 생략이면 전체를 보낸다
+        # 최근 며칠 안의 실행만 보낸다. 음이 아닌 정수만 받는다. 0이나 생략이면 전체를 보낸다
         n = 0
         if days is not None:
             if not re.fullmatch(r"\d{1,6}", days):
@@ -537,7 +536,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     @app.get("/api/threads", response_class=PlainTextResponse)
     def threads() -> str:
         """모든 스레드의 스택을 문자열로 반환하고 ``<out>/threads-<ts>.txt``에도 기록한다.
-        Windows에는 SIGUSR1이 없으므로 멈춘 위치를 확인할 때 쓴다."""
+        Windows에는 SIGUSR1이 없다. 그래서 멈춘 위치를 확인할 때 쓴다."""
         from sbmig.core.diag import dump_threads, thread_dump_text
         p = dump_threads(mgr.out_dir)
         return (f"# written to {p}\n" if p else "") + thread_dump_text()
@@ -549,7 +548,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         def too_large() -> JSONResponse:
             return JSONResponse({"error": f"zip too large (max {describe_max_upload(max_upload)})"}, status_code=413)
 
-        # 잘못된 값으로 1 GB를 다 받은 뒤에 거절하지 않도록 실행 방식은 본문을 받기 전에 확인한다
+        # 실행 방식은 본문을 받기 전에 확인한다. 잘못된 값으로 1 GB를 다 받은 뒤에 거절하지 않기 위해서다
         try:
             flow = check_flow(flow)
         except ValueError as e:
@@ -568,7 +567,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         if no_space:
             log.warning("upload refused: %s", no_space)
             return JSONResponse({"error": no_space}, status_code=507)
-        # 1 GB 가까운 zip을 메모리에 올리지 않도록 ``_uploads/.incoming-*.part``에 스트리밍으로 기록하면서
+        # zip을 메모리에 올리지 않고 ``_uploads/.incoming-*.part``에 스트리밍으로 기록한다. 1 GB 가까운 파일도 온다
         # 조각마다 크기 상한과 zip 서명(PK)을 확인한다. 거부된 업로드 파일은 마지막에 지운다
         tmp = mgr.incoming_path()
         size, head = 0, b""
@@ -611,21 +610,22 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     def events(run_id: str):
         if not mgr.status(_check_id(run_id))["exists"]:
             return JSONResponse({"error": "unknown run"}, status_code=404)
-        # 앞단 프록시(nginx 등)가 이벤트를 모았다가 한꺼번에 보내지 않도록 X-Accel-Buffering: no를 붙인다
+        # X-Accel-Buffering: no를 붙인다. 앞단 프록시(nginx 등)가 이벤트를 모았다가 한꺼번에 보내면 안 된다
         return StreamingResponse(_stream(mgr.events(run_id)), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
-    # 중지는 그래프 노드 사이에서만 적용되므로 진행 중인 Maven 빌드나 LLM 호출은 끊기지 않는다
+    # 중지는 그래프 노드 사이에서만 적용된다. 진행 중인 Maven 빌드나 LLM 호출은 끊기지 않는다
     @app.post("/api/runs/{run_id}/stop")
     def stop(run_id: str) -> dict:
         return {"stopped": mgr.stop(_check_id(run_id))}
 
     @app.get("/api/runs/{run_id}/files/{name}")
     def files(run_id: str, name: str, download: str | None = None):
-        # 경로 조작을 막으려고 SERVED_FILES에 있는 이름만 내려주고, zip, csv, jsonl은 첨부 파일로 내려준다
+        # SERVED_FILES에 있는 이름만 내려준다(경로 조작 방지). zip, csv, jsonl은 첨부 파일로 내려준다
         if name not in SERVED_FILES:
             return JSONResponse({"error": "unknown file"}, status_code=404)
-        # 마지막 마스킹이 남은 실행은 기록할 때 마스킹되는 sbmig.log와 journal.jsonl만 내주고 나머지는 409로 막는다
+        # 마지막 마스킹이 남은 실행은 sbmig.log와 journal.jsonl만 내준다. 나머지는 409다
+        # 두 파일은 기록할 때 마스킹된다
         rid = _check_id(run_id)
         if mgr.file_withheld(rid, name):
             return JSONResponse({"error": f"{name} is available once the run has finished (its outputs are redacted "
@@ -649,7 +649,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
 
 # ``uvicorn sbmig.web.app:app``이 쓰는 앱 객체는 처음 접근할 때 만든다(PEP 562 ``__getattr__``).
-# ``sbmig serve``는 자기 인자로 create_app을 호출하므로, import 때 기본 경로로 앱을 만들면 시작 검증이 먼저 실패한다
+# import할 때 기본 경로로 앱을 만들지 않는다. 그러면 ``sbmig serve``가 자기 인자로 create_app을 호출하기 전에
+# 시작 검증이 먼저 실패한다
 _module_app: FastAPI | None = None
 
 
