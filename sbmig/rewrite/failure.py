@@ -1,9 +1,10 @@
-"""실패한 OpenRewrite 실행을 인수인계 줄로 알리는 문구를 만드는 모듈.
-- 오케스트레이터가 중단하지 않고 이어 가는 변환 실패에 플래그 ``rewrite-failed``와 이 줄을 남긴다
-- 원인 문장에서 비밀 값과 서버 경로를 지운다
+"""OpenRewrite 실행이 실패했을 때 인수인계에 남길 문장을 만드는 모듈.
 
 Contract: docs/INTERFACES.md "v2.1z-ay". Secrets = URL credentials and the registered secrets of
 `sbmig.core.scrub`; the project / run folders become relative, any other absolute path keeps its file name.
+
+When a conversion fails and the orchestrator goes on, it sets the flag ``rewrite-failed`` and adds this line.
+The reason sentence loses its secrets and server paths.
 """
 from __future__ import annotations
 
@@ -24,11 +25,12 @@ _WIN_ABS_RE = re.compile(r"\b[A-Za-z]:\\(?:[^\s\\]+\\)+(?P<name>[^\s\\]+)")
 
 
 def recipe_set_names(recipe_ids: Iterable[str], cfg: Any) -> list[str]:
-    """레시피 id 목록을 설정의 레시피 세트 이름으로 바꾼다. 어느 세트에도 없는 id는 마지막 이름 조각을 쓴다."""
+    """레시피 id 목록을 설정의 레시피 세트 이름으로 바꾼다.
+    어느 세트에도 없는 id는 마지막 점 뒤의 이름을 쓴다."""
     from sbmig.plan.catalog import config_recipe_sets
     try:
         sets = config_recipe_sets(cfg)
-    except Exception:  # noqa: BLE001 - 설정이 없으면 id 이름으로 대신한다
+    except Exception:  # noqa: BLE001 - 세트를 읽지 못하면 id의 이름으로 대신한다
         sets = {}
     out: list[str] = []
     for rid in recipe_ids:
@@ -40,7 +42,7 @@ def recipe_set_names(recipe_ids: Iterable[str], cfg: Any) -> list[str]:
 
 
 def clean_reason(error: str, roots: Iterable[str] = ()) -> str:
-    """원인 문장의 첫 줄에서 비밀 값과 절대 경로를 지우고 길이를 줄여 반환한다."""
+    """원인 문장의 첫 줄만 남기고 비밀 값과 절대 경로를 지운다. 너무 길면 잘라서 반환한다."""
     text = scrub(str(error or "")).strip().splitlines()
     line = text[0].strip() if text else ""
     if not line:

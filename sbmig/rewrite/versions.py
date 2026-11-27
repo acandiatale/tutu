@@ -1,9 +1,11 @@
-"""레시피 BOM(``rewrite-recipe-bom``)이나 설정의 개별 지정에서 레시피 아티팩트(``g:a``)의 버전을 정하는 모듈.
-변환 단계에서 ``OpenRewriteRunner._run_once``가 이 버전을 받아 ``-Drewrite.recipeArtifactCoordinates``로
-넘기며, 결과는 ``logs/rewrite-artifact-versions.json``에 캐시한다.
-- BOM pom이 로컬 저장소에 없으면 ``dependency:get``으로 받고 ``<dependencyManagement>``를 직접 읽는다.
-  import된 BOM은 로컬에 있을 때만 낮은 우선순위로 합친다
-- BOM은 3.37.0으로 고정한다. 3.38.0은 Central에 아직 없는 버전을 가리켜 모든 실행이 실패한다
+"""레시피 아티팩트(``g:a``)의 버전을 정하는 모듈.
+레시피 BOM(``rewrite-recipe-bom``)에서 읽고, 설정에 개별 지정이 있으면 그 값을 쓴다.
+
+``OpenRewriteRunner._run_once`` passes these versions as ``-Drewrite.recipeArtifactCoordinates``; the result
+is cached in ``logs/rewrite-artifact-versions.json``. A BOM pom missing from the local repository is fetched
+with ``dependency:get`` and its ``<dependencyManagement>`` is read directly. An imported BOM is merged, at a
+lower priority, only when it is in the local repository. The BOM is pinned to 3.37.0: 3.38.0 points at
+versions Central does not have yet, so every run fails.
 
 ``${...}`` in the BOM is interpolated from its own ``<properties>`` and ``project.*`` / ``pom.*``.
 """
@@ -28,8 +30,8 @@ DEPENDENCY_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1"
 
 
 class RecipeArtifactError(RuntimeError):
-    """BOM을 받지 못했고 개별 지정도 없어 레시피 아티팩트 버전을 정할 수 없을 때 던지는 예외.
-    러너는 이를 변환 실패로 기록하고 실행을 계속한다."""
+    """레시피 아티팩트 버전을 정할 수 없을 때 던지는 예외. BOM을 받지 못했고 개별 지정도 없는 경우다.
+    러너는 이 예외를 변환 실패로 기록하고 실행을 계속한다."""
 
 
 def pom_path(local_repo: Path, group: str, artifact: str, version: str) -> Path:
@@ -60,7 +62,7 @@ def _interp(value: str, props: Mapping[str, str]) -> str:
 
 def parse_bom_versions(path: Path, *, local_repo: Path | None = None, _depth: int = 0) -> dict[str, str]:
     """BOM pom의 관리 버전을 {"g:a": 버전}으로 읽는다.
-    import된 BOM은 로컬에 있으면 3단계까지 따라가 합치고 직접 선언한 값을 우선한다."""
+    import된 BOM은 로컬에 있으면 3단계까지 따라가 합친다. 직접 선언한 값이 우선이다."""
     root = _strip_ns(ET.parse(str(path)).getroot())
     props: dict[str, str] = {}
     for tag in ("version", "groupId", "artifactId"):
@@ -99,8 +101,8 @@ def ensure_bom(cfg: Config, mvn_env: Mapping[str, str], *, work_dir: Path | None
                version: str | None = None, timeout_s: float = 300) -> Path:
     """레시피 BOM pom이 로컬 저장소에 있도록 하고 그 경로를 반환한다.
     없으면 ``dependency:get``으로 받고, 그래도 없으면 RecipeArtifactError를 던진다.
-    종료 코드가 아니라 파일이 있는지로 판단한다.
-    깨진 프로젝트 pom.xml에 영향을 받지 않도록 프로젝트 밖(``work_dir``)에서 실행한다.
+    받았는지는 종료 코드가 아니라 파일이 있는지로 판단한다.
+    프로젝트 밖(``work_dir``)에서 실행한다. 프로젝트 pom.xml이 깨져 있어도 영향을 받지 않는다.
 
     ``dependency:get`` may exit non-zero although the BOM pom itself was downloaded (e.g. one of its imported
     BOMs is missing upstream).
@@ -131,8 +133,8 @@ def resolve_recipe_artifact_versions(cfg: Config, mvn_env: Mapping[str, str], *,
                                      cache_path: Path | None = None,
                                      work_dir: Path | None = None) -> dict[str, str]:
     """``artifacts``(기본 ``openrewrite.recipe_artifacts``)의 버전을 {"g:a": 버전}으로 반환한다.
-    ``openrewrite.recipe_artifact_versions`` 개별 지정을 BOM 관리 버전보다 우선한다.
-    BOM에서 읽은 버전은 ``cache_path``에 캐시하고, 버전이 없는 아티팩트가 있으면 RecipeArtifactError를 던진다.
+    ``openrewrite.recipe_artifact_versions``의 개별 지정이 BOM 관리 버전보다 우선한다.
+    BOM에서 읽은 버전은 ``cache_path``에 캐시한다. 버전을 정하지 못한 아티팩트가 있으면 RecipeArtifactError를 던진다.
 
     The cache is reused only when its ``bom_version`` matches and it holds every wanted artifact.
     """

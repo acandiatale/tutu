@@ -1,11 +1,12 @@
-"""``rewrite-maven-plugin``의 run / dryRun으로 레시피를 적용하는 변환 단계 실행기(``RewriteRunnerLike``) 모듈.
-계획의 ``transform.rewrite`` 단계에서 오케스트레이터가 호출한다.
-빌드는 하지 않고 바뀐 내용은 ``rewrite: …`` 커밋이 된다.
-레시피 id는 ``knowledge/recipes/catalog.yml``에서 관리하고 이 모듈은 받은 id를 그대로 쓴다.
-- 힙이 부족하면 ``oom_retry_jvm_args``로 한 번, 다운로드에 실패하면 기다렸다가 ``download_retry``번 다시 실행한다
-- 캐시된 해결 실패면 ``-U``로 한 번 더 실행한다
-- 그래도 fork된 ``compile``에서 실패하면(컴파일되지 않는 프로젝트) ``runNoFork``로 한 번 더 실행한다
-- 변환이 실패해도 실행이 빌드로 이어지도록 예외 없이 RewriteResult를 반환한다
+"""``rewrite-maven-plugin``으로 OpenRewrite 레시피를 적용하는 모듈. 빌드는 하지 않는다.
+
+``OpenRewriteRunner`` implements ``RewriteRunnerLike``; the orchestrator calls it in the plan's
+``transform.rewrite`` step and the changes become the ``rewrite: …`` commit. Recipe ids are kept in
+``knowledge/recipes/catalog.yml``; the ids passed in are used as they are. Retries: once with
+``oom_retry_jvm_args`` when the heap runs out, up to ``download_retry`` times after a wait when a download
+fails, once with ``-U`` for a cached resolution failure, and once with ``runNoFork`` when the forked
+``compile`` still fails (a project that does not compile). A failed conversion returns a RewriteResult and
+raises nothing, so the run goes on to the build.
 """
 from __future__ import annotations
 
@@ -34,8 +35,8 @@ PLUGIN_GA = "org.openrewrite.maven:rewrite-maven-plugin"
 MIGRATE_JAVA = "org.openrewrite.recipe:rewrite-migrate-java"
 SPRING = "org.openrewrite.recipe:rewrite-spring"
 
-# 레시피 id 접두어별로 그 레시피를 담은 아티팩트(가장 긴 접두어 우선)
-# org.openrewrite.java.*, org.openrewrite.maven.* 같은 핵심 레시피는 플러그인에 들어 있어 아티팩트가 필요 없다
+# 레시피 id 접두어별로 그 레시피가 들어 있는 아티팩트. 가장 긴 접두어가 우선이다
+# org.openrewrite.java.*, org.openrewrite.maven.* 같은 핵심 레시피는 플러그인에 들어 있다. 아티팩트가 필요 없다
 RECIPE_PREFIX_ARTIFACTS: dict[str, str | None] = {
     "org.openrewrite.java.migrate.": MIGRATE_JAVA,
     "org.openrewrite.java.spring.": SPRING,
@@ -66,7 +67,7 @@ _NOT_FOUND_RE = re.compile(r"(Recipe\(s\) not found: .*|Could not find recipe.*|
                            r"Recipes not found:.*|Did you mean: .*)")
 _VALIDATION_RE = re.compile(r"Recipe validation error in (?P<recipe>\S+) for property (?P<prop>.+?)"
                             r"(?: \(in file:[^)]*\))?: (?P<msg>.*)$")
-# 플러그인이 파싱하지 못한 파일에는 레시피가 적용되지 않았으므로 보고서에 남기기 위해 찾는다
+# 플러그인이 파싱하지 못한 파일을 찾는다. 그 파일에는 레시피가 적용되지 않았으니 보고서에 남긴다
 # rewrite-maven-plugin 6.46.1 prints "There were problems parsing <path>" per file (sometimes with text after
 # the path) and/or the summary "There were problems parsing some source files[, run with --errors …]".
 _PARSE_PROBLEM_RE = re.compile(r"There were problems parsing (?P<rest>.*)$")
@@ -81,12 +82,12 @@ _OR_WARNINGS_RE = re.compile(r"^\[WARNING\] Failed to download .*(?:\n  - .*)*|^
                              r"repository .*$", re.MULTILINE)
 # 오류 문장 뒤에 붙인 pom 부분의 시작이다. 재시도 판단에서 이 부분을 뺀다
 _POM_PART_RE = re.compile(r"(?:not reachable: |Unable to download POM: )")
-# 연결하지 못한 저장소의 이유 중 기다리면 풀릴 수 있는 것이다. 이름만 남은 이유는 DNS 실패다
+# 저장소에 연결하지 못한 이유 중 기다리면 풀릴 수 있는 것. 호스트 이름만 남은 이유는 DNS 실패다
 _ACCESS_PROBLEM_RE = re.compile(r"timed out|timeout|reset|UnknownHost|unknown host|nodename nor servname|"
                                 r"Name or service not known|name resolution|^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$",
                                 re.IGNORECASE)
 _HTTP_4XX_RE = re.compile(r"HTTP 4\d\d")
-# 플러그인이 pom을 받지 못했을 때 남기는 문장이다. pom 부분이 같은 내용을 더 자세히 말하므로 뺀다
+# 플러그인이 pom을 받지 못했을 때 남기는 문장. pom 부분이 같은 내용을 더 자세히 말하므로 뺀다
 _PARSE_FAIL_RE = re.compile(r"plugin_execution: (?:Failed to parse or resolve the Maven POM file or one of its "
                             r"dependencies; We can not reliably continue without this information\.\s*)+(?:; |$)")
 # 연결 실패 이유를 짧은 말로 줄인다
@@ -200,7 +201,7 @@ def recipe_artifact_for(recipe_id: str) -> str | None:
 
 
 def catalog_recipe_files(recipes: Sequence[RecipeRef], cfg: Config) -> list[Path]:
-    """카탈로그에서 ``file``이 지정된 레시피의 선언형 레시피 파일 경로를 요청 순서대로 중복 없이 반환한다."""
+    """카탈로그에서 ``file``이 지정된 레시피의 파일 경로를 반환한다. 요청 순서대로, 중복 없이 반환한다."""
     from sbmig.plan.catalog import default_catalog, recipe_file_path
 
     cat = default_catalog(cfg)
@@ -214,8 +215,8 @@ def catalog_recipe_files(recipes: Sequence[RecipeRef], cfg: Config) -> list[Path
 
 class OpenRewriteRunner:
     """OpenRewrite 플러그인을 실행하고 결과를 RewriteResult로 반환하는 클래스.
-    실행이 실패해도 예외를 던지지 않고, 추가 레시피 파일이 없거나 YAML이 깨졌을 때만 예외를 던진다.
-    ``kb``는 오케스트레이터 생성자와 맞추기 위해 받기만 한다.
+    실행이 실패해도 예외를 던지지 않는다. 추가 레시피 파일이 없거나 YAML이 깨졌을 때만 던진다.
+    ``kb``는 받기만 하고 쓰지 않는다. 오케스트레이터의 생성자 호출과 맞추려는 것이다.
 
     The only raises come from `compose` (FileNotFoundError / ValueError for an extra recipe file)."""
 
@@ -225,14 +226,14 @@ class OpenRewriteRunner:
         self.cfg = cfg
         self.kb = kb
         self.timeout_s = timeout_s if timeout_s is not None else float(cfg.openrewrite.timeout_minutes) * 60.0
-        # 합성한 rewrite-N.yml과 레시피 버전 캐시는 rewrite 로그 옆에 둔다
+        # 합성한 rewrite-N.yml과 레시피 버전 캐시는 rewrite 로그와 같은 폴더에 둔다
         self.work_dir = getattr(ws, "logs_dir", None) or ws.run_dir / "logs"
         self._sleep = time.sleep                 # 다운로드 재시도 대기. 테스트가 기록용 함수로 바꾼다
 
     # ------------------------------------------------------------------ 레시피 합성
     def compose(self, recipes: Sequence[RecipeRef], extra_recipe_files: Iterable[Path] = ()) -> tuple[Path, str]:
-        """이번 실행의 rewrite.yml을 ``logs/rewrite-<n>.yml``에 새 번호로 저장하고 (경로, 텍스트)를 반환한다.
-        앞 실행의 파일을 덮어쓰지 않으므로 재시도마다 무엇을 실행했는지 남는다.
+        """이번 실행의 rewrite.yml을 새 번호로 ``logs/rewrite-<n>.yml``에 저장하고 (경로, 텍스트)를 반환한다.
+        앞 실행의 파일을 덮어쓰지 않는다. 그래서 재시도마다 무엇을 실행했는지 남는다.
         카탈로그 항목에 ``file``이 있는 레시피는 그 파일도 함께 넣는다."""
         files = list(extra_recipe_files) + catalog_recipe_files(recipes, self.cfg)
         text = compose_rewrite_yaml(recipes, extra_files=files, target=self.cfg.target)
@@ -247,8 +248,8 @@ class OpenRewriteRunner:
 
     def required_artifacts(self, recipes: Sequence[RecipeRef], composed_text: str) -> list[str]:
         """필요한 레시피 아티팩트 g:a 목록을 구한다.
-        ``RecipeRef.artifact``에 지정된 것과 내장 id에서 추론한 것을 담는다. 합성 파일에 선언된 레시피면
-        rewrite-migrate-java, rewrite-spring과 그 recipeList가 가리키는 아티팩트도 담는다."""
+        ``RecipeRef.artifact``에 지정된 것과 레시피 id에서 추론한 것을 담는다.
+        합성 파일에 선언된 레시피면 rewrite-migrate-java, rewrite-spring, 그 recipeList가 가리키는 아티팩트도 담는다."""
         docs = recipe_documents(composed_text)
         needed: list[str] = []
 
@@ -279,7 +280,7 @@ class OpenRewriteRunner:
     # ------------------------------------------------------------------ 명령
     def env(self, jvm_args: Sequence[str] | None = None) -> dict[str, str]:
         """mvn 환경 변수를 만들고 MAVEN_OPTS에 ``jvm_args``를 더한다.
-        기본값은 ``openrewrite.jvm_args``(``-Xmx4g``)이고 OOM 재시도는 ``oom_retry_jvm_args``를 쓴다."""
+        기본값은 ``openrewrite.jvm_args``(``-Xmx4g``)다. OOM 재시도는 ``oom_retry_jvm_args``를 쓴다."""
         env = mvn_env(self.cfg)
         args = list(self.cfg.openrewrite.jvm_args if jvm_args is None else jvm_args)
         opts = " ".join(x for x in [env.get("MAVEN_OPTS", "").strip(), *args] if x)
@@ -291,9 +292,9 @@ class OpenRewriteRunner:
                 fork: bool | None = None, extra_args: Iterable[str] = ()) -> list[str]:
         """플러그인 명령을 만든다.
         ``fork=False``면 ``runNoFork``, ``fork=True``면 ``run``, None이면 설정 ``plugin_goal``을 쓴다.
-        ``runNoFork``는 compile 생명주기를 fork하지 않으므로 컴파일되지 않는 프로젝트에서도 동작한다.
-        활성 레시피는 합성 레시피 하나이며 잘못된 레시피는 BUILD FAILURE로 끝난다.
-        JSP / HTML은 XML 파서 경고만 내므로 ``openrewrite.exclusions``로 뺀다."""
+        ``runNoFork``는 compile 생명주기를 fork하지 않는다. 그래서 컴파일되지 않는 프로젝트에서도 동작한다.
+        활성 레시피는 합성 레시피 하나다. 잘못된 레시피가 있으면 BUILD FAILURE로 끝난다.
+        JSP, HTML은 XML 파서 경고만 낸다. ``openrewrite.exclusions``로 뺀다."""
         if dry_run:
             goal = "dryRun" if fork is not False else "dryRunNoFork"
         elif fork is None:
@@ -317,9 +318,9 @@ class OpenRewriteRunner:
     # ------------------------------------------------------------------ 결과 읽기
     @staticmethod
     def parse_changed_files(text: str, *, dry_run: bool = False) -> list[str]:
-        """플러그인 로그의 'Changes have been made to …' / 'Generated new file' / 'Deleted file' / 'File has
-        been moved' 줄(dryRun은 'These recipes would …')에서 바뀐 파일 목록을 만든다.
-        역슬래시는 슬래시로 바꾸고 중복은 없앤다."""
+        """플러그인 로그에서 바뀐 파일 목록을 만든다.
+        'Changes have been made to …', 'Generated new file', 'Deleted file', 'File has been moved' 줄을 읽는다.
+        dryRun이면 'These recipes would …' 줄을 읽는다. 역슬래시는 슬래시로 바꾸고 중복은 없앤다."""
         out: list[str] = []
         for line in text.splitlines():
             line = line.rstrip()
@@ -341,8 +342,8 @@ class OpenRewriteRunner:
 
     @staticmethod
     def parse_problems(text: str, *, root: Path | str | None = None) -> list[str]:
-        """플러그인이 파싱하지 못했다고 보고한 파일('There were problems parsing <path>')을 로그 순서대로
-        중복 없이 반환한다. 역슬래시는 슬래시로 바꾸고 ``root`` 아래 절대 경로는 상대 경로로 바꾼다.
+        """플러그인이 파싱하지 못했다고 보고한 파일('There were problems parsing <path>')을 반환한다.
+        로그 순서대로, 중복 없이 반환한다. 역슬래시는 슬래시로, ``root`` 아래 절대 경로는 상대 경로로 바꾼다.
         요약 줄만 있으면 ``[PARSE_PROBLEMS_UNKNOWN]``을, 아무것도 없으면 빈 리스트를 반환한다."""
         base = (str(root).replace("\\", "/").rstrip("/") + "/") if root else None
         files: list[str] = []
@@ -370,8 +371,9 @@ class OpenRewriteRunner:
 
     @staticmethod
     def parse_recipe_attribution(text: str) -> dict[str, list[str]]:
-        """레시피 id마다 그 레시피가 바꾼 파일을 모은다. 'Changes have been made to <f> by:' 아래 들여쓴
-        레시피 줄을 읽으며 합성 레시피와 그 안의 기본 레시피를 모두 기록한다."""
+        """레시피 id마다 그 레시피가 바꾼 파일을 모은다.
+        'Changes have been made to <f> by:' 아래 들여쓴 레시피 줄을 읽는다.
+        합성 레시피와 그 안의 기본 레시피를 모두 기록한다."""
         out: dict[str, list[str]] = {}
         current: str | None = None
         for raw in text.splitlines():
@@ -395,7 +397,7 @@ class OpenRewriteRunner:
 
     @staticmethod
     def validation_problems(text: str) -> tuple[list[str], list[str]]:
-        """플러그인의 'Recipe validation error' 줄에서 (모르는 레시피 id 목록, 그 밖의 검증 메시지)를 꺼낸다."""
+        """플러그인의 레시피 검증 오류 줄을 읽는다. (모르는 레시피 id 목록, 그 밖의 검증 메시지)를 반환한다."""
         unknown: list[str] = []
         other: list[str] = []
         for line in text.splitlines():
@@ -416,7 +418,7 @@ class OpenRewriteRunner:
 
     def _error_text(self, text: str) -> str:
         """실패 이유를 한 줄로 만든다.
-        레시피 검증 문제가 있으면 그것을, 없으면 Maven 로그 파서가 찾은 오류 앞 10개를 쓴다.
+        레시피 검증 문제가 있으면 그것을 쓴다. 없으면 Maven 로그 파서가 찾은 오류를 앞에서 10개까지 쓴다.
         플러그인이 pom을 받지 못했으면 연결하지 못한 저장소, pom 좌표, 물어본 저장소를 맨 앞에 쓴다.
 
         With a pom failure: `pom_failure_text`, then ` | ` and the parser's other messages, without the
@@ -437,7 +439,7 @@ class OpenRewriteRunner:
         poms = pom_failure_text(text)
         if not poms:
             return head
-        # 한 줄 요약이 300자에서 잘리므로 pom 부분이 같은 말을 하는 플러그인 문장은 빼고 앞에 둔다
+        # 한 줄 요약은 300자에서 잘린다. pom 부분을 앞에 두고, 같은 말을 하는 플러그인 문장은 뺀다
         head = _PARSE_FAIL_RE.sub("", head).strip().rstrip(";")
         return poms + (f" | {head}" if head else "")
 
@@ -452,15 +454,17 @@ class OpenRewriteRunner:
             dry_run: bool = False, label: str = "", fork: bool | None = None,
             extra_args: Iterable[str] = ()) -> RewriteResult:
         """재시도를 포함해 변환을 한 번 실행한다.
-        ``extra_args``(예 ``-pl order-service -am``)는 reactor 루트에서 대상 하나만 실행해 형제 모듈을 로컬
-        저장소가 아니라 reactor에서 찾게 한다.
-        재시도 순서: HTTP 차단 미러면 재시도 없음 -> OOM이면 큰 힙으로 1회, 아니면 다운로드 실패 시 대기 후 재시도
-        -> 캐시된 해결 실패면 -U로 1회 -> 그래도 fork된 compile에서 실패하면 runNoFork 1회."""
-        self._extra_args = list(extra_args)      # 이 호출의 모든 _run_once가 쓴다(OOM, runNoFork 재시도 포함)
+        ``extra_args``(예: ``-pl order-service -am``)로 reactor 루트에서 대상 모듈 하나만 실행한다.
+        그러면 형제 모듈을 로컬 저장소가 아니라 reactor에서 찾는다.
+        재시도 순서는 다음과 같다. HTTP 차단 미러에 막혔으면 재시도하지 않는다.
+        - OOM이면 큰 힙으로 1회, 아니면 다운로드 실패일 때 기다렸다가 다시 실행한다
+        - 캐시된 해결 실패면 -U로 1회
+        - 그래도 fork된 compile에서 실패하면 runNoFork로 1회"""
+        self._extra_args = list(extra_args)      # 이 호출 안의 모든 _run_once가 쓴다(OOM, runNoFork 재시도 포함)
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
                              label=label, fork=fork)
         jvm_args: list[str] | None = None
-        # Maven의 HTTP 차단 미러에 막히면 어떤 재시도로도 해결되지 않으므로 바로 반환하고 오케스트레이터가 중단한다
+        # Maven의 HTTP 차단 미러에 막혔다. 재시도로는 풀리지 않는다. 바로 반환하고, 오케스트레이터가 중단한다
         if not res.ok and self._http_blocked(res):
             log.warning("rewrite: Maven's HTTP repository blocker refused a repository — no retry (fix the Maven settings)")
             return res
@@ -473,13 +477,13 @@ class OpenRewriteRunner:
         elif not res.ok and self.cfg.openrewrite.download_retry > 0 and self._download_failure(res):
             res = self._download_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
                                        dry_run=dry_run, label=label, fork=fork)
-        # 모델 단계의 해결 실패는 오래된 `*.lastUpdated` 표식 때문일 수 있으므로 -U로 한 번만 다시 실행한다
+        # 모델 단계의 해결 실패는 오래된 `*.lastUpdated` 표식 때문일 수 있다. -U로 한 번만 다시 실행한다
         # 여기서 막히면 레시피가 실행되지 않는다
         if not res.ok and not self._download_failure(res) and self._may_force_update() and self._force_update_hits(res):
             res = self._force_update_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
                                            dry_run=dry_run, label=label, fork=fork, jvm_args=jvm_args)
-        # run은 레시피 전에 compile을 fork하므로 컴파일되지 않는 프로젝트에서는 레시피가 실행되지 않는다
-        # runNoFork는 해석된 의존성 classpath로 소스를 파싱하므로 그것으로 다시 실행한다
+        # run은 레시피 전에 compile을 fork한다. 컴파일되지 않는 프로젝트면 레시피까지 가지 못한다
+        # runNoFork는 해석된 의존성 classpath로 소스를 파싱한다. 그래서 runNoFork로 다시 실행한다
         if not res.ok and res.forked and fork is not False and res.error and "compile" in res.error.lower():
             log.info("rewrite: forked run failed in compile → retrying with runNoFork")
             retry = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
@@ -515,9 +519,9 @@ class OpenRewriteRunner:
         return bool(self._OOM_RE.search(self._failure_text(res)))
 
     # ------------------------------------------------------------------ 다운로드 실패
-    # 실제로 없는 아티팩트는 기다려도 생기지 않으므로 전송 문제만 재시도한다
+    # 전송 문제만 재시도한다. 실제로 없는 아티팩트는 기다려도 생기지 않는다
     # 없는 아티팩트는 오케스트레이터의 부모 확인과 빌드 루프의 해결 오류 분류가 맡는다
-    # OpenRewrite의 "Failed to download" 경고는 성공한 실행에도 나오므로 재시도 조건이 아니다
+    # OpenRewrite의 "Failed to download" 경고는 재시도 조건이 아니다. 성공한 실행에도 나온다
     _DOWNLOAD_RE = re.compile(
         r"Could not transfer artifact|Transfer failed|status code: (?:429|5\d\d)|Too Many Requests|"
         r"Connection reset|Read timed out|Connection timed out|SocketTimeoutException|UnknownHostException|"
@@ -532,14 +536,14 @@ class OpenRewriteRunner:
         return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in args) and not self.cfg.build.offline
 
     def _force_update_hits(self, res: RewriteResult) -> list[str]:
-        """캐시된 해결 실패나 모델 단계 해결 실패의 좌표(``negative_cache_hits``)를 반환한다.
+        """캐시된 해결 실패나 모델 단계 해결 실패가 난 좌표를 반환한다(``negative_cache_hits``).
         없으면 빈 리스트를 반환한다."""
         return negative_cache_hits(self._failure_text(res))
 
     def _force_update_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
                             module: str | None, dry_run: bool, label: str, fork: bool | None,
                             jvm_args: Sequence[str] | None = None) -> RewriteResult:
-        """``-U``를 붙여 한 번 더 실행한다. 이 호출의 이후 재시도도 -U를 이어받는다.
+        """``-U``를 붙여 한 번 더 실행한다. 이 호출 안의 이후 재시도도 -U를 붙인다.
         끝내 실패하면 오류 앞에 ``force-update-retry: ``를 붙인다.
         저널에 ``rewrite_force_update_retry`` / ``rewrite_force_update_retry_result``를 기록한다."""
         hits = self._force_update_hits(first)
@@ -555,8 +559,8 @@ class OpenRewriteRunner:
         return res
 
     def _download_failure(self, res: RewriteResult) -> str | None:
-        """전송 문제로 실패했으면 그 문구를 반환하고, 아니면 None을 반환한다. 반환값은 저널의 ``reason``이 된다.
-        경고 줄로는 재시도하지 않는다. pom을 받지 못한 실패는 응답과 연결 실패 이유로만 판단한다.
+        """전송 문제로 실패했으면 그 문구를 반환한다. 아니면 None이다. 반환값은 저널의 ``reason``이 된다.
+        경고 줄만으로는 재시도하지 않는다. pom을 받지 못한 실패는 저장소의 응답과 연결 실패 이유로만 판단한다.
 
         Rule 6 of "v2.1z-ci". With an `Unable to download POM` in the output it alone decides: a tried repository
         whose answer is not `HTTP 4xx` (429 counts as a problem; a bare host name is a DNS failure), or a
@@ -605,7 +609,7 @@ class OpenRewriteRunner:
                 break
             again = self._download_failure(res)
             if not again:
-                break           # 이제는 다른 이유로 실패하므로 더 기다려도 소용없다
+                break           # 이제는 다른 이유로 실패한다. 더 기다려도 소용없다
             reason = again
         if not res.ok:
             res.error = f"download-retry: {res.error or 'rewrite run failed'}"
@@ -616,7 +620,7 @@ class OpenRewriteRunner:
     def _oom_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
                    module: str | None, dry_run: bool, label: str, fork: bool | None,
                    jvm_args: list[str]) -> RewriteResult:
-        """힙 부족(OutOfMemoryError / GC overhead)이면 ``oom_retry_jvm_args``로 한 번 더 실행한다.
+        """힙 부족(OutOfMemoryError, GC overhead)으로 실패한 실행을 ``oom_retry_jvm_args``로 한 번 더 실행한다.
         실패하면 오류 앞에 ``oom-retry``를 붙인다."""
         log.warning("rewrite: OutOfMemoryError → retrying once with MAVEN_OPTS %s", " ".join(jvm_args))
         self.ws.journal({"event": "rewrite_oom_retry", "recipes": first.recipes, "module": module,
@@ -636,8 +640,8 @@ class OpenRewriteRunner:
         """플러그인을 한 번 실행한다.
         rewrite.yml 생성 -> 레시피 아티팩트 버전 결정 -> 명령 실행(``run_logged``) 순서다.
         버전을 정하지 못하면 ok=False 결과를 반환한다.
-        exit 0, 'BUILD SUCCESS', 레시피 검증 문제 없음이 모두 맞아야 성공이다.
-        바뀐 파일은 로그에 나온 것과 실행 전 HEAD 이후의 git 변경(target/ 제외)을 합친다."""
+        exit 0이고, 'BUILD SUCCESS'가 나오고, 레시피 검증 문제가 없어야 성공이다.
+        바뀐 파일은 로그에 나온 것과 실행 전 HEAD 이후의 git 변경을 합친다. target/은 뺀다."""
         ids = [r.id for r in recipes]
         if not recipes:
             return RewriteResult(ok=True, recipes=[], dry_run=dry_run)
@@ -656,24 +660,24 @@ class OpenRewriteRunner:
             return res
         coords = [f"{ga}:{v}" for ga, v in versions.items()]
         cmd = self.command(config_path, coords, dry_run=dry_run, fork=fork, extra_args=getattr(self, "_extra_args", ()))
-        # Maven이 프로젝트 .mvn을 읽지 않으므로 maven.config의 -D / -P와 프로젝트 루트를 명령에 넣는다
+        # Maven은 프로젝트의 .mvn을 읽지 않는다. 그래서 maven.config의 -D, -P와 프로젝트 루트를 명령에 넣는다
         cmd = with_project_mvn(self.cfg, cmd, cwd, top=self.ws.root)
         goal = cmd[[i for i, c in enumerate(cmd) if c.startswith(PLUGIN_GA)][0]].rsplit(":", 1)[-1]
         forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()
         log.info("rewrite %s (%s)", ", ".join(ids), goal)
-        # OpenRewrite가 Maven과 같은 미러를 고르도록 번역한 settings 복사본을 이 호출 동안만 쓴다
-        # Maven은 MAVEN_ARGS를 명령 인자처럼 읽으므로 그 -D도 pom 값보다 우선한다
+        # 번역한 settings 복사본을 이 호출 동안만 쓴다. OpenRewrite가 Maven과 같은 미러를 고르게 하려는 것이다
+        # Maven은 MAVEN_ARGS를 명령 인자처럼 읽는다. 그래서 그 -D도 pom 값보다 우선한다
         defines = define_names([*cmd, *_split(env.get("MAVEN_OPTS", "")), *_split(env.get("MAVEN_ARGS", ""))])
         with openrewrite_settings(self.cfg, self.ws.root, defines) as prepared:
             cmd = self._with_settings_copy(cmd, prepared)
-            # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 같은 명령을 다시 실행한다
+            # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 만들어 두고 같은 명령을 다시 실행한다
             pr, log_path = run_logged_with_stubs(self.cfg, cmd, cwd=cwd, env=env, log_path=log_path,
                                                  timeout_s=self.timeout_s, journal=self.ws.journal,
                                                  memo=memo_for(self.ws), project_root=self.ws.root, runner=run_logged)
         out = pr.text
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in out
-        # 이전 플러그인은 잘못된 레시피에도 성공으로 끝나므로 로그의 검증 문제로 실패 처리한다
+        # 이전 플러그인은 잘못된 레시피에도 성공으로 끝난다. 로그에 검증 문제가 있으면 실패로 본다
         if ok and any(self.validation_problems(out)):
             ok = False
         prefix = (module.rstrip("/") + "/") if module else ""
@@ -686,7 +690,7 @@ class OpenRewriteRunner:
         changed = sorted({c for c in changed if c and not c.startswith("target/") and "/target/" not in c})
         parse_problems = []
         for p in self.parse_problems(out, root=cwd):
-            if _is_abs(p):          # 모듈 폴더 밖의 경로는 프로젝트 루트 아래면 루트 기준 상대 경로로 바꾼다
+            if _is_abs(p):          # 모듈 폴더 밖의 경로다. 프로젝트 루트 아래면 루트 기준 상대 경로로 바꾼다
                 p = self.parse_problems(f"There were problems parsing {p}", root=self.ws.root)[0]
             elif p != PARSE_PROBLEMS_UNKNOWN:
                 p = prefix + p
@@ -711,7 +715,8 @@ class OpenRewriteRunner:
         return res
 
     def _with_settings_copy(self, cmd: list[str], prepared: PreparedSettings) -> list[str]:
-        """그림자 미러를 더한 settings 복사본이 있으면 명령의 ``-s`` 값을 그 복사본으로 바꾸고, 결과를 실행마다 한 번 기록한다.
+        """그림자 미러를 더한 settings 복사본이 있으면 명령의 ``-s`` 값을 그 복사본으로 바꾼다.
+        번역 결과는 실행마다 한 번 기록한다.
         복사본이 없으면 명령을 그대로 반환한다.
 
         Journal `rewrite_settings {translated, shadows: [{repository, mirror}], skipped: [{repository, reason}],

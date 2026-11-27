@@ -1,7 +1,5 @@
 """OpenRewrite 호출에 넘길 Maven settings 복사본을 만드는 모듈.
-- 복사본은 원본에 그림자 미러만 더한다. Maven은 그림자 미러를 어느 저장소에도 쓰지 않으므로 Maven의 동작은 그대로다
-- OpenRewrite는 ``mirrorOf``의 첫 ``:`` 앞을 버리고 읽으므로 ``sbmig:<저장소 id>``를 그 저장소의 미러로 쓴다
-- 원본 바이트는 그대로 두고 요소를 끼워 넣기만 한다. 만들 수 없으면 원본을 쓰고 이유를 남긴다
+복사본은 OpenRewrite가 Maven과 같은 미러를 고르도록 원본에 그림자 미러만 더한 것이다.
 
 The settings copy of the OpenRewrite call (`docs/INTERFACES.md` "v2.1z-ci", rules 1 to 3). The same `-s` is read
 by Maven inside that call (the forked lifecycle of `rewrite:run`), so the copy never moves or edits anything: it
@@ -13,6 +11,8 @@ matches `sbmig:<id>`; OpenRewrite (`MavenRepositoryMirror`, rewrite-maven 8.89.0
 `:`, takes the rest as the id list for non-local repositories, and uses the first matching mirror in file order.
 `translate_settings` is pure (bytes in, bytes out); `openrewrite_settings` does the file work (0600 copy in a
 private temp folder, removed on exit); `project_repositories` reads the project's poms.
+
+When no copy can be made, the original settings file is passed and the reason is recorded.
 """
 from __future__ import annotations
 
@@ -48,12 +48,13 @@ _POM_SKIP = frozenset({"target", "node_modules", "out", "build"})
 
 
 class Refused(Exception):
-    """settings 파일을 읽을 수 없거나 그림자 미러를 끼워 넣을 수 없을 때 던지는 예외. 메시지가 저널의 이유가 된다."""
+    """settings 파일을 읽을 수 없거나 그림자 미러를 끼워 넣을 수 없을 때 던지는 예외.
+    메시지가 저널에 남는 이유가 된다."""
 
 
 @dataclass
 class SettingsTranslation:
-    """그림자 미러를 더한 결과를 담는 클래스. ``data``가 None이면 원본을 그대로 쓴다.
+    """그림자 미러를 더한 결과를 담는 클래스. ``data``가 None이면 원본 settings를 그대로 쓴다.
 
     `needed` False = nothing to record (no shadow, nothing skipped). `translated` True = `data` holds the copy.
     `record()` is the journal payload of `rewrite_settings` (ids only)."""
@@ -106,7 +107,7 @@ def _local_host(host: str) -> bool:
 
 
 def maven_matches(mirror_of: str, repo_id: str, url: str) -> bool:
-    """Maven의 ``mirrorOf`` 규칙으로 저장소가 이 미러에 들어가는지 확인한다.
+    """Maven의 ``mirrorOf`` 규칙으로 봤을 때 이 저장소가 이 미러로 가는지 반환한다.
 
     Maven Resolver `DefaultMirrorSelector.matchPattern`: `*` or the whole value equal to the id; else the tokens in
     order: `!id` that names the repository ends with false, an equal id ends with true, `external:*` (not localhost /
@@ -129,7 +130,7 @@ def maven_matches(mirror_of: str, repo_id: str, url: str) -> bool:
 
 
 def openrewrite_matches(mirror_of: str, repo_id: str, url: str) -> bool:
-    """OpenRewrite의 ``mirrorOf`` 규칙으로 저장소가 이 미러에 들어가는지 확인한다.
+    """OpenRewrite의 ``mirrorOf`` 규칙으로 봤을 때 이 저장소가 이 미러로 가는지 반환한다.
 
     rewrite-maven 8.89.0 `MavenRepositoryMirror.matches`: never the id `local`; `*` whole; the value cut after its
     first `:` (a colon anywhere means external only: file / localhost / 127.0.0.1 excluded); `!*` = named ids only,
@@ -253,7 +254,7 @@ class _Doc:
     def encode(self, text: str) -> bytes:
         return self.bom + text.encode(self.encoding, errors="xmlcharrefreplace")
 
-    # 값은 ElementTree에서, 위치는 직접 만든 트리에서 읽고 둘이 같은 구조인지 확인한다
+    # 값은 ElementTree에서, 텍스트 위치는 직접 만든 노드 목록에서 읽는다. 둘의 구조가 같은지 확인한다
     def section(self, name: str, item: str) -> list[tuple[_Node, Any]]:
         nodes = self.root.kids(name)
         els = [c for c in self.et if c.tag == name]
@@ -313,7 +314,7 @@ def _profile_repos(doc: Optional[_Doc]) -> list[tuple[str, str]]:
 def project_repositories(root: Optional[Path], limit: int = 400,
                          not_fillable: Iterable[str] = ()) -> list[tuple[str, str]]:
     """프로젝트 pom들이 선언한 저장소의 (id, url)을 모두 반환한다. pom의 ``<profiles>`` 안도 읽는다.
-    url의 ``${…}``는 그 pom과 프로젝트 안 부모 pom들의 ``<properties>``로 채우고, 채우지 못한 것은 그대로 둔다.
+    url의 ``${…}``는 그 pom과 프로젝트 안 부모 pom들의 ``<properties>``로 채운다. 채우지 못한 것은 그대로 둔다.
     ``not_fillable``의 이름과 Maven이 다른 곳에서 채우는 이름은 채우지 않는다. 읽지 못한 pom은 건너뛴다.
 
     Every (id, url) pair once (two ids at one url are two entries); `target/`, hidden folders and build output folders
@@ -352,7 +353,7 @@ def project_repositories(root: Optional[Path], limit: int = 400,
 
 _CHAIN = 10
 _PASSES = 5
-# Maven이 pom 속성보다 먼저 보거나 다른 곳에서 채우는 이름. pom 값으로 채우면 Maven과 다른 주소가 될 수 있다
+# Maven이 pom 속성보다 먼저 보거나 다른 곳에서 채우는 이름. pom 값으로 채우면 Maven과 주소가 달라질 수 있다
 _ELSEWHERE = ("env.", "project.", "pom.", "settings.", "maven.", "java.", "user.", "os.", "file.", "line.", "path.",
               "sun.", "jdk.", "basedir")
 _PROP_RE = re.compile(r"\$\{([^}]+)\}")
@@ -373,7 +374,7 @@ def _fill(url: str, props: dict[str, str], blocked: set[str]) -> str:
 
 
 def settings_property_names(*files: Optional[bytes]) -> set[str]:
-    """settings 파일들의 모든 프로필(활성 여부와 상관없이)이 정의한 ``<properties>`` 이름을 반환한다.
+    """settings 파일의 프로필들이 ``<properties>``에 정의한 이름을 모두 반환한다. 활성 프로필이 아니어도 넣는다.
     읽지 못한 파일은 건너뛴다.
 
     Maven gives a settings profile's properties precedence over a pom's; whether a profile is active (by
@@ -393,7 +394,7 @@ def settings_property_names(*files: Optional[bytes]) -> set[str]:
 
 
 def define_names(args: Iterable[str]) -> set[str]:
-    """명령 인자와 ``MAVEN_OPTS`` / ``MAVEN_ARGS`` 조각에서 ``-D``로 정의한 속성 이름을 모아 반환한다.
+    """명령 인자와 ``MAVEN_OPTS``, ``MAVEN_ARGS`` 조각에서 ``-D``로 정의한 속성 이름을 모아 반환한다.
 
     Forms Maven accepts: `-Dname=value`, `-Dname` (value `true`), `-D name=value`, `--define name=value`,
     `--define=name=value`."""
@@ -445,7 +446,7 @@ def _chain_properties(pom: Path, base: Path, cache: dict[Path, Any]) -> tuple[di
         for p in el.findall("./properties/*"):
             if isinstance(p.tag, str):
                 props.setdefault(p.tag, (p.text or "").strip())
-        # 활성화된 pom 프로필의 값이 위의 값을 이기므로, 어느 프로필이든 정의한 이름은 채우지 않는다
+        # 활성화된 pom 프로필의 값이 위의 값을 이긴다. 그래서 어느 프로필이든 정의한 이름은 채우지 않는다
         profile_names |= {p.tag for p in el.findall("./profiles/profile/properties/*") if isinstance(p.tag, str)}
         parent = el.find("parent")
         if parent is None:
@@ -469,8 +470,9 @@ def _chain_properties(pom: Path, base: Path, cache: dict[Path, Any]) -> tuple[di
 # ------------------------------------------------------------------ 그림자 미러
 def translate_settings(settings: bytes, *, global_settings: Optional[bytes] = None,
                        repositories: Iterable[tuple[str, str]] = ()) -> SettingsTranslation:
-    """OpenRewrite가 Maven과 다른 미러를 고르는 저장소마다 그림자 미러를 더한 복사본을 만든다. 파일은 읽거나 쓰지 않는다.
-    더할 것이 없으면 ``needed``가 False인 결과를, 파일을 읽을 수 없으면 ``reason``이 있는 결과를 반환한다.
+    """OpenRewrite가 Maven과 다른 미러를 고르는 저장소마다 그림자 미러를 더한 복사본을 만든다.
+    파일은 읽거나 쓰지 않는다. 더할 것이 없으면 ``needed``가 False인 결과를 반환한다.
+    settings를 읽을 수 없으면 ``reason``이 있는 결과를 반환한다.
 
     `repositories`: (id, url) of the project's poms (`project_repositories`); the active profiles of both settings
     files and Central are added here. A known id that begins `sbmig:` means no copy at all (Maven would match a
@@ -500,7 +502,7 @@ def _translate(settings: bytes, global_settings: Optional[bytes],
     for rid, url in [CENTRAL, *_profile_repos(user), *_profile_repos(glob), *project_repos]:
         if rid and url and url not in groups.setdefault(rid, []):
             groups[rid].append(url)
-    # Maven은 mirrorOf 전체를 id와 먼저 비교하므로 id가 sbmig:로 시작하면 그림자 미러가 그 저장소를 가져간다
+    # Maven은 mirrorOf 전체를 id와 먼저 비교한다. 그래서 id가 sbmig:로 시작하면 그림자 미러가 그 저장소를 가져간다
     if any(rid.startswith(SHADOW_PREFIX) for rid in groups):
         return SettingsTranslation(needed=True, reason="a known repository id begins with sbmig:, which a shadow "
                                                        "mirror would take in Maven; no copy is made")
@@ -543,7 +545,7 @@ def _plan(rid: str, urls: list[str], merged: list[Mirror], unknown_of: Optional[
         places.add(choice.id if choice else url)
         for u in probes:
             oa = openrewrite_choice(merged, rid, u)
-            # 주소가 다르거나 자격 증명을 찾는 id가 다른 server를 가리킬 때만 그림자 미러를 쓴다
+            # 주소가 다르거나, 자격 증명을 찾는 id가 다른 server를 가리킬 때만 그림자 미러를 쓴다
             same_url = _norm(oa.url if oa else u) == _norm(choice.url if choice else u)
             same_server = servers.get(oa.id if oa else rid) == servers.get(choice.id if choice else rid)
             if not (same_url and same_server):
@@ -640,7 +642,7 @@ def _indent(text: str, pos: int, fallback: str) -> str:
 @dataclass
 class PreparedSettings:
     """OpenRewrite 호출에 쓸 settings 준비 결과를 담는 클래스.
-    ``path``가 None이면 원본을 쓴다. ``error``는 준비 중 난 예외의 요약이다."""
+    ``path``가 None이면 원본 settings를 쓴다. ``error``는 준비 중에 난 예외의 요약이다."""
     path: Optional[Path] = None
     translation: Optional[SettingsTranslation] = None
     error: Optional[str] = None
@@ -651,7 +653,7 @@ def openrewrite_settings(cfg: Any, project_root: Optional[Path],
                          defines: Iterable[str] = ()) -> Iterator[PreparedSettings]:
     """OpenRewrite 호출 동안 쓸 settings 복사본을 만들고, 호출이 끝나면 지운다.
     ``openrewrite.translate_settings``가 꺼져 있거나 ``build.settings_file``이 없으면 아무것도 하지 않는다.
-    읽기, 계산, 쓰기 중 예외가 나면 원본을 쓰도록 ``error``만 채운다.
+    읽기, 계산, 쓰기 중에 예외가 나면 ``error``만 채운다. 그러면 호출하는 쪽은 원본을 쓴다.
 
     The copy is written with mode 0600 into a fresh `tempfile.mkdtemp` folder (0700), never into the run folder, and
     the folder is removed when the `with` block ends, also on an exception raised inside it (which propagates). Its
@@ -680,7 +682,7 @@ def openrewrite_settings(cfg: Any, project_root: Optional[Path],
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(tr.data)
                 prepared.path = path
-    except Exception as e:  # noqa: BLE001 - 복사본을 만들지 못하면 원본 settings로 계속 진행한다
+    except Exception as e:  # noqa: BLE001 - 복사본을 만들지 못했다. 원본 settings로 계속한다
         if folder is not None:
             shutil.rmtree(folder, ignore_errors=True)
             folder = None

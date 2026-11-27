@@ -1,10 +1,4 @@
-"""수정 스크립트를 실행하기 전에 코드(ast)를 정적으로 검사하는 모듈.
-``ScriptRunner``와 LLM 답변 파서가 ``check_script``를 호출한다.
-- 모듈 수준 ``def fix(p)``가 하나 있어야 한다
-- import는 텍스트 처리용 표준 모듈만 허용한다.
-  ``REFUSED_MODULES``는 ``script.extra_allowed_imports``로도 허용할 수 없다
-- ``open``, ``exec`` 같은 내장 이름과 ``_``로 시작하는 속성은 쓸 수 없다
-- 실수를 막는 장치일 뿐이며, 실제 한계는 sbmig를 실행하는 계정의 권한이다
+"""수정 스크립트를 실행하기 전에 코드를 정적으로 검사하는 모듈.
 
 Spec: docs/v2/PLAN-v2.md §3.2, docs/INTERFACES.md "Script contract".
 * Refused builtins are the ones that reach files, processes or other code (`open`, `exec`, `eval`, …).
@@ -12,6 +6,10 @@ Spec: docs/v2/PLAN-v2.md §3.2, docs/INTERFACES.md "Script contract".
   private state (`p._root`).
 * The same import rule guards `__import__` at run time (`sbmig.script.harness`).
 * Python-level checks can be worked around; the account running sbmig is the real limit.
+
+``ScriptRunner`` and the LLM answer parser call ``check_script``. The script needs a module-level
+``def fix(p)``. Imports are limited to standard text-processing modules; ``REFUSED_MODULES`` cannot be
+allowed even through ``script.extra_allowed_imports``.
 """
 from __future__ import annotations
 
@@ -26,18 +24,18 @@ REFUSED_MODULES: tuple[str, ...] = ("os", "sys", "subprocess", "socket", "pathli
                                     "threading", "multiprocessing", "builtins", "io")
 REFUSED_NAMES: tuple[str, ...] = ("open", "exec", "eval", "compile", "__import__", "globals", "locals", "vars",
                                   "getattr", "setattr", "delattr", "input", "breakpoint", "help", "memoryview")
-# 허용 모듈이 내부에서 import한 모듈로 빠져나가지 않도록(``posixpath.os``, ``json.codecs`` 등) 속성 이름을 막는다
+# 허용 모듈이 내부에서 import한 모듈로 빠져나가지 못하게 속성 이름을 막는다(``posixpath.os``, ``json.codecs`` 등)
 REFUSED_ATTRIBUTES: frozenset[str] = frozenset(REFUSED_MODULES) | {"codecs", "open"}
 DEFAULT_MAX_CODE_CHARS = 30000
-MAX_PROBLEMS = 20                       # 스크립트당 보여 줄 문제 수, 나머지는 개수만 센다
+MAX_PROBLEMS = 20                       # 스크립트당 보여 줄 문제 수. 나머지는 개수만 센다
 
 _HINTS = {"open": " (use p.read / p.write / p.create)", "exec": "", "eval": "", "getattr": " (use plain attributes)"}
 
 
 def module_allowed(name: str, extra_imports: Iterable[str] = ()) -> bool:
     """fix 스크립트가 ``name`` 모듈을 import해도 되는지 반환한다.
-    기본 허용 목록은 최상위 모듈 이름으로 비교하고, ``script.extra_allowed_imports`` 항목은 그 모듈과 하위
-    모듈만 허용한다. 거부 모듈은 설정과 상관없이 거부한다.
+    기본 허용 목록은 최상위 모듈 이름으로 비교한다.
+    ``script.extra_allowed_imports`` 항목은 그 모듈과 하위 모듈만 허용한다. 거부 모듈은 설정과 상관없이 거부한다.
 
     `collections.abc` is fine (top-level `collections`); an extra `xml.etree.ElementTree` does not open all of
     `xml`."""
@@ -53,7 +51,7 @@ def module_allowed(name: str, extra_imports: Iterable[str] = ()) -> bool:
 
 def import_allowed(name: str, fromlist: Iterable[str] = (), extra_imports: Iterable[str] = ()) -> bool:
     """``import name`` 또는 ``from name import a, b`` 문이 허용되는지 반환한다.
-    모듈 자체가 허용되거나 ``name.a``가 모두 허용되면 참이다.
+    모듈 자체가 허용되거나 ``name.a``가 모두 허용되면 True다.
 
     An extra entry `xml.etree.ElementTree` allows `from xml.etree import ElementTree`."""
     if module_allowed(name, extra_imports):
@@ -68,8 +66,8 @@ def _allowed_list(extra_imports: Iterable[str]) -> str:
 
 
 def _fix_signature_problem(fn: ast.FunctionDef) -> str | None:
-    """fix 함수의 시그니처를 검사하고 문제가 있으면 이유를 반환한다.
-    위치 인자는 도우미 p 하나만 받을 수 있고, ``*args``와 기본값 없는 키워드 전용 인자는 허용하지 않는다."""
+    """fix 함수의 시그니처를 검사한다. 문제가 있으면 이유를, 없으면 None을 반환한다.
+    위치 인자는 도우미 p 하나만 받을 수 있다. ``*args``와 기본값 없는 키워드 전용 인자는 허용하지 않는다."""
     a = fn.args
     positional = [*a.posonlyargs, *a.args]
     if a.vararg is not None:
@@ -85,8 +83,8 @@ def _fix_signature_problem(fn: ast.FunctionDef) -> str | None:
 
 def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int = DEFAULT_MAX_CODE_CHARS
                  ) -> list[str]:
-    """``code``를 실행할 수 없는 이유 목록을 반환한다. 빈 목록이면 실행해도 되며, 예외를 던지지 않는다.
-    각 문장은 LLM에 그대로 보낼 수 있게 쓴다. 예: `line 3: import of 'os' is not allowed`."""
+    """``code``를 실행할 수 없는 이유 목록을 반환한다. 빈 목록이면 실행해도 된다. 예외를 던지지 않는다.
+    각 문장은 LLM에 그대로 보낼 수 있는 형태다. 예: `line 3: import of 'os' is not allowed`."""
     if not isinstance(code, str):
         return [f"the script is not text ({type(code).__name__})"]
     if not code.strip():
@@ -94,12 +92,12 @@ def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int
     if max_chars and len(code) > max_chars:
         return [f"the script is {len(code)} characters long (limit {max_chars}); keep it shorter"]
     try:
-        # ast.parse만으로는 'return' outside function 같은 컴파일 단계 오류를 잡지 못하므로 compile까지 실행한다
+        # compile까지 실행한다. ast.parse만으로는 'return' outside function 같은 컴파일 단계 오류를 잡지 못한다
         tree = ast.parse(code, filename="fix_script.py")
         compile(tree, "fix_script.py", "exec", dont_inherit=True)
     except SyntaxError as exc:
         return [f"line {exc.lineno}: syntax error: {exc.msg}" if exc.lineno else f"syntax error: {exc.msg}"]
-    except (ValueError, RecursionError, MemoryError) as exc:     # NUL 바이트나 지나치게 깊은 중첩
+    except (ValueError, RecursionError, MemoryError) as exc:     # NUL 바이트나 너무 깊은 중첩
         return [f"the script cannot be parsed: {type(exc).__name__}: {exc}"]
     extra = tuple(extra_imports or ())
     problems: list[str] = []
@@ -141,7 +139,7 @@ def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int
     if not fixes:
         add("no module-level 'def fix(p)' found")
     else:
-        fn = fixes[-1]                                   # 실제로 실행되는 것은 마지막 정의다
+        fn = fixes[-1]                                   # 실제로 실행되는 건 마지막 정의다
         if isinstance(fn, ast.AsyncFunctionDef):
             add(f"line {fn.lineno}: 'fix' must be a plain function, not 'async def'")
         else:

@@ -1,10 +1,5 @@
 """수정 스크립트가 쓰는 도우미 API ``p``(``FixHelper``)를 제공하는 모듈.
-스크립트 프로세스(``sbmig.script.harness``) 안에서 실행된다.
-- 경로는 모두 프로젝트 폴더 기준 상대 경로로 받고, 결과는 ``/`` 구분자로 반환한다
-- 절대 경로, 폴더 밖 경로, ``.git/``, Maven 빌드 출력에 쓰기, 폴더 밖을 가리키는 심볼릭 링크는
-  ``PathRefused``로 거부한다. 스크립트가 이 예외를 잡아도 실패로 보고한다
-- 스크립트는 KB에 저장되어 다른 프로젝트에서 사람 확인 없이 다시 실행되므로 프로젝트 폴더만 다루게 한다
-- ``write``는 원래 인코딩, 줄끝, BOM을 유지하므로 diff에는 의도한 변경만 남는다
+스크립트 프로세스(``sbmig.script.harness``) 안에서 실행되고, 프로젝트 폴더 안의 파일만 다룬다.
 
 Path guard: `\\` and `/` are both accepted, results use `/`. Refused: absolute paths, drive letters, `..`
 leaving the folder, anything under `.git/`, writes into Maven build output (`target/` beside a pom.xml,
@@ -14,6 +9,10 @@ attempt must see.
 
 Files are read in their detected encoding (`build.encoding_candidates`, same detection as the workspace) with
 `\\n` line ends. The API table the LLM sees is `_API_ROWS` / `helper_api_doc`, not these docstrings.
+
+Why only the project folder: scripts are stored in the KB and run again on other projects without a person
+checking them. `write` keeps the original encoding, line ends and BOM, so a diff shows only the intended
+change.
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ from sbmig.core.workspace import (
 
 from .check import ALLOWED_IMPORTS, REFUSED_MODULES, REFUSED_NAMES
 
-MAX_LOG_LINE_CHARS = 1000                 # p.log 한 줄의 최대 길이, 넘으면 자른다
+MAX_LOG_LINE_CHARS = 1000                 # p.log 한 줄의 최대 길이. 넘으면 자른다
 _SKIP_DIRS = (".git", "node_modules")     # 목록에서 뺀다. Maven 빌드 출력은 별도 규칙으로 뺀다
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 # 원래 인코딩에 없는 문자를 \uXXXX로 써도 되는 파일. 두 형식 모두 이 이스케이프를 읽는다
@@ -48,8 +47,8 @@ class PathRefused(Exception):
 
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """glob 패턴을 정규식으로 바꾼다.
-    이중 별표 폴더는 0개 이상의 폴더에 맞고, ``*`` / ``?`` / ``[…]``는 경로 한 단계 안에서만 맞는다.
-    fnmatch는 ``*``가 ``/``까지 넘어가므로 직접 변환한다.
+    ``**`` 폴더는 0개 이상의 폴더에 맞는다. ``*``, ``?``, ``[…]``는 경로 한 단계 안에서만 맞는다.
+    fnmatch는 ``*``가 ``/``까지 넘어간다. 그래서 직접 변환한다.
 
     `**/*.java` matches `A.java` at the root too; `**` at the end = everything below. Case-sensitive, matches
     hidden names."""
@@ -95,7 +94,7 @@ def _segment_regex(seg: str) -> str:
 
 def _inside(path: Path, root: Path) -> bool:
     """``path``가 ``root``와 같거나 그 아래에 있는지 반환한다.
-    Windows처럼 OS가 대소문자를 구분하지 않으면 대소문자를 무시한다. 두 경로는 resolve된 값이어야 한다."""
+    Windows처럼 대소문자를 구분하지 않는 OS면 대소문자를 무시한다. 두 경로는 resolve된 값이어야 한다."""
     a, b = os.path.normcase(str(path)), os.path.normcase(str(root))
     try:
         return os.path.commonpath([a, b]) == b
@@ -104,14 +103,14 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _newline_of(raw: bytes) -> str:
-    """파일의 줄끝 형식을 반환한다. 줄끝의 절반 이상이 CRLF이면 CRLF로 본다."""
+    """파일의 줄끝 형식을 반환한다. 줄끝의 절반 이상이 CRLF면 CRLF로 본다."""
     crlf = raw.count(b"\r\n")
     return "\r\n" if crlf and crlf * 2 >= raw.count(b"\n") else "\n"
 
 
 class FixHelper:
     """fix 스크립트가 프로젝트 폴더에서 할 수 있는 작업을 모은 클래스.
-    정적 검사가 ``_``로 시작하는 이름을 막으므로 스크립트는 공개 멤버만 쓸 수 있다.
+    스크립트는 공개 멤버만 쓸 수 있다. 정적 검사가 ``_``로 시작하는 이름을 막는다.
 
     So the script cannot reach `_root` or the PomEditor behind `p.pom()`."""
 
@@ -123,11 +122,11 @@ class FixHelper:
         self._log_cap = max(1, int(log_lines))
         self._log: list[str] = []
         self._dropped = 0
-        self._changed: dict[str, None] = {}          # 순서를 지키는 상대 경로 집합
+        self._changed: dict[str, None] = {}          # 바뀐 파일의 상대 경로. 바뀐 순서를 지킨다
         self._refusals: list[str] = []
-        self._listing: Optional[list[str]] = None    # 파일 목록 캐시, 파일이 생기거나 없어지면 비운다
+        self._listing: Optional[list[str]] = None    # 파일 목록 캐시. 파일이 생기거나 없어지면 비운다
         self._encodings: dict[str, str] = {}         # 상대 경로별로 읽거나 쓸 때 쓴 인코딩
-        # 시간 초과로 종료돼도 ScriptRunner가 변경 내역을 알 수 있도록 줄마다 flush한다. _close()가 닫는다
+        # 줄마다 flush한다. 시간 초과로 종료돼도 ScriptRunner가 변경 내역을 알 수 있다. _close()가 닫는다
         self._journal = open(journal_path, "a", encoding="utf-8") if journal_path else None   # noqa: SIM115
         self.errors: list[dict[str, Any]] = [dict(e) for e in errors]
 
@@ -138,7 +137,7 @@ class FixHelper:
             self._journal = None
 
     def _event(self, **kv: Any) -> None:
-        """저널에 한 줄 쓰고 바로 flush한다. 시간 초과로 종료된 프로세스도 이 기록은 남긴다."""
+        """저널에 한 줄 기록하고 바로 flush한다. 시간 초과로 종료된 프로세스도 이 기록은 남긴다."""
         if self._journal is not None:
             self._journal.write(json.dumps(kv, ensure_ascii=False) + "\n")
             self._journal.flush()
@@ -154,7 +153,7 @@ class FixHelper:
         return PathRefused(msg)
 
     def _path(self, path: Any, *, write: bool = False) -> tuple[str, Path]:
-        """경로 검사를 거쳐 (상대 posix 경로, 절대 경로)를 반환한다.
+        """경로를 검사하고 (상대 posix 경로, 절대 경로)를 반환한다.
         심볼릭 링크를 풀어 실제 위치도 다시 검사한다. 허용되지 않는 경로면 PathRefused를 던진다."""
         if not isinstance(path, str):
             raise TypeError(f"path must be a str, got {type(path).__name__}")
@@ -185,15 +184,15 @@ class FixHelper:
         return rel, full
 
     def _check_rel(self, path: Any, rel: str, write: bool) -> None:
-        """``.git`` 아래 경로와, 쓰기일 때는 Maven 빌드 출력 경로를 거부한다.
-        빌드 출력은 다음 ``mvn clean``이 지우므로 고쳐도 소용이 없다."""
+        """``.git`` 아래 경로를 거부한다. 쓰기면 Maven 빌드 출력 경로도 거부한다.
+        빌드 출력은 다음 ``mvn clean``이 지운다. 고쳐도 소용이 없다."""
         if any(part.lower() == ".git" for part in rel.split("/")):
             raise self._refuse(path, "files under .git/ are off limits")
         if write and is_build_output_path(rel, self._root):
             raise self._refuse(path, "it is Maven build output (target/); change the sources instead")
 
     def _file(self, path: Any) -> tuple[str, Path]:
-        """존재하는 파일 경로만 허용한다. 폴더이면 IsADirectoryError를, 없으면 FileNotFoundError를 던진다."""
+        """있는 파일의 경로만 허용한다. 폴더면 IsADirectoryError를, 없으면 FileNotFoundError를 던진다."""
         rel, full = self._path(path)
         if full.is_dir():
             raise IsADirectoryError(f"{rel!r} is a folder")
@@ -203,7 +202,7 @@ class FixHelper:
 
     def _encoding_for(self, rel: str, full: Path) -> str:
         """파일을 읽고 쓸 인코딩을 정한다.
-        지금은 ASCII뿐이라 utf-8로 보여도 앞서 cp949 등으로 읽은 파일이면 그 인코딩을 유지한다."""
+        지금은 ASCII뿐이라 utf-8로 보여도, 앞서 cp949 같은 인코딩으로 읽은 파일이면 그 인코딩을 유지한다."""
         enc = detect_encoding(full, self._cands)
         seen = self._encodings.get(rel)
         if enc == "utf-8" and seen not in (None, "utf-8", "utf-8-sig"):
@@ -212,7 +211,7 @@ class FixHelper:
 
     def _walk(self, base: Path, rel_dir: str) -> Iterator[str]:
         """``base`` 아래 파일의 프로젝트 기준 경로를 차례로 반환한다.
-        심볼릭 링크는 따라가지 않고 ``.git``, ``node_modules``, 빌드 출력 ``target``은 건너뛴다.
+        심볼릭 링크는 따라가지 않는다. ``.git``, ``node_modules``, 빌드 출력 ``target``은 건너뛴다.
         ``rel_dir``은 ``base``의 프로젝트 기준 경로다."""
         try:
             entries = sorted(os.scandir(base), key=lambda e: e.name)
@@ -221,7 +220,7 @@ class FixHelper:
         for e in entries:
             try:
                 if e.is_symlink() or (hasattr(e, "is_junction") and e.is_junction()):
-                    continue              # 링크와 junction은 프로젝트 밖을 가리킬 수 있으므로 목록에서 뺀다
+                    continue              # 링크와 junction은 목록에서 뺀다. 프로젝트 밖을 가리킬 수 있다
                 rel = f"{rel_dir}/{e.name}" if rel_dir else e.name
                 if e.is_dir():
                     if e.name in _SKIP_DIRS or (e.name == "target" and is_build_output_path(rel, self._root)):
@@ -256,12 +255,12 @@ class FixHelper:
         return [f for f in self._all_files() if rx.fullmatch(f)]
 
     def exists(self, path: str) -> bool:
-        """파일이나 폴더가 있는지 반환한다. 허용되지 않는 경로이면 PathRefused를 던진다."""
+        """파일이나 폴더가 있는지 반환한다. 허용되지 않는 경로면 PathRefused를 던진다."""
         return self._path(path)[1].exists()
 
     def read(self, path: str) -> str:
         """감지한 인코딩으로 파일을 읽어 텍스트를 반환한다.
-        줄끝은 LF로 바꿔 반환하고, 쓸 때 CRLF를 복원한다."""
+        줄끝은 LF로 바꿔 반환한다. 쓸 때 원래 CRLF를 되살린다."""
         rel, full = self._file(path)
         enc = self._encoding_for(rel, full)
         self._encodings[rel] = enc
@@ -270,7 +269,7 @@ class FixHelper:
 
     def write(self, path: str, text: str) -> bool:
         """파일 내용을 바꾸거나 새 파일을 만든다.
-        기존 파일은 인코딩, 줄끝, BOM을 유지하고 새 파일은 UTF-8, LF로 만든다.
+        기존 파일은 인코딩, 줄끝, BOM을 유지한다. 새 파일은 UTF-8, LF로 만든다.
         디스크의 바이트가 바뀌면 True를 반환한다."""
         if not isinstance(text, str):
             raise TypeError(f"text must be a str, got {type(text).__name__}")
@@ -298,7 +297,7 @@ class FixHelper:
 
     def _encode(self, rel: str, text: str, enc: str) -> bytes:
         """텍스트를 바이트로 인코딩한다.
-        그 인코딩으로 표현할 수 없는 문자가 있으면 .java / .properties는 유니코드 이스케이프로 쓰고,
+        그 인코딩으로 표현할 수 없는 문자가 있으면 .java, .properties는 유니코드 이스케이프로 쓴다.
         그 밖의 파일은 UTF-8로 쓰고 로그를 남긴다."""
         try:
             data = text.encode(enc)
@@ -316,7 +315,7 @@ class FixHelper:
         return data
 
     def replace(self, path: str, old: str, new: str, count: int = -1) -> int:
-        """파일 하나에서 문자열을 그대로 찾아 바꾸고 바꾼 횟수를 반환한다.
+        """파일 하나에서 문자열을 글자 그대로 찾아 바꾸고, 바꾼 횟수를 반환한다.
         ``read``가 반환하는 LF 줄끝 텍스트를 기준으로 찾는다. ``old``가 비어 있으면 ValueError를 던진다."""
         if not isinstance(old, str) or not isinstance(new, str):
             raise TypeError("old and new must be str")
@@ -329,7 +328,7 @@ class FixHelper:
         return n
 
     def sub(self, path: str, pattern: Any, repl: Any, count: int = 0, flags: int = 0) -> int:
-        """파일 하나에 ``re.subn``을 적용하고 바꾼 횟수를 반환한다. 컴파일된 패턴이면 ``flags``는 무시한다."""
+        """파일 하나에 ``re.subn``을 적용하고 바꾼 횟수를 반환한다. 패턴이 컴파일돼 있으면 ``flags``는 무시한다."""
         text = self.read(path)
         if isinstance(pattern, re.Pattern):
             new, n = pattern.subn(repl, text, count=count)
@@ -390,13 +389,13 @@ class FixHelper:
 
     def pom(self, path: str = "pom.xml") -> PomHelper:
         """pom.xml 하나를 편집하는 객체를 반환한다.
-        서식과 주석을 유지하고, ``save()``를 호출하기 전에는 파일에 쓰지 않는다."""
+        서식과 주석은 유지한다. ``save()``를 호출하기 전에는 파일에 쓰지 않는다."""
         rel, full = self._file(path)
         return PomHelper(self, rel, full)
 
     def log(self, msg: Any) -> None:
-        """메시지를 줄마다 로그에 한 줄씩 남긴다.
-        줄 길이와 줄 수는 MAX_LOG_LINE_CHARS와 ``script.log_lines``로 제한한다. 로그는 KB의 시도 기록에 남는다."""
+        """메시지를 줄 단위로 로그에 남긴다.
+        줄 길이는 MAX_LOG_LINE_CHARS, 줄 수는 ``script.log_lines``까지다. 로그는 KB의 시도 기록에 남는다."""
         for line in str(msg).splitlines() or [""]:
             if len(line) > MAX_LOG_LINE_CHARS:
                 line = line[:MAX_LOG_LINE_CHARS] + " …"
@@ -413,8 +412,8 @@ class FixHelper:
 
 
 class PomHelper:
-    """``p.pom(path)``가 반환하는 pom 편집 클래스. 경로 검사를 거치는 작은 인터페이스로 PomEditor를 감싼다.
-    변경 메서드는 pom이 바뀌면 True를 반환하고, ``save()``가 실제로 파일에 쓴 뒤 바뀐 파일로 집계한다."""
+    """``p.pom(path)``가 반환하는 pom 편집 클래스. PomEditor를 감싸고, 저장할 때 경로를 검사한다.
+    변경 메서드는 pom이 바뀌면 True를 반환한다. ``save()``가 실제로 파일에 쓴 뒤에야 바뀐 파일로 센다."""
 
     def __init__(self, helper: FixHelper, rel: str, full: Path):
         from sbmig.restructure.pom_editor import PomEditor  # pom을 편집할 때만 lxml을 불러온다
@@ -441,17 +440,17 @@ class PomHelper:
         return self._ed.add_managed_dependency(self._gav(g, a, version, scope, type, classifier), if_absent=False)
 
     def remove_dependency(self, g: str, a: str) -> bool:
-        """``<dependencies>``에서 g:a 의존성을 제거하고, 바뀌면 True를 반환한다."""
+        """``<dependencies>``에서 g:a 의존성을 지운다. 바뀌면 True를 반환한다."""
         return self._ed.remove_dependency(g, a)
 
     def remove_managed_dependency(self, g: str, a: str) -> bool:
-        """``<dependencyManagement>``에서 g:a 의존성을 제거하고, 바뀌면 True를 반환한다."""
+        """``<dependencyManagement>``에서 g:a 의존성을 지운다. 바뀌면 True를 반환한다."""
         return self._ed.remove_managed_dependency(g, a)
 
     def set_dependency_version(self, g: str, a: str, version: Optional[str]) -> bool:
         """g:a의 직접 선언과 관리 선언의 버전을 바꾼다.
         버전이 이 pom의 ``${property}``이면 그 속성 값을 바꾼다.
-        None이면 부모가 관리하도록 ``<version>``을 지운다."""
+        None이면 ``<version>``을 지운다. 그러면 부모가 버전을 관리한다."""
         return self._ed.set_dependency_version(g, a, version)
 
     def add_exclusion(self, g: str, a: str, ex_g: str, ex_a: str) -> bool:
@@ -477,11 +476,11 @@ class PomHelper:
         return ed.to_string() != before
 
     def set_property(self, key: str, value: str) -> bool:
-        """``<properties>``의 값을 설정하고, 바뀌면 True를 반환한다."""
+        """``<properties>``에 값을 넣는다. 바뀌면 True를 반환한다."""
         return self._ed.set_property(key, str(value))
 
     def remove_property(self, key: str) -> bool:
-        """``<properties>``에서 키를 제거하고, 바뀌면 True를 반환한다."""
+        """``<properties>``에서 키를 지운다. 바뀌면 True를 반환한다."""
         return self._ed.remove_property(key)
 
     def set_plugin_version(self, g: str, a: str, version: str) -> bool:
@@ -494,7 +493,7 @@ class PomHelper:
         return self._ed.has_dependency(g, a)
 
     def dependencies(self, managed: bool = False) -> list[dict[str, Any]]:
-        """선언된 의존성 목록을 dict로 반환한다. ``managed``가 참이면 dependencyManagement 목록이다.
+        """선언된 의존성 목록을 dict로 반환한다. ``managed``가 True면 dependencyManagement 목록이다.
 
         Keys: group_id, artifact_id, version, scope, type, classifier, optional."""
         gavs = self._ed.managed_dependencies() if managed else self._ed.dependencies()
@@ -509,7 +508,7 @@ class PomHelper:
         return self._ed.to_string().replace("\r\n", "\n")
 
     def save(self) -> bool:
-        """pom을 원래 인코딩, BOM, 줄끝을 유지해 파일에 쓴다. 바뀐 내용이 없으면 False를 반환한다.
+        """pom을 파일에 쓴다. 원래 인코딩, BOM, 줄끝은 유지한다. 바뀐 내용이 없으면 False를 반환한다.
         쓰기 직전에 빌드 출력, ``.git``, 심볼릭 링크 규칙으로 경로를 다시 검사한다."""
         self._helper._path(self._rel, write=True)
         if not self._ed.changed:
@@ -519,7 +518,7 @@ class PomHelper:
         return True
 
 
-# LLM 프롬프트에 넣는 (API, 설명) 표이므로 docs/INTERFACES.md "Script contract (S)"와 내용을 맞춰야 한다
+# LLM 프롬프트에 넣는 (API, 설명) 표. docs/INTERFACES.md "Script contract (S)"와 내용을 맞춰야 한다
 _API_ROWS: tuple[tuple[str, str], ...] = (
     ("`p.errors`",
      ("this case's build errors: list of dicts with `file`, `line`, `column`, `message`, `symbol`, `location`, "

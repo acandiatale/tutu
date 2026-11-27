@@ -1,11 +1,4 @@
-"""구조 검토에서 LLM에 보여 줄 정보를 모으는 모듈. 작업 공간은 바꾸지 않는다.
-`restructure.review` 단계에서 StructureReviewer가 `collect_review_input`을 호출하고,
-`ReviewInput.render()`의 결과가 user 프롬프트가 된다.
-- 담는 내용: pom 본문(`review.max_poms`, `review.max_pom_chars` 한도), 모듈 트리, 재구성 내역, 회사 규칙,
-  프로필, Maven 없이 알 수 있는 정보, 모듈별 소스 인코딩
-- 회사 규칙은 config에서만 읽는다
-- 인코딩 불일치는 빌드 오류로 드러나지 않으므로 여기서 직접 계산해 알려 준다.
-  JDK 21 javac는 경고만 내고 한글 리터럴이 깨진다
+"""구조 검토에서 LLM에 보여 줄 자료를 모으는 모듈.
 
 Spec: docs/v2/PLAN-v2.md §3.3. Runs after the restructure, before the first build.
 * poms: every pom of the workspace, long poms cut head + tail (`cut_text`).
@@ -13,6 +6,12 @@ Spec: docs/v2/PLAN-v2.md §3.3. Runs after the restructure, before the first bui
 * company rules come from `artifacts.*` / `layout.*` only, never from code (invariant 2).
 * facts without Maven: mandatory / optional artifacts, javax / jakarta API and duplicate declarations.
 * encodings: sampled `.java` files vs the declared `project.build.sourceEncoding`.
+
+Read-only: the workspace is never changed. StructureReviewer calls `collect_review_input` in the
+`restructure.review` step, and `ReviewInput.render()` is the user prompt. The input also carries what the
+restructure did and the profile; pom text is capped by `review.max_poms` / `review.max_pom_chars`. An encoding
+mismatch never shows as a build error (JDK 21 javac only warns and the Korean literals break), so it is
+computed here.
 """
 from __future__ import annotations
 
@@ -42,7 +41,7 @@ _UTF8_FAMILY = {"ascii", "utf-8", "utf-8-sig"}
 JAVA_CHARSETS = {"cp949": "MS949", "euc_kr": "EUC-KR", "shift_jis": "Shift_JIS", "cp932": "MS932",
                  "latin_1": "ISO-8859-1", "iso8859-1": "ISO-8859-1", "cp1252": "windows-1252", "utf-8": "UTF-8",
                  "gb2312": "GB2312", "gbk": "GBK", "big5": "Big5"}
-# 한글 소스를 같은 방식으로 읽는 인코딩 계열. cp949가 EUC-KR을 포함하므로 같은 계열로 본다
+# 한글 소스를 같은 방식으로 읽는 인코딩 계열. cp949는 EUC-KR을 포함한다. 그래서 둘을 한 계열로 본다
 _FAMILIES = {"cp949": "korean", "euc_kr": "korean"}
 _JAVA_ALIASES = {"ms949": "cp949", "x-windows-949": "cp949", "windows-949": "cp949", "windows949": "cp949",
                  "ms_949": "cp949", "uhc": "cp949", "ksc5601": "euc_kr", "ks_c_5601-1987": "euc_kr"}
@@ -52,7 +51,7 @@ _JAVAX_API_ARTIFACTS = {"servlet-api", "jsp-api", "jstl", "jaxb-api", "activatio
 
 
 def codec_name(enc: Optional[str]) -> str:
-    """Python이나 Java 표기의 인코딩 이름을 Python 코덱 이름으로 정규화한다.
+    """Python이나 Java 표기의 인코딩 이름을 Python 코덱 이름으로 바꾼다.
     비어 있으면 빈 문자열을, 모르는 이름이면 소문자로 바꿔 반환한다."""
     if not enc:
         return ""
@@ -65,7 +64,7 @@ def codec_name(enc: Optional[str]) -> str:
 
 
 def java_charset(enc: str) -> str:
-    """감지된 Python 인코딩에 해당하는 Java charset 이름을 반환한다.
+    """감지한 Python 인코딩에 맞는 Java charset 이름을 반환한다.
     pom의 `project.build.sourceEncoding`에 쓸 값이다. 예: cp949는 MS949, euc_kr은 EUC-KR."""
     c = codec_name(enc)
     return JAVA_CHARSETS.get(c, JAVA_CHARSETS.get(enc.lower(), enc.upper()))
@@ -96,7 +95,8 @@ def _cap(text: object, limit: int = LINE_CHARS_MAX) -> str:
 # ---------------------------------------------------------------------------- pom 본문
 @dataclass
 class PomText:
-    """프롬프트에 보여 줄 pom 하나를 담는 클래스. 잘렸으면 `cut`이 참이고, 원래 길이는 `chars`에 둔다."""
+    """프롬프트에 보여 줄 pom 하나를 담는 클래스.
+    잘렸으면 `cut`이 True다. 원래 길이는 `chars`에 있다."""
     path: str
     text: str                 # 프롬프트에 보이는 본문, `cut`이면 잘린 본문
     chars: int
@@ -105,7 +105,7 @@ class PomText:
 
 def allot(lengths: list[int], total: int) -> list[int]:
     """pom별로 쓸 문자 수를 나눈다.
-    합이 `total`을 넘지 않도록 짧은 pom은 전체를 주고, 나머지 pom은 남은 문자 수를 똑같이 나눈다."""
+    합은 `total`을 넘지 않는다. 짧은 pom은 전체를 주고, 나머지 pom은 남은 문자 수를 똑같이 나눈다."""
     caps = [0] * len(lengths)
     remaining = max(0, int(total))
     order = sorted(range(len(lengths)), key=lambda i: lengths[i])
@@ -118,7 +118,7 @@ def allot(lengths: list[int], total: int) -> list[int]:
 
 def cut_text(text: str, cap: int) -> tuple[str, bool]:
     """텍스트를 `cap`자 이하로 자른다. 들어가면 그대로 반환한다.
-    넘치면 앞쪽 약 2/3, 생략 표시 줄, 뒷부분을 줄 단위로 남긴다. 반환값의 bool은 잘렸는지 여부다.
+    넘치면 앞쪽 약 2/3, 생략 표시 줄, 뒷부분을 줄 단위로 남긴다. 반환값의 bool은 잘렸으면 True다.
     남는 공간이 MIN_CUT_CHARS보다 작으면 생략 표시 줄만 남긴다.
 
     The result, marker included, is never longer than `cap`."""
@@ -162,7 +162,7 @@ def _spec(s: Any) -> str:
 
 
 def _is_import(s: Any) -> bool:
-    # 재구성의 `_mandatory_managed`와 같은 규칙으로 scope import만 <dependencyManagement>에 둔다
+    # scope import만 <dependencyManagement>에 둔다. 재구성의 `_mandatory_managed`와 같은 규칙이다
     return str(getattr(s, "scope", None) or "").strip().lower() == "import"
 
 
@@ -170,7 +170,7 @@ def _is_import(s: Any) -> bool:
 @dataclass
 class ModuleEncoding:
     """모듈 하나의 소스 인코딩 정보를 담는 클래스.
-    표본 파일의 인코딩별 개수와 예시, 실제 적용되는 선언 인코딩과 그 위치를 담는다."""
+    표본 파일의 인코딩별 개수와 예시를 담는다. 실제로 적용되는 선언 인코딩과 선언 위치도 담는다."""
     module: str                                 # pom이 있는 폴더, 빈 문자열이면 프로젝트 루트
     pom: str
     files: int = 0                              # 모듈의 .java 파일 수
@@ -179,17 +179,17 @@ class ModuleEncoding:
     examples: dict[str, list[str]] = field(default_factory=dict)
     declared: Optional[str] = None              # 프로젝트 pom 안에서 실제로 적용되는 소스 인코딩
     declared_in: str = ""                       # "<pom> property" | "<pom> maven-compiler-plugin <encoding>"
-    not_sampled: bool = False                   # 앞 모듈들이 전체 표본 한도를 다 써서 읽지 않았다
+    not_sampled: bool = False                   # 앞 모듈들이 전체 표본 한도를 다 써서 읽지 않았으면 True
 
     @property
     def legacy(self) -> list[str]:
-        """감지된 UTF-8이 아닌 인코딩을 파일이 많은 순으로 반환한다."""
+        """감지한 인코딩 중 UTF-8이 아닌 것을 파일이 많은 순으로 반환한다."""
         return [e for e, _ in Counter({k: v for k, v in self.counts.items() if not is_utf8(k)}).most_common()]
 
     @property
     def mismatch(self) -> list[str]:
-        """선언된 인코딩으로 읽을 수 없는 UTF-8이 아닌 인코딩을 반환한다.
-        javac는 경고만 내고 리터럴이 깨지므로 critical로 다룬다."""
+        """선언된 인코딩으로 읽을 수 없는 인코딩을 반환한다. UTF-8 계열은 빠진다.
+        javac는 경고만 내고 리터럴이 깨진다. 그래서 critical로 다룬다."""
         return [e for e in self.legacy if not compatible(e, self.declared)]
 
     @property
@@ -205,7 +205,7 @@ class ModuleEncoding:
         if not self.files:
             return f"- {where}: no .java files"
         if self.not_sampled:
-            # 표본 한도를 앞 모듈이 다 써서 읽지 않았으므로 인코딩을 판단하지 않는다
+            # 앞 모듈이 표본 한도를 다 써서 이 모듈은 읽지 않았다. 인코딩을 판단하지 않는다
             return (f"- {where}: {self.files} .java file(s) not sampled (the sample limit was reached before "
                     "this module)")
         counts = ", ".join(f"{k} {v}" + (f" (Java charset {java_charset(k)})" if not is_utf8(k) else "")
@@ -248,7 +248,8 @@ def _chain(pom: PomInfo, poms: list[PomInfo]) -> list[PomInfo]:
 
 def declared_encoding(pom: PomInfo, poms: list[PomInfo]) -> tuple[Optional[str], str]:
     """모듈에 실제로 적용되는 소스 인코딩을 (인코딩, 선언 위치)로 반환한다.
-    가장 가까운 compiler 플러그인의 `<encoding>`을 먼저 보고, 없으면 가장 가까운 `project.build.sourceEncoding`을 본다.
+    가장 가까운 compiler 플러그인의 `<encoding>`을 먼저 본다.
+    없으면 가장 가까운 `project.build.sourceEncoding`을 본다.
     선언이 없으면 (None, "")을 반환한다.
 
     `${prop}` is resolved along the in-project parent chain; an unresolved `${…}` counts as not declared."""
@@ -264,7 +265,7 @@ def declared_encoding(pom: PomInfo, poms: list[PomInfo]) -> tuple[Optional[str],
             v = (props.get(m.group(1)) or "").strip()
         return v or None
 
-    # javac가 실제로 받는 값이므로 compiler 플러그인의 <encoding>을 property보다 먼저 본다
+    # compiler 플러그인의 <encoding>을 property보다 먼저 본다. javac가 실제로 받는 값이기 때문이다
     for p in chain:
         for pl in p.plugins:
             if pl.artifact_id == COMPILER_PLUGIN:
@@ -300,9 +301,9 @@ def _spread(items: list[str], n: int) -> list[str]:
 
 def source_encodings(ws: Any, poms: list[PomInfo], candidates: Optional[Iterable[str]] = None, *,
                      skip_tests: bool = True) -> list[ModuleEncoding]:
-    """모듈별 .java 파일의 인코딩과 각 모듈에 선언된 인코딩을 조사한다.
+    """모듈마다 .java 파일의 실제 인코딩과 pom에 선언된 인코딩을 조사한다.
     표본은 모듈당 ENCODING_SAMPLE_PER_MODULE개, 전체 ENCODING_SAMPLE_TOTAL개까지 뽑는다.
-    테스트는 빌드에서 건너뛰므로 테스트 소스는 기본으로 제외한다.
+    테스트 소스는 기본으로 뺀다. 빌드가 테스트를 건너뛰기 때문이다.
 
     Pure ASCII files count as `ascii`, others go through `detect_encoding` (`build.encoding_candidates`)."""
     cands = tuple(candidates) if candidates else None
@@ -349,7 +350,7 @@ def source_encodings(ws: Any, poms: list[PomInfo], candidates: Optional[Iterable
 # ---------------------------------------------------------------------------- 검토 입력
 @dataclass
 class ReviewInput:
-    """구조 검토 user 프롬프트에 들어갈 자료 전체를 담는 클래스. `render()`가 프롬프트 문자열을 만든다."""
+    """구조 검토 user 프롬프트에 들어갈 자료를 모두 담는 클래스. `render()`가 프롬프트 문자열을 만든다."""
     project: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     restructure: list[str] = field(default_factory=list)
@@ -362,8 +363,8 @@ class ReviewInput:
     pom_infos: list[PomInfo] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     language: str = "en"
-    ask_script: bool = False                    # review.ask_script, 참이면 마지막 줄에서 <script>도 요청한다
-    # 아래 세 필드는 프롬프트에 넣지 않고 답변을 받은 뒤 검토기의 확인 작업에만 쓴다
+    ask_script: bool = False                    # review.ask_script. True면 마지막 줄에서 <script>도 요청한다
+    # 아래 세 필드는 프롬프트에 넣지 않는다. 답변을 받은 뒤 검토기가 확인할 때만 쓴다
     chain: Any = None                           # ParentChainFacts, 읽지 못했으면 None
     raw: dict[str, Any] = field(default_factory=dict)        # 검토 수정 전의 pom 경로별 RawPom
     results: list[Any] = field(default_factory=list)         # RestructureResult 목록
@@ -375,27 +376,27 @@ class ReviewInput:
 
     @property
     def encoding_mismatches(self) -> list[ModuleEncoding]:
-        """인코딩 불일치가 있는 모듈 목록을 반환한다. LLM이 놓치면 검토기가 critical 이슈로 추가한다."""
+        """인코딩이 맞지 않는 모듈 목록을 반환한다. LLM이 놓치면 검토기가 critical 이슈로 추가한다."""
         return [m for m in self.encodings if m.mismatch]
 
     @property
     def complete(self) -> bool:
         """모든 pom이 잘리지 않고 프롬프트에 다 들어갔는지 반환한다.
-        아니면 '자료에 없음' 판단을 프롬프트의 pom 본문만으로 하지 않는다."""
+        하나라도 빠지거나 잘렸으면 '자료에 없음' 판단을 프롬프트의 pom 본문만으로 하지 않는다."""
         return not self.omitted_poms and not any(p.cut for p in self.poms)
 
     def full_poms(self) -> str:
         """잘리지 않은 모든 pom 본문을 반환한다.
-        문자 수 제한으로 잘린 탓에 '자료에 없음' 판단이 틀리지 않게 하기 위해 쓴다."""
+        pom이 잘려서 '자료에 없음' 판단이 틀리는 것을 막을 때 쓴다."""
         return "\n".join(getattr(rp, "text", "") or "" for rp in (self.raw or {}).values())
 
     def material_text(self) -> str:
-        """이슈를 대조할 자료를 반환한다. 프롬프트 전체와 잘리지 않은 pom 본문을 합친 것이다."""
+        """이슈를 대조할 자료로 프롬프트 전체와 잘리지 않은 pom 본문을 합쳐 반환한다."""
         return self.render() + "\n" + self.full_poms()
 
     def state_text(self) -> str:
-        """현재 상태를 보여 주는 자료를 반환한다.
-        "What the restructure did"를 뺀 프롬프트와 잘리지 않은 pom 본문을 합친 것이다.
+        """지금 상태를 보여 주는 자료를 반환한다.
+        "What the restructure did"를 뺀 프롬프트와 잘리지 않은 pom 본문을 합친다.
         여기에 없는 속성 이름은 어느 pom에도 없다.
 
         "What the restructure did" is left out because it names properties the restructure removed."""
@@ -407,7 +408,7 @@ class ReviewInput:
 
     def render(self) -> str:
         """user 프롬프트 문자열을 만든다.
-        `report.language`가 ko이면 이슈 문장을 한국어로 쓰라는 줄을 더한다."""
+        `report.language`가 ko면 이슈 문장을 한국어로 쓰라는 줄을 덧붙인다."""
         L: list[str] = ["# Project", ""]
         L += self.project
         L += ["", "# Company rules (sbmig configuration)", ""]
@@ -450,7 +451,7 @@ def _project_name(cfg: Any, poms: list[PomInfo], profile: Optional[ProjectProfil
 
 def project_lines(profile: Optional[ProjectProfile], cfg: Any, name: str) -> list[str]:
     """프롬프트 "# Project" 섹션의 줄을 만든다.
-    이름, 케이스, as-is 버전, 목표 버전, 소스 수, MSA 서비스, 테스트를 건너뛴다는 안내를 담는다."""
+    이름, 케이스, as-is 버전, 목표 버전, 소스 수, MSA 서비스를 담는다. 테스트를 건너뛴다는 안내도 넣는다."""
     t = cfg.target
     if profile is None:
         return [f"- name `{name}`, case unknown", f"- target: JDK {t.java_version}, Spring Boot "
@@ -506,7 +507,7 @@ def bom_import_groups(results: Iterable[Any]) -> list[tuple[str, str, str, list[
 
 def boot_version_lines(cfg: Any, results: Iterable[Any], facts: Any = None) -> list[str]:
     """Spring Boot 버전 규칙 줄을 만든다.
-    재구성이 실제로 정한 결과와 BOM import를 기준으로 쓴다. 목표 버전 숫자는 규칙 줄에 넣지 않는다.
+    재구성이 실제로 정한 결과와 BOM import를 기준으로 쓴다. 목표 버전 숫자는 넣지 않는다.
 
     The target version literal appears in the Project section only, so the LLM never pins it as a rule."""
     a = cfg.artifacts
@@ -604,7 +605,8 @@ def _msa_line(cfg: Any, profile: Optional[ProjectProfile]) -> str:
 
 def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: Iterable[Any] = (),
                facts: Any = None) -> tuple[list[str], str]:
-    """이 케이스에 맞는 회사 규칙 줄(`cfg.artifacts` / `cfg.layout`)과 외부 부모를 가리키는 이름을 반환한다.
+    """이 케이스에 맞는 회사 규칙 줄과 외부 부모의 이름을 반환한다.
+    규칙은 `cfg.artifacts`와 `cfg.layout`에서 읽는다.
     레이아웃 규칙은 MSA, 모듈 분리 대상, Boot as-is 케이스마다 다르다."""
     a, lay = cfg.artifacts, cfg.layout
     case = profile.case_type if profile is not None else CaseType.UNKNOWN
@@ -646,7 +648,7 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
         L.append("- must not be declared any more (`artifacts.remove_when_present`): "
                  + ", ".join(f"`{k}`" for k in a.remove_when_present))
     L += boot_version_lines(cfg, results, facts)
-    # 재구성의 버전 결정이 최종이므로 검토가 같은 메이저 버전으로 다시 고정하지 않게 한다
+    # 재구성의 버전 결정은 최종이다. 검토가 그 버전을 다시 넣거나 다시 고정하지 않게 한다
     L.append("- the version decisions under \"What the restructure did\" (dropped / pinned / carried-over versions, "
              "removed properties, BOM imports, added in-house artifacts) are final: never re-add, re-pin or "
              "re-literalize them")
@@ -655,7 +657,7 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
     front = lay.module_path("front", name)
     jsp = bool(profile is not None and profile.source.jsp_count)
     web = bool(profile is not None and (profile.source.jsp_count or profile.source.web_static_count))
-    # 모듈이 하나인 Boot 앱을 boot_single_module: split으로 나눴으면 Boot가 아닌 프로젝트와 같은 구조다
+    # 모듈 하나짜리 Boot 앱을 나눴으면(boot_single_module: split) Boot가 아닌 프로젝트와 같은 구조다
     single_split = (case == CaseType.SPRING_BOOT and lay.boot_as_is == "in-place"
                     and getattr(lay, "boot_single_module", "split") == "split" and profile is not None
                     and profile.root_pom is not None and not profile.root_pom.modules)
@@ -664,11 +666,11 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
     if case == CaseType.MSA:
         L.append(_msa_line(cfg, profile))
     elif split:
-        # JSP가 있으면 내장 Tomcat으로 실행하는 실행 가능한 WAR로 만들고, 외부 Tomcat 배포는 대안으로 안내한다
+        # JSP가 있으면 내장 Tomcat으로 실행하는 실행 가능한 WAR다. 외부 Tomcat 배포는 대안으로 안내한다
         pkg = ("war (executable WAR: `java -jar` runs the embedded Tomcat, the same file deploys to an external Tomcat "
                "too; `spring-boot-starter-tomcat` / `tomcat-embed-jasper` stay `provided`, packaged under "
                "WEB-INF/lib-provided)" if jsp and lay.jsp_boot_packaging == "war" else "jar (executable jar)")
-        # 재구성이 실제로 만든 모듈 경로가 설정의 이름 규칙보다 정확하므로 그것을 먼저 쓴다
+        # 재구성이 실제로 만든 모듈 경로를 먼저 쓴다. 설정의 이름 규칙보다 정확하다
         r_boot = next((_field(r, "boot_module") for r in results if _field(r, "boot_module")), None)
         comp = next((_field(r, "comp_module") for r in results if _field(r, "comp_module")), None) or comp
         front = next((_field(r, "front_module") for r in results if _field(r, "front_module")), None) or front
@@ -678,7 +680,7 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
         L.append(f"  - `{comp}`: every source incl. controllers, packaging jar, parent = "
                  + ("comp parent" if a.role_parents else "root pom"))
         if front and web:
-            # 모듈 하나짜리 Boot 앱을 나눌 때 JSP는 웹 경로를 그대로 지켜 옮기므로 설정한 JSP 폴더가 아니다
+            # 모듈 하나짜리 Boot 앱을 나눌 때는 JSP를 웹 경로 그대로 옮긴다. 설정한 JSP 폴더로 가지 않는다
             jsp_place = ("JSPs at their as-is web path under `src/main/resources/META-INF/resources`" if single_split
                          else f"JSPs under `{lay.front_jsp_dir}`")
             L.append(f"  - `{front}`: web resources only (static under `{lay.front_static_dir}`, {jsp_place}), "
@@ -706,27 +708,27 @@ def _field(r: Any, key: str, default: Any = None) -> Any:
     return r.get(key, default) if isinstance(r, dict) else getattr(r, key, default)
 
 
-# "What the restructure did"에 이 순서로 보여 줄 RestructureResult 목록 필드와 제목
+# "What the restructure did"에 보여 줄 RestructureResult 목록 필드와 제목. 이 순서대로 보여 준다
 _RESULT_LISTS: tuple[tuple[str, str], ...] = (
     ("parents_set", "parents set"), ("mandatory_added", "mandatory added"),
     ("optional_bumped", "optional bumped"),
-    # 트리거 의존성 때문에 새로 넣은 선택 아티팩트와 그때 지운 트리거 의존성
+    # 트리거 의존성이 있어서 새로 넣은 선택 아티팩트, 그리고 그때 지운 트리거 의존성
     ("optional_added", "optional artifacts added for trigger dependencies"),
     ("optional_replaced", "trigger dependencies replaced by optional artifacts"),
     ("merged_modules", "merged modules"),
     ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
-    # 레시피가 관리 버전보다 높여 둔 명시 버전도 지운 목록
+    # 레시피가 관리 버전보다 높여 둔 명시 버전을 지운 목록
     ("recipe_versions_dropped", "recipe-raised versions dropped (the as-is build was at or below the managed version)"),
     # 재구성이 as-is에서 옮겨 온 버전도 다른 pom 수정처럼 검토에 보여 준다
     ("versions_pinned", "versions carried over from the as-is build"),
     ("versions_unknown", "version-less dependencies the as-is build did not resolve"),
-    # 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성으로, 재구성이 이미 지웠다
+    # 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성. 재구성이 이미 지웠다
     ("bom_properties_removed",
      "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)"),
     # 재구성이 추가한 BOM import
     ("bom_imports", "BOM imports written by the restructure"),
     ("version_properties_removed", "version properties removed (only the dropped explicit versions used them)"),
-    # 재구성이 직접 한 일이므로 검토가 되돌리지 않도록 보여 준다
+    # 재구성이 직접 한 일이다. 검토가 되돌리지 않도록 보여 준다
     ("scope_restored", "scopes restored from the as-is build"),
     ("source_encodings_written", "source encodings written"),
     ("non_filtered_extensions", "maven-resources-plugin nonFilteredFileExtensions written"),
@@ -740,7 +742,7 @@ _RESULT_LISTS: tuple[tuple[str, str], ...] = (
     ("manual_followups", "follow-ups"),
 )
 _STEP_PREFIX_RE = re.compile(r"^[\w.-]+(?: \([\w-]+\))?: ")
-# 이 길이 이상이고 메모의 절반 이상을 차지하는 구조화 항목이 있으면 그 메모는 중복으로 본다
+# 구조화 항목이 이 길이 이상이고 메모의 절반 이상을 차지하면 그 메모는 중복으로 본다
 _COVER_MIN = 16
 _COVER_SHARE = 0.5
 
@@ -750,7 +752,7 @@ def _norm(text: object) -> str:
 
 
 def _covered(note: str, items: list[str]) -> bool:
-    # 메모가 구조화된 항목을 거의 그대로 반복할 때만 빼고, 더 많은 내용을 담은 메모는 남긴다
+    # 메모가 구조화된 항목을 거의 그대로 반복할 때만 뺀다. 내용이 더 많은 메모는 남긴다
     n = _norm(note)
     return any(n == i or (len(i) >= _COVER_MIN and len(i) >= _COVER_SHARE * len(n) and i in n) for i in items)
 
@@ -764,12 +766,12 @@ def _list_block(out: list[str], title: str, items: list[str], indent: str = "  "
 
 def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]:
     """재구성 내역 줄을 만든다.
-    RestructureResult마다 한 블록과 실행 메모를 만들고, 목록은 SECTION_LINES_MAX줄까지 넣는다.
-    이미 구조화된 항목이나 앞의 메모와 같은 내용은 다시 넣지 않는다.
+    RestructureResult마다 블록 하나를 만들고 실행 메모를 덧붙인다. 목록은 SECTION_LINES_MAX줄까지 넣는다.
+    이미 넣은 항목이나 앞의 메모와 같은 내용은 다시 넣지 않는다.
 
     `results` may hold RestructureResult objects or dicts of their fields."""
     out: list[str] = []
-    seen: list[str] = []                         # 중복을 거르려고 이미 넣은 항목과 메모를 정규화해 모아 둔다
+    seen: list[str] = []                         # 이미 넣은 항목과 메모. 중복을 거를 때 쓴다
     for r in results or ():
         if r is None:
             continue
@@ -830,7 +832,8 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
 
 
 def module_lines(poms: list[PomInfo], ws: Any) -> list[str]:
-    """모듈 트리 표, pom이 없는 `<module>`, 어느 집계 pom에도 등록되지 않은 pom 목록을 줄로 만든다."""
+    """모듈 구조를 표로 만든다.
+    pom이 없는 `<module>`과 어느 집계 pom에도 등록되지 않은 pom도 함께 보여 준다."""
     paths = {p.path for p in poms}
     referenced: set[str] = set()
     L = ["| pom | groupId:artifactId | packaging | parent | modules listed |", "|---|---|---|---|---|"]
@@ -868,8 +871,8 @@ def _is_javax_api(g: GAV) -> bool:
 
 def fact_lines(poms: list[PomInfo], cfg: Any) -> list[str]:
     """Maven 없이 pom만 읽어 알 수 있는 정보를 줄로 만든다.
-    필수 아티팩트 선언 위치, 사용 중인 선택 아티팩트, 남아 있는 `artifacts.remove_when_present`,
-    javax.* / jakarta.* API 선언, 중복 선언을 담는다."""
+    필수 아티팩트를 선언한 위치, 사용 중인 선택 아티팩트, 아직 남은 `artifacts.remove_when_present`를 담는다.
+    javax.*, jakarta.* API 선언과 중복 선언도 담는다."""
     a = cfg.artifacts
     L: list[str] = []
 
@@ -929,7 +932,7 @@ BOOT_BOM_KEY = f"{BOOT_GROUP}:spring-boot-dependencies"
 MAX_CHAIN_PROPERTY_LINES = 20
 MAX_VERSION_FACTS = 30
 _PROP_ANY = re.compile(r"\$\{([^}]+)\}")
-# servlet / JSP / EL / websocket API는 내장 Tomcat이 제공하므로 provided scope가 맞다
+# servlet, JSP, EL, websocket API는 내장 Tomcat이 제공한다. 그래서 provided scope가 맞다
 _CONTAINER_APIS = {"servlet-api", "javax.servlet-api", "jakarta.servlet-api", "jsp-api", "javax.servlet.jsp-api",
                    "jakarta.servlet.jsp-api", "el-api", "javax.el-api", "jakarta.el-api", "websocket-api",
                    "javax.websocket-api", "jakarta.websocket-api", "jakarta.websocket-client-api"}
@@ -943,7 +946,7 @@ def chain_facts(cfg: Any) -> Any:
     try:
         from sbmig.build import parent_chain
         facts = parent_chain.load_parent_chain_facts(cfg)
-    except Exception:  # 보조 정보이므로 실패해도 검토는 계속한다
+    except Exception:  # 보조 정보다. 읽지 못해도 검토는 계속한다
         log.debug("parent chain facts for the review unavailable", exc_info=True)
         return None
     return None if facts is None or getattr(facts, "empty", True) else facts
@@ -951,13 +954,13 @@ def chain_facts(cfg: Any) -> Any:
 
 def is_version_property(name: str) -> bool:
     """속성 이름이 버전 속성(`*.version`, `java.version` 제외)인지 반환한다. 재구성의 덮어쓰기 규칙과 같다.
-    `project.*`, `maven.*` 속성은 모듈 pom에 써도 되므로 포함하지 않는다."""
+    `project.*`, `maven.*` 속성은 버전 속성으로 보지 않는다. 모듈 pom에 써도 되는 속성이다."""
     n = (name or "").strip()
     return n.endswith(".version") and n != "java.version" and not n.startswith(("project.", "maven."))
 
 
 def company_properties(facts: Any, cfg: Any) -> tuple[dict[str, str], dict[str, str]]:
-    """회사 부모 체인 pom이 정의한 속성과, 각 속성을 정의한 pom을 반환한다.
+    """회사 부모 체인의 pom이 정의한 속성과 각 속성을 정의한 pom을 반환한다.
     로더에 `company_properties`가 없으면 같은 규칙으로 `properties`에서 고른다.
     `facts`가 None이면 빈 dict 두 개를 반환한다."""
     if facts is None:
@@ -997,14 +1000,14 @@ def _major_minor(v: Optional[str]) -> Optional[tuple[str, str]]:
 @dataclass
 class RawPom:
     """검토에서 쓰는 pom 하나의 원래 값을 담는 클래스.
-    PomInfo와 달리 속성을 치환하기 전의 `<version>` / `<scope>`를 그대로 둔다."""
+    PomInfo와 달리 `<version>`, `<scope>`를 속성 치환 전 값 그대로 둔다."""
     path: str
     raw: Any                       # sbmig.analyze.pom_parser._RawPom
     text: str = ""
 
 
 def raw_poms(ws: Any, poms: list[PomInfo]) -> dict[str, RawPom]:
-    """프로젝트 pom을 치환 없이 파싱해 반환한다. 깨진 pom은 빼고, 예외를 던지지 않는다."""
+    """프로젝트 pom을 속성 치환 없이 파싱해 반환한다. 깨진 pom은 빼고, 예외를 던지지 않는다."""
     from sbmig.analyze.pom_parser import parse_pom_text
 
     out: dict[str, RawPom] = {}
@@ -1027,7 +1030,7 @@ def _resolver(pom: PomInfo, poms: list[PomInfo], base: dict[str, str]):
 
     def resolve(v: Optional[str]) -> str:
         s = (v or "").strip()
-        for _ in range(4):                       # 중첩된 ${…}는 몇 단계까지만 풀고 모르는 이름은 그대로 둔다
+        for _ in range(4):                       # 중첩된 ${…}는 네 단계까지만 푼다. 모르는 이름은 그대로 둔다
             nxt = _PROP_ANY.sub(lambda m: props.get(m.group(1)) or builtins.get(m.group(1)) or m.group(0), s)
             if nxt == s:
                 break
@@ -1052,7 +1055,8 @@ def _skip_keys(cfg: Any, poms: list[PomInfo], results: Iterable[Any]) -> set[str
 
 def managed_versions(cfg: Any, results: Iterable[Any], facts: Any) -> tuple[dict[str, str], dict[str, str]]:
     """프로젝트 pom이 물려받는 관리 버전을 (g:a별 버전, g:a별 관리하는 곳)으로 반환한다.
-    사내 부모 체인의 관리 목록에, 재구성이 Boot BOM을 import했으면 그 목록을 합친다. 예외를 던지지 않는다.
+    사내 부모 체인의 관리 목록이 기본이다. 재구성이 Boot BOM을 import했으면 그 목록도 합친다.
+    예외를 던지지 않는다.
 
     The chain part is `facts.own_managed` (without the Boot add-on), else `facts.managed`."""
     managed: dict[str, str] = {}
@@ -1079,7 +1083,7 @@ def managed_versions(cfg: Any, results: Iterable[Any], facts: Any) -> tuple[dict
             for k, mv in (getattr(bb, "managed", None) or {}).items():
                 if k not in managed:
                     managed[k], by[k] = mv, f"the imported Boot BOM (`{ga}:{version or v}`)"
-        except Exception:  # 보조 정보이므로 실패해도 검토는 계속한다
+        except Exception:  # 보조 정보다. 읽지 못해도 검토는 계속한다
             log.debug("Boot BOM facts for the review unavailable", exc_info=True)
     return managed, by
 
@@ -1087,7 +1091,8 @@ def managed_versions(cfg: Any, results: Iterable[Any], facts: Any) -> tuple[dict
 def version_fact_lines(poms: list[PomInfo], cfg: Any, results: Iterable[Any] = (), *, facts: Any = None,
                        raw: Optional[dict[str, RawPom]] = None, ws: Any = None) -> list[str]:
     """부모 체인 pom에서 읽은 버전 정보로 프롬프트 줄을 만든다. 코드에 쓴 버전 값은 넣지 않는다.
-    보통은 재구성이 이미 정리했으므로 문제 줄이 없다. 정보를 읽지 못하면 빈 목록을 반환하고 예외를 던지지 않는다.
+    보통은 재구성이 이미 정리해서 문제 줄이 없다.
+    정보를 읽지 못하면 빈 목록을 반환한다. 예외를 던지지 않는다.
 
     Lines: the company chain's `*.version` properties, explicit versions on managed artifacts, Spring Boot
     artifacts / plugins / parents on another major.minor than the managed (else target) one, and project
@@ -1130,7 +1135,7 @@ def _version_fact_lines(poms: list[PomInfo], cfg: Any, results: list[Any], facts
                 continue
             ref = _PROP_REF.match(d.version.strip())
             if ref and ref.group(1) in cprops:
-                continue                                  # 사내 속성을 참조하는 버전은 부모 체인이 정한다
+                continue                                  # 사내 속성을 참조하는 버전이다. 부모 체인이 정한다
             v = resolve(d.version)
             if "${" in v:
                 continue
@@ -1143,7 +1148,7 @@ def _version_fact_lines(poms: list[PomInfo], cfg: Any, results: list[Any], facts
                     continue
             if scope == "import" or key in skip:
                 continue
-            # 관리 버전보다 새 명시 버전은 재구성이 일부러 남긴 것이므로 문제로 보지 않는다
+            # 관리 버전보다 새 명시 버전은 재구성이 일부러 남긴 것이다. 문제로 보지 않는다
             if key in managed and (_newer(v, managed[key]) is not True):
                 problems.append(f"- explicit version on a managed artifact: `{p.path}` {key} {v}{where} — managed "
                                 f"{managed[key]} by {by.get(key, 'the parent chain')}")
@@ -1174,7 +1179,7 @@ def _version_fact_lines(poms: list[PomInfo], cfg: Any, results: list[Any], facts
 
 def container_scope_lines(raw: dict[str, RawPom]) -> list[str]:
     """`compile`이나 scope 없이 선언된 컨테이너 API를 warning 줄로 만든다.
-    재구성이 as-is의 provided를 되살리므로 보통은 빈 목록이다."""
+    재구성이 as-is의 provided를 되살린다. 그래서 보통은 빈 목록이다."""
     found: list[str] = []
     for path, rp in raw.items():
         for d in rp.raw.deps:
@@ -1188,7 +1193,7 @@ def container_scope_lines(raw: dict[str, RawPom]) -> list[str]:
 
 
 def _boot_plugin_blocks(text: str) -> list[str]:
-    """pom 텍스트의 `<build><plugins>` 안에 있는 spring-boot-maven-plugin `<plugin>` 블록을 찾는다.
+    """pom 텍스트에서 `<build><plugins>` 안의 spring-boot-maven-plugin 블록을 찾는다.
     주석, pluginManagement, profiles 안의 블록은 제외한다."""
     body = re.sub(r"<!--.*?-->", "", text or "", flags=re.S)
     body = re.sub(r"<pluginManagement>.*?</pluginManagement>", "", body, flags=re.S)
@@ -1198,8 +1203,8 @@ def _boot_plugin_blocks(text: str) -> list[str]:
 
 
 def repackaged_dependency_lines(poms: list[PomInfo], raw: dict[str, RawPom]) -> list[str]:
-    """다른 모듈이 의존하는 jar 모듈이 classifier 없이 repackage하면 critical 줄을 만든다.
-    클래스가 `BOOT-INF/` 아래로 들어가 의존하는 모듈의 컴파일이 깨지기 때문이다.
+    """다른 모듈이 의존하는 jar 모듈을 classifier 없이 repackage하면 critical 줄을 만든다.
+    repackage하면 클래스가 `BOOT-INF/` 아래로 들어간다. 그러면 의존하는 모듈의 컴파일이 깨진다.
     `<classifier>`나 `<skip>`이 있으면 문제로 보지 않는다."""
     by_key = {f"{p.group_id}:{p.artifact_id}": p for p in poms if p.group_id}
     dependents: dict[str, list[str]] = {}
@@ -1248,17 +1253,17 @@ def _declared_keys(rp: Any) -> set[str]:
 def invariant_violations(cfg: Any, changed: Iterable[str], before_poms: list[PomInfo], before: dict[str, Any],
                          after_poms: list[PomInfo], after: dict[str, Any], facts: Any = None,
                          results: Iterable[Any] = ()) -> list[str]:
-    """검토의 편집이 재구성의 결정을 되돌렸는지 바뀐 pom마다 검사하고, 위반마다 한 문장씩 반환한다.
+    """검토의 편집이 재구성의 결정을 되돌렸는지 바뀐 pom마다 검사한다. 위반마다 한 문장씩 반환한다.
     - 사내 부모 체인이 정의한 버전 속성을 새로 쓰거나 바꿨다
     - 관리되는 아티팩트에 없던 명시 버전을 붙였다
     - 사내 부모도 프로젝트 pom도 아닌 `<parent>`를 넣었다
     - 필수 의존성을 지웠다
-    - IDE 출력 폴더의 복사본을 모듈로 나열해 reactor에 같은 좌표가 둘이 됐다
+    - IDE 출력 폴더의 복사본을 모듈로 나열해서 reactor에 같은 좌표가 둘이 됐다
     검사 자체가 실패하면 빈 목록을 반환하고 예외를 던지지 않는다."""
     try:
         return _invariant_violations(cfg, list(changed), before_poms, before, after_poms, after, facts,
                                      list(results or ()))
-    except Exception:  # 안전장치일 뿐이므로 검사 실패로 검토를 실패시키지 않는다
+    except Exception:  # 안전장치일 뿐이다. 검사가 실패해도 검토는 실패시키지 않는다
         log.debug("review invariant check failed", exc_info=True)
         return []
 
@@ -1308,14 +1313,14 @@ def _invariant_violations(cfg: Any, changed: list[str], before_poms: list[PomInf
             gone = [k for k in mandatory if k in _declared_keys(braw)
                     and (fraw is None or k not in _declared_keys(fraw))]
             out += [f"`{path}`: mandatory dependency {k} removed" for k in gone]
-    # 편집이 IDE 출력 폴더의 복사본(`boot/bin`)을 모듈로 나열하면 Maven "is duplicated in the reactor" 오류가 난다.
-    # pom 파싱은 나열되지 않은 복사본만 빼므로 편집이 나열한 복사본은 여기서 잡는다
+    # IDE 출력 폴더의 복사본(`boot/bin`)을 모듈로 나열하면 Maven이 "is duplicated in the reactor"로 실패한다.
+    # pom 파싱은 나열되지 않은 복사본만 뺀다. 그래서 편집이 나열한 복사본은 여기서 잡는다
     out.extend(reactor_duplicate_lines(before_poms, after_poms, changed))
     return out
 
 
 def _reactor_duplicate_keys(poms: list[PomInfo]) -> dict[str, list[str]]:
-    """reactor에 포함되는 pom 중 groupId:artifactId가 겹치는 것을 찾아 키별 경로 목록으로 반환한다."""
+    """reactor에 들어가는 pom 중 groupId:artifactId가 겹치는 것을 찾는다. 좌표별 경로 목록으로 반환한다."""
     referenced = {module_pom_path(p.path, m) for p in poms for m in p.modules}
     groups: dict[str, list[str]] = {}
     for p in poms:
@@ -1326,7 +1331,7 @@ def _reactor_duplicate_keys(poms: list[PomInfo]) -> dict[str, list[str]]:
 
 def reactor_duplicate_lines(before_poms: list[PomInfo], after_poms: list[PomInfo], changed: list[str]) -> list[str]:
     """편집 뒤 reactor에 같은 좌표의 pom이 새로 둘 이상 생겼으면 좌표마다 한 문장씩 반환한다.
-    편집 전부터 겹쳐 있던 좌표는 검토 탓이 아니므로 넣지 않는다."""
+    편집 전부터 겹쳐 있던 좌표는 검토 탓이 아니다. 넣지 않는다."""
     was = _reactor_duplicate_keys(before_poms)
     now = _reactor_duplicate_keys(after_poms)
     listers = [c for c in changed if posixpath.basename(c) == "pom.xml"]
@@ -1347,7 +1352,7 @@ MAX_BINARY_FACTS = 12
 def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
     """`<filtering>true</filtering>` 리소스 아래에 있는 바이너리 파일을 줄로 만든다.
     빌드는 통과하지만 Maven 필터링이 패키지 안의 바이트를 바꾼다.
-    재구성이 ``<nonFilteredFileExtensions>``를 이미 쓰므로 아직 빠진 것만 나온다. 예외를 던지지 않는다.
+    재구성이 ``<nonFilteredFileExtensions>``를 이미 써 두므로 아직 빠진 것만 나온다. 예외를 던지지 않는다.
 
     Source: `binary_resource_plan(ws, None, poms).files`, the files no plugin entry covers yet."""
     try:
@@ -1392,7 +1397,7 @@ def select_poms(ws: Any, poms: list[PomInfo], max_poms: int, max_chars: int) -> 
 
 def collect_review_input(ws: Any, profile: Optional[ProjectProfile], cfg: Any, *, notes: Iterable[str] = (),
                          results: Iterable[Any] = ()) -> ReviewInput:
-    """재구성 뒤 작업 공간에서 검토 프롬프트에 들어갈 자료를 모두 읽어 ReviewInput으로 만든다.
+    """재구성이 끝난 프로젝트에서 검토 프롬프트에 들어갈 자료를 모두 읽어 ReviewInput으로 만든다.
     파일은 읽기만 한다."""
     from sbmig.analyze.pom_parser import parse_poms
 

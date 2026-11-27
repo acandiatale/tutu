@@ -1,13 +1,14 @@
-"""변환에서 실행할 레시피 id를 합성 레시피 하나로 묶어 이번 실행용 ``rewrite.yml``을 만드는 모듈.
-``OpenRewriteRunner.compose``가 호출하고, 결과는 ``logs/rewrite-<n>.yml``로 저장되어 플러그인의
-``-Drewrite.configLocation``이 된다.
-- 합성 레시피 ``com.company.migrate.Run``의 ``recipeList``는 요청한 id를 요청 순서대로 중복 없이 담는다.
-  이것 하나만 활성화하므로 적용 순서가 항상 같다
-- 호출자가 준 ``extra_files``의 선언형 레시피는 ``{{SPRING_BOOT_VERSION}}`` 등을 채워 앞에 붙인다
-- 카탈로그가 ``file``을 지정한 레시피(Hystrix 전환)는 실행기가 그 파일을 ``extra_files``로 넘긴다
+"""이번 실행에 쓸 ``rewrite.yml``을 만드는 모듈. 실행할 레시피 id를 합성 레시피 하나로 묶는다.
 
 Placeholders: ``{{SPRING_BOOT_VERSION}}``, ``{{JAVA_VERSION}}``, ``{{SPRING_FRAMEWORK_VERSION}}``
 (``template_values``). No KB recipe files.
+
+``OpenRewriteRunner.compose`` calls it; the result is saved as ``logs/rewrite-<n>.yml`` and becomes the
+plugin's ``-Drewrite.configLocation``. The ``recipeList`` of the composite ``com.company.migrate.Run`` holds
+the requested ids in the requested order, without duplicates. Only the composite is activated, so the order
+of application never changes. Declarative recipes from ``extra_files`` go first, placeholders filled. A recipe
+whose catalog entry names a ``file`` (the Hystrix conversion) reaches this module through ``extra_files``,
+passed by the runner.
 """
 from __future__ import annotations
 
@@ -30,8 +31,8 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
 
 
 class RecipeCompositionError(ValueError):
-    """자기 파일을 지정한 레시피가 합성된 어느 파일에도 정의되어 있지 않을 때 던지는 예외.
-    지금 코드는 던지지 않으며 공개 API 호환을 위해 남겨 둔다."""
+    """자기 파일을 지정한 레시피가 합성한 어느 파일에도 정의되어 있지 않을 때 던지는 예외.
+    지금 코드는 던지지 않는다. 공개 API 호환 때문에 남겨 둔다."""
 
     def __init__(self, missing: Sequence[str], searched: Sequence[str]):
         self.missing = list(missing)
@@ -42,7 +43,8 @@ class RecipeCompositionError(ValueError):
 
 
 def template_values(target: TargetConfig | None) -> dict[str, str]:
-    """레시피 파일의 ``{{…}}`` 플레이스홀더 값(목표 Spring Boot / Java / Spring Framework 버전)을 반환한다."""
+    """레시피 파일의 ``{{…}}`` 플레이스홀더에 넣을 값을 반환한다.
+    목표 Spring Boot, Java, Spring Framework 버전이다."""
     t = target or TargetConfig()
     return {
         "SPRING_BOOT_VERSION": t.spring_boot_version,
@@ -73,7 +75,7 @@ def split_documents(text: str) -> list[str]:
 
 
 def recipe_documents(text: str) -> dict[str, dict]:
-    """텍스트 안의 모든 ``specs.openrewrite.org/v1beta/recipe`` 문서를 이름별로 파싱해 반환한다."""
+    """텍스트 안의 ``specs.openrewrite.org/v1beta/recipe`` 문서를 모두 파싱해 이름별로 반환한다."""
     out: dict[str, dict] = {}
     for doc in yaml.safe_load_all(text):
         if isinstance(doc, dict) and doc.get("type") == RECIPE_TYPE and doc.get("name"):
@@ -95,7 +97,7 @@ def recipe_list_ids(doc: dict) -> list[str]:
 
 def _source_files(extra_files: Iterable[Path], recipes: Sequence[RecipeRef]) -> list[Path]:
     """합성 파일에 넣을 선언형 레시피 파일을 중복 없이 반환한다.
-    계획은 레시피 id만 쓰므로 호출자가 준 ``extra_files``만 담는다. ``recipes``는 쓰지 않는다."""
+    호출자가 준 ``extra_files``만 담는다. 계획은 레시피 id만 쓰기 때문에 ``recipes``는 보지 않는다."""
     files: list[Path] = [Path(p) for p in extra_files]
     seen: set[str] = set()
     out = []
@@ -111,8 +113,8 @@ def compose_rewrite_yaml(recipes: Sequence[RecipeRef], *, extra_files: Iterable[
                          target: TargetConfig | None = None,
                          composite_id: str = COMPOSITE_RECIPE_ID) -> str:
     """rewrite.yml 전체 텍스트를 만든다.
-    머리 주석, ``extra_files``의 레시피 문서, 마지막에 합성 레시피 순서다.
-    합성 id와 같은 이름의 문서는 무시하고 같은 이름이 두 번 나오면 경고를 남기고 뒤의 것을 쓴다.
+    머리 주석, ``extra_files``의 레시피 문서, 합성 레시피 순서로 쓴다.
+    합성 id와 같은 이름의 문서는 무시한다. 같은 이름이 두 번 나오면 경고를 남기고 뒤의 것을 쓴다.
     ``extra_files``의 파일이 없으면 FileNotFoundError, YAML이 깨졌으면 ValueError를 던진다."""
     values = template_values(target)
     files = _source_files([Path(p) for p in extra_files], recipes)
