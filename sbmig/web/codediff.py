@@ -1,9 +1,7 @@
-"""이관 결과의 코드 변경 화면에 쓸 데이터를 실행 폴더의 ``codediff/``와 ``result.zip``에서 읽어 내주는 모듈.
-웹 파드는 git과 diff를 실행하지 않고, 빌드 파드가 기록한 ``index.json``, ``patch.bin``, ``summary.json``만 읽는다.
-- 앞뒤 줄을 더 보여 줄 때는 ``result.zip``에서 최종 파일을 읽는다
-- 손상된 산출물은 500이 아니라 짧은 이유를 담은 404로 응답하고, 같은 이유는 WARNING으로 한 번만 남긴다
-- 마지막 마스킹 전인 실행은 409로 응답한다
-- 파싱한 index와 ZIP 항목 목록은 작은 LRU에 두고, 요청 사이에 파일 핸들을 열어 두지 않는다
+"""코드 변경 화면에 보여 줄 데이터를 실행 폴더에서 읽어 내주는 모듈.
+
+The web pod runs no git and no diff: it reads only the build pod's ``index.json``, ``patch.bin`` and
+``summary.json``. The extra lines above and below a change come from the final file inside ``result.zip``.
 
 Contract: docs/INTERFACES.md "v2.1z-au". Routes (plain `def`: they run in the thread pool):
 
@@ -54,7 +52,7 @@ MAX_LINES_PER_CALL = 5_000           # `lines` 호출 한 번에 내주는 최�
 DEFAULT_SPAN = 200                   # `lines`에 end가 없으면 start부터 200줄을 내준다
 MAX_MEMBER_BYTES = 32 * 1024 * 1024  # 압축을 푼 크기가 이보다 큰 최종 파일은 앞뒤 줄을 읽지 않는다
 MAX_INDEX_BYTES = 256 * 1024 * 1024  # 이보다 큰 index.json은 파싱하지 않는다. 2만 항목이 몇 MiB다
-MAX_SUMMARY_BYTES = 1024 * 1024      # summary.json은 작으므로 이보다 크면 빌드 파드가 쓴 파일이 아니다
+MAX_SUMMARY_BYTES = 1024 * 1024      # summary.json이 이보다 크면 빌드 파드가 쓴 파일이 아니다. 원래 작은 파일이다
 MAX_HUNK_BYTES = 8 * 1024 * 1024     # patch.bin 안 파일 하나의 범위 한도. 빌드 파드는 1 MiB에서 자른다
 INDEX_CACHE = 4
 ZIP_CACHE = 8
@@ -64,7 +62,7 @@ _HEADER = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 
 
 class CodeDiffUnavailable(Exception):
-    """코드 변경 산출물이나 그 일부를 읽을 수 없을 때 던지는 예외 클래스. ``reason``에 404에 담을 짧은 이유가 있다."""
+    """코드 변경 산출물을 읽을 수 없을 때 던지는 예외 클래스. ``reason``은 404 응답에 담을 짧은 이유다."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -105,7 +103,8 @@ _warned_lock = threading.Lock()
 
 
 def clear_caches() -> None:
-    """파싱한 index와 ZIP 항목 목록 캐시를 비운다. 테스트에서만 쓴다. 키에 mtime과 크기가 있어 따로 비울 일이 없다."""
+    """파싱한 index와 ZIP 항목 목록 캐시를 비운다. 테스트에서만 쓴다.
+    캐시 키에 mtime과 크기가 들어 있어서 평소에는 비울 일이 없다."""
     _index_cache.clear()
     _zip_cache.clear()
     with _warned_lock:
@@ -113,7 +112,7 @@ def clear_caches() -> None:
 
 
 def _warn_once(key: str, msg: str, *args: Any) -> None:
-    # 같은 파일을 여러 번 요청해도 로그가 쌓이지 않도록 같은 이유는 한 번만 남긴다
+    # 같은 이유는 한 번만 남긴다. 같은 파일을 여러 번 요청해도 로그가 쌓이지 않는다
     with _warned_lock:
         if key in _warned:
             return
@@ -133,8 +132,9 @@ def artifact_dir(run_dir: Path) -> Path:
 
 
 def load_index(run_dir: Path) -> dict[str, Any]:
-    """실행 폴더의 ``codediff/index.json``을 읽어 반환한다. 같은 파일은 캐시에서 꺼내므로 반환값을 바꾸면 안 된다.
-    없거나, 깨졌거나, ``files`` 목록이 없거나, ``version``이 1이 아니면 ``CodeDiffUnavailable``을 던진다.
+    """실행 폴더의 ``codediff/index.json``을 읽어 반환한다.
+    같은 파일은 캐시에서 꺼낸다. 그래서 반환값을 바꾸면 안 된다.
+    파일이 없거나 깨졌으면 ``CodeDiffUnavailable``을 던진다. ``files`` 목록이 없거나 ``version``이 1이 아닐 때도 같다.
 
     Cache key: path + mtime + size + inode."""
     path = artifact_dir(run_dir) / INDEX_FILE
@@ -171,7 +171,8 @@ def load_index(run_dir: Path) -> dict[str, Any]:
 
 def read_summary(run_dir: Path) -> dict[str, Any] | None:
     """``codediff/summary.json``의 ``summary`` 객체를 반환한다. ``RunManager.status()``가 쓴다.
-    산출물이나 옆의 index.json이 없거나, 깨졌거나, 다른 ``version``이면 None을 반환하고 예외를 던지지 않는다."""
+    summary.json이나 옆의 index.json이 없거나 깨졌으면 None을 반환한다. ``version``이 다를 때도 같다.
+    예외는 던지지 않는다."""
     d = artifact_dir(run_dir)
     path = d / SUMMARY_FILE
     try:
@@ -218,7 +219,7 @@ def _decoder(encoding: Any) -> Callable[[bytes], str]:
 
 
 def _split_lines(data: bytes) -> list[bytes]:
-    # 마지막 줄 끝의 줄바꿈 뒤에는 줄이 없으므로 빈 조각을 버린다
+    # 파일 끝의 줄바꿈 뒤에 생기는 빈 조각은 줄이 아니다. 버린다
     lines = data.split(b"\n")
     if lines and lines[-1] == b"":
         lines.pop()
@@ -286,8 +287,9 @@ def parse_hunks(data: bytes, encoding: Any = "utf-8") -> tuple[list[dict[str, An
 
 
 def read_patch(run_dir: Path, entry: dict[str, Any]) -> bytes | None:
-    """항목의 ``patch`` 범위(``[offset, length]``)를 ``patch.bin``에서 읽어 반환한다. 범위가 없으면 None을 반환한다.
-    범위가 잘못되었거나, 파일 끝을 넘거나, 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다."""
+    """파일 하나의 hunk 바이트를 ``patch.bin``에서 읽어 반환한다. 위치는 항목의 ``patch``(``[offset, length]``)다.
+    ``patch``가 없으면 None을 반환한다.
+    범위가 잘못됐거나 파일 끝을 넘으면 ``CodeDiffUnavailable``을 던진다. 읽지 못할 때도 같다."""
     rng = entry.get("patch")
     if rng is None:
         return None
@@ -313,7 +315,7 @@ def read_patch(run_dir: Path, entry: dict[str, Any]) -> bytes | None:
 
 
 def _safe_rel(p: Any, allow_empty: bool = False) -> str | None:
-    # ZIP 밖이나 다른 항목을 가리키지 못하도록 절대 경로와 .. 구성 요소를 거부한다
+    # 절대 경로와 ..이 든 경로는 거부한다. ZIP 밖이나 다른 항목을 가리키지 못하게 한다
     if not isinstance(p, str):
         return None
     if p == "":
@@ -329,8 +331,8 @@ def _safe_rel(p: Any, allow_empty: bool = False) -> str | None:
 
 
 def member_name(index: dict[str, Any], entry: dict[str, Any]) -> str | None:
-    """항목의 최종 파일이 ``result.zip`` 안에서 가지는 이름 ``<zip_root>/<path>``를 반환한다.
-    경로가 절대 경로이거나, ``..``가 있거나, 문자열이 아니면 None을 반환한다."""
+    """항목의 최종 파일을 ``result.zip`` 안에서 찾을 이름(``<zip_root>/<path>``)을 반환한다.
+    경로가 절대 경로이거나 ``..``이 있으면 None을 반환한다. 문자열이 아닐 때도 같다."""
     root = _safe_rel(index.get("zip_root", ""), allow_empty=True)
     path = _safe_rel(entry.get("path"))
     if root is None or path is None:
@@ -339,7 +341,7 @@ def member_name(index: dict[str, Any], entry: dict[str, Any]) -> str | None:
 
 
 def _zip_sizes(zip_path: Path) -> dict[str, int] | None:
-    # ZIP 중앙 디렉터리만 읽어 항목 이름과 크기를 캐시하고 파일은 바로 닫는다
+    # ZIP의 목록만 읽어서 항목 이름과 크기를 캐시한다. 파일은 바로 닫는다
     try:
         st = zip_path.stat()
     except OSError:
@@ -379,13 +381,14 @@ def _line_source_problem(run_dir: Path, index: dict[str, Any], entry: dict[str, 
 
 
 def is_expandable(run_dir: Path, index: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """항목의 최종 파일을 ``result.zip``에서 읽을 수 있는지 확인한다. 캐시한 중앙 디렉터리만 보고 압축은 풀지 않는다.
-    삭제된 파일, 바이너리, 안전하지 않은 경로, ZIP에 없는 파일, ``MAX_MEMBER_BYTES``보다 큰 파일은 읽을 수 없다."""
+    """이 파일의 앞뒤 줄을 ``result.zip``에서 읽을 수 있으면 True를 반환한다. 압축은 풀지 않고 ZIP 목록만 본다.
+    삭제된 파일, 바이너리, 안전하지 않은 경로, ZIP에 없는 파일, ``MAX_MEMBER_BYTES``보다 큰 파일은 False다."""
     return _line_source_problem(run_dir, index, entry)[0] is None
 
 
 def file_entry(index: dict[str, Any], n: int) -> dict[str, Any] | None:
-    """index의 ``n``번째 파일 항목을 반환한다. 항목 id는 위치다. 범위 밖이거나 객체가 아니면 None을 반환한다."""
+    """index의 ``n``번째 파일 항목을 반환한다. 항목 id가 곧 목록 안의 위치다.
+    범위 밖이거나 객체가 아니면 None을 반환한다."""
     files = index.get("files") or []
     if n < 0 or n >= len(files) or not isinstance(files[n], dict):
         return None
@@ -393,9 +396,9 @@ def file_entry(index: dict[str, Any], n: int) -> dict[str, Any] | None:
 
 
 def file_detail(run_dir: Path, index: dict[str, Any], n: int) -> dict[str, Any] | None:
-    """파일 하나의 항목과 파싱한 hunk, ``no_newline``, ``expandable``을 반환한다. ``n``이 범위 밖이면 None을 반환한다.
-    patch 범위가 없으면 빈 hunk와 항목의 ``omitted``를 그대로 담는다.
-    hunk를 읽을 수 없으면 빈 목록과 ``omitted: "unreadable"``을 담고 WARNING을 한 번 남긴다."""
+    """파일 하나의 항목과 파싱한 hunk를 반환한다. ``n``이 범위 밖이면 None을 반환한다.
+    patch 범위가 없으면 hunk는 비우고 항목의 ``omitted``를 그대로 담는다.
+    hunk를 읽지 못하면 ``omitted: "unreadable"``로 반환한다. WARNING은 한 번만 남긴다."""
     entry = file_entry(index, n)
     if entry is None:
         return None
@@ -427,7 +430,8 @@ def _parse_int(value: str | None, name: str) -> int | None:
 def read_lines(run_dir: Path, index: dict[str, Any], entry: dict[str, Any], start: int | None = None,
                end: int | None = None) -> dict[str, Any]:
     """최종 파일의 ``start``부터 ``end``까지 줄을 ``result.zip``에서 읽어 ``{start, end, total, lines}``로 반환한다.
-    범위는 파일에 맞게 줄이고 한 번에 ``MAX_LINES_PER_CALL``줄까지만 읽는다. 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다.
+    범위는 파일에 맞게 줄인다. 한 번에 ``MAX_LINES_PER_CALL``줄까지만 읽는다.
+    읽을 수 없으면 ``CodeDiffUnavailable``을 던진다.
 
     1-based, inclusive; defaults 1 and start + 199; the returned `end` is `start + len(lines) - 1`. Decoded
     like the hunks."""
@@ -462,7 +466,8 @@ def read_lines(run_dir: Path, index: dict[str, Any], entry: dict[str, Any], star
 
 
 def create_codediff_router(mgr: Any) -> APIRouter:
-    """코드 변경 화면의 API 라우터를 만든다. ``mgr``는 실행 폴더와 마스킹 대기 여부를 알려 주는 ``RunManager``다.
+    """코드 변경 화면의 API 라우터를 만든다.
+    ``mgr``는 ``RunManager``다. 실행 폴더가 어디인지, 마스킹이 끝났는지를 알려 준다.
 
     Run ids go through app.py's `_check_id` (imported here, when app.py is already loaded)."""
     from .app import _check_id
@@ -476,7 +481,7 @@ def create_codediff_router(mgr: Any) -> APIRouter:
         return JSONResponse(body, status_code=status, headers=NOSTORE)
 
     def gate(run_id: str) -> tuple[Path | None, JSONResponse | None]:
-        # 실행 확인, 마스킹 대기 확인을 다른 결과 파일 라우트와 같은 순서로 한다
+        # 실행이 있는지 보고, 마스킹이 끝났는지 본다. 다른 결과 파일 라우트와 같은 순서다
         rid = _check_id(run_id)
         rd = mgr.run_dir(rid)
         if rid not in mgr.runs and not rd.is_dir():

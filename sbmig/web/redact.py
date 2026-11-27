@@ -1,11 +1,13 @@
 """실행 폴더의 텍스트 출력에서 비밀 값을 마스킹하는 모듈.
-비밀로 보이는 환경 변수의 값을 마스킹 문자열로 바꾸고, URL의 사용자 정보(``https://user:pass@host``)도 가린다.
-- 대상은 실행 폴더 최상위의 텍스트 파일과 ``logs/``, ``remediation/`` 아래 텍스트 파일이다
-- ``remediation/``의 ``accepted/``, ``rounds/<n>/candidate/``, ``original/``은 뺀다. 조치가 트리 해시로 확인하기 때문이다
-- ``control/``, ZIP, ``project/``는 건드리지 않는다. 바뀐 파일만 임시 파일에 쓴 뒤 원자적으로 교체한다
-- ``SBMIG_REDACT_OUTPUT=1``이면 ``install_output_redaction``이 로그와 저널 출력에 같은 규칙을 설치해 기록할 때 마스킹한다
-- 비밀 값은 JSON 이스케이프, 퍼센트 인코딩, 줄 단위 출력처럼 다른 표기로도 나타나므로 그 표기까지 함께 가린다
-- ``.json``과 ``.jsonl``은 문자열 값 안에서만 바꾼다. 키, 숫자, 구조는 그대로 둔다
+비밀로 보이는 환경 변수의 값과 URL의 사용자 정보(``https://user:pass@host``)를 가린다.
+
+Targets: the text files at the top of the run folder and the text files under ``logs/`` and
+``remediation/``. Left out: ``accepted/``, ``rounds/<n>/candidate/`` and ``original/`` of ``remediation/``,
+because the remediation checks them by their tree hash; ``control/``, ZIPs and ``project/`` are never
+touched. Only a changed file is rewritten, through a temp file and an atomic replace. With
+``SBMIG_REDACT_OUTPUT=1``, ``install_output_redaction`` puts the same rules on the log and journal output,
+so lines are masked as they are written. In ``.json`` and ``.jsonl`` files only string values change; keys,
+numbers and the structure stay.
 
 `Redactor` = pre-expanded values, one line at a time; `expand_values` adds the spellings a secret takes in
 output."""
@@ -27,23 +29,23 @@ from sbmig.web import contract
 log = logging.getLogger(__name__)
 
 TEXT_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".log", ".txt", ".yml"})
-# 이관에 이어 실행한 취약점 조치의 폴더이며 sbmig.remediations.chain의 CHAIN_DIR와 같은 이름이어야 한다
+# 이관에 이어 실행한 취약점 조치의 폴더. sbmig.remediations.chain의 CHAIN_DIR와 같은 이름이어야 한다
 REMEDIATION_DIR = "remediation"
 REMEDIATION_SUFFIXES = TEXT_SUFFIXES | {".patch"}
-REMEDIATION_SKIP_TOP = frozenset({"accepted", "original"})     # 프로젝트 트리와 원본(ZIP, manifest)은 마스킹하지 않는다
-# scheme://userinfo@ 형태. userinfo에는 "/", "@", 공백이 없고 scheme은 무엇이든 된다(https, git+ssh, jdbc:…:// 등)
+REMEDIATION_SKIP_TOP = frozenset({"accepted", "original"})     # 프로젝트 파일과 원본(ZIP, manifest)은 마스킹하지 않는다
+# scheme://userinfo@ 형태. userinfo에는 "/", "@", 공백이 없다. scheme은 무엇이든 된다(https, git+ssh, jdbc:…:// 등)
 _URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^\s/@:'\"<>]+(?::[^\s/@'\"<>]*)?)@")
 # 여러 줄짜리 비밀(PEM 키, JSON 자격 증명)은 줄마다 따로 출력될 수 있다.
-# "}" 같은 짧은 줄 때문에 로그 전체가 지워지지 않도록 이 길이 이상인 줄만 따로 마스킹한다
+# 이 길이 이상인 줄만 따로 마스킹한다. "}" 같은 짧은 줄까지 가리면 로그 전체가 지워진다
 MIN_LINE_LEN = 2 * contract.MIN_SECRET_LEN
 LIVE_REFRESH_S = 1.0               # 실행 중 마스킹에서 비밀 값 목록을 다시 읽는 간격, 초
 
 
 def expand_values(values: Iterable[str]) -> list[str]:
-    """마스킹할 값을 출력에 나타날 수 있는 표기까지 펼쳐서 긴 것부터 중복 없이 반환한다.
+    """마스킹할 값을 출력에 나올 수 있는 표기까지 펼쳐서 반환한다. 긴 것부터, 중복 없이 반환한다.
     - 원래 값, 앞뒤 공백을 뗀 값, JSON 이스케이프, URL 퍼센트 인코딩, ``repr`` 표기를 넣는다
     - 여러 줄 값은 ``MIN_LINE_LEN`` 이상인 각 줄도 넣는다
-    - 펼친 표기가 ``contract.MIN_SECRET_LEN``보다 짧으면 버리지만, 받은 값 자체는 길이와 상관없이 남긴다"""
+    - 펼친 표기가 ``contract.MIN_SECRET_LEN``보다 짧으면 버린다. 받은 값 자체는 길이와 상관없이 남긴다"""
     out: set[str] = set()
     for v in values:
         if not v:
@@ -63,13 +65,13 @@ def _mask_userinfo(text: str, mask: str) -> str:
 
 
 def _token_pattern(value: str) -> re.Pattern[str]:
-    # 짧은 값은 앞뒤에 영문자나 숫자가 붙지 않은 하나의 토큰일 때만 바꿔서 날짜, 해시, 숫자 안의 일치를 피한다.
+    # 짧은 값은 앞뒤에 영문자나 숫자가 붙지 않은 토큰일 때만 바꾼다. 날짜, 해시, 숫자 안에서 우연히 맞는 경우를 피한다.
     # 숫자 사이의 - . : 는 날짜, 시각, 버전을 잇는 문자로 본다
     return re.compile(r"(?<![A-Za-z0-9])(?<![0-9][-.:])" + re.escape(value) + r"(?![A-Za-z0-9])(?![-.:][0-9])")
 
 
 def _compile(values: Iterable[str]) -> tuple[tuple[str, re.Pattern[str] | None], ...]:
-    # 펼친 값마다 바꾸는 방법을 정한다. MIN_SECRET_LEN 이상은 그대로 바꾸고, 짧은 값은 토큰 정규식으로 바꾼다
+    # 펼친 값마다 바꾸는 방법을 정한다. MIN_SECRET_LEN 이상은 문자열 그대로, 짧은 값은 토큰 정규식으로 바꾼다
     return tuple((v, _token_pattern(v) if len(v) < contract.MIN_SECRET_LEN else None) for v in values)
 
 
@@ -81,21 +83,21 @@ def _replace(text: str, compiled: Iterable[tuple[str, re.Pattern[str] | None]], 
 
 
 def redact_text(text: str, values: list[str], mask: str = "***") -> str:
-    """텍스트에서 ``values``와 그 출력 표기를 모두 ``mask``로 바꾸고 URL 사용자 정보를 가린다.
-    짧은 값이 긴 값의 일부만 지우면 나머지가 남으므로 긴 값부터 바꾼다.
+    """텍스트에서 ``values``와 그 출력 표기를 모두 ``mask``로 바꾼다. URL 사용자 정보도 가린다.
+    긴 값부터 바꾼다. 짧은 값이 긴 값의 일부만 지우면 나머지가 남기 때문이다.
     ``contract.MIN_SECRET_LEN``보다 짧은 값(4자 IVAS 사용자 id 등)은 하나의 토큰일 때만 바꾼다.
 
     `https://u:p@h` -> `https://***@h`."""
     return _mask_userinfo(_replace(text, _compile(expand_values(values)), mask), mask)
 
 
-# JSON 문자열 리터럴 하나. 올바른 JSON에서 큰따옴표는 문자열 경계에만 쓰이므로 왼쪽부터 찾으면 정확하다
+# JSON 문자열 리터럴 하나. 올바른 JSON에서 큰따옴표는 문자열 경계에만 쓰인다. 그래서 왼쪽부터 찾으면 정확하다
 _JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 
 
 def redact_json_text(text: str, values: list[str], mask: str = "***") -> str | None:
     """JSON 텍스트의 문자열 값 안에서만 비밀 값을 바꾼다. 키, 숫자, 구조와 나머지 바이트는 그대로 둔다.
-    JSON으로 읽히지 않으면 None을 반환하고, 호출한 쪽이 텍스트로 처리한다.
+    JSON으로 읽히지 않으면 None을 반환한다. 그때는 호출한 쪽이 일반 텍스트로 마스킹한다.
 
     A plain substring pass over `report.json` would replace a short id inside numbers and hashes and leave the
     file unparsable."""
@@ -130,7 +132,7 @@ def _has_non_ascii(raw: str) -> bool:
 
 
 def _redact_structured(path: Path, text: str, values: list[str], mask: str) -> str:
-    # .json은 파일 전체를, .jsonl은 줄마다 JSON으로 읽어 문자열 값 안에서만 바꾼다. 읽히지 않으면 텍스트로 처리한다
+    # .json은 파일 전체를, .jsonl은 줄마다 JSON으로 읽어 문자열 값 안에서만 바꾼다. 읽히지 않으면 텍스트로 바꾼다
     suffix = path.suffix.lower()
     if suffix == ".json":
         new = redact_json_text(text, values, mask)
@@ -147,9 +149,9 @@ def _redact_structured(path: Path, text: str, values: list[str], mask: str) -> s
 
 
 class Redactor:
-    """미리 펼쳐 둔 비밀 값으로 로그를 한 줄씩 마스킹하는 호출 가능 클래스. 줄마다 값을 다시 펼치지 않으려고 둔다.
+    """미리 펼쳐 둔 비밀 값으로 로그를 한 줄씩 마스킹하는 호출 가능 클래스. 줄마다 값을 다시 펼치지 않는다.
     ``refresh_s``를 주면 그 간격마다 ``source``를 다시 읽는다. 실행 중에 새 토큰을 받으면 비밀 값이 늘기 때문이다.
-    ``source``가 예외를 던지면 호출도 예외를 던지고, 호출하는 쪽이 그 줄을 내보내지 않는다."""
+    ``source``가 예외를 던지면 호출도 예외를 던진다. 그 줄은 호출하는 쪽이 내보내지 않는다."""
 
     def __init__(self, source: Callable[[], Iterable[str]], *, refresh_s: float | None = None, mask: str = "***") -> None:
         self._source, self._refresh_s, self.mask = source, refresh_s, mask
@@ -186,7 +188,7 @@ class Redactor:
 
     def line(self, chunk: bytes) -> bytes:
         """출력 한 줄(bytes)을 마스킹한다. 바뀐 것이 없으면 받은 bytes를 그대로 반환한다.
-        마스킹에 실패하면 원문 대신 ``scrub.WITHHELD`` 한 줄을 반환하고, 예외를 던지지 않는다."""
+        마스킹에 실패하면 원문 대신 ``scrub.WITHHELD`` 한 줄을 반환한다. 예외를 던지지 않는다."""
         try:
             text = chunk.decode("utf-8", errors="replace")
             new = self(text)
@@ -197,22 +199,22 @@ class Redactor:
 
 def live_secret_values() -> list[str]:
     """이 프로세스가 지금 아는 비밀 값을 반환한다.
-    환경 변수의 값(``contract.secret_values``)과 실행 중에 등록된 값(``scrub.note_secret``)을 합친다."""
+    환경 변수의 값(``contract.secret_values``)에 실행 중에 등록된 값(``scrub.note_secret``)을 더한다."""
     noted = [v for v in scrub.noted_secrets() if len(v) >= contract.MIN_SECRET_LEN]
     return contract.secret_values() + noted
 
 
 def install_output_redaction() -> Redactor:
-    """이 프로세스의 로그와 저널 출력(``sbmig.core.scrub``)에 마스킹을 설치하고, 설치한 ``Redactor``를 반환한다.
-    이미 설치되어 있어도 새로 설치한다. 이후 모든 로그 줄과 저널 줄이 기록될 때 마스킹된다."""
+    """이 프로세스의 로그와 저널 출력(``sbmig.core.scrub``)에 마스킹을 설치하고 그 ``Redactor``를 반환한다.
+    이미 설치되어 있어도 새로 설치한다. 이후 모든 로그 줄과 저널 줄은 기록될 때 마스킹된다."""
     redactor = Redactor(live_secret_values, refresh_s=LIVE_REFRESH_S)
     scrub.set_output_scrubber(redactor, on_refresh=redactor.refresh)
     return redactor
 
 
 def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
-    """파일 하나를 제자리에서 마스킹하고 바뀌었는지 여부를 반환한다.
-    바뀌었을 때만 다시 쓰고, 바이너리 파일은 건너뛴다. OSError는 debug 로그만 남기고 False를 반환한다."""
+    """파일 하나를 제자리에서 마스킹한다. 내용이 바뀌었으면 True를 반환한다.
+    바뀌었을 때만 다시 쓴다. 바이너리 파일은 건너뛴다. OSError는 debug 로그만 남기고 False를 반환한다."""
     path = Path(path)
     try:
         raw = path.read_bytes()
@@ -222,7 +224,7 @@ def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
         new = _redact_structured(path, text, values, mask)
         if new == text:
             return False
-        # 웹 파드가 같은 순간 읽어도 반쯤 쓰인 파일을 보지 않도록 임시 파일에 쓰고 os.replace로 바꾼다.
+        # 임시 파일에 쓰고 os.replace로 바꾼다. 웹 파드가 같은 순간에 읽어도 반쯤 쓰인 파일을 보지 않는다.
         # 권한 비트는 원래 파일의 것을 쓴다
         tmp = path.with_name(f".{path.name}.{os.getpid()}.redact.tmp")
         try:
@@ -242,7 +244,7 @@ def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
 
 
 def _remediation_targets(root: Path) -> list[Path]:
-    # 취약점 조치는 트리 해시로 결과를 확인하므로 텍스트 출력만 마스킹하고 프로젝트 트리와 original/은 건드리지 않는다.
+    # 텍스트 출력만 마스킹한다. 프로젝트 파일과 original/은 건드리지 않는다. 취약점 조치가 이 파일들의 해시로 결과를 확인한다.
     # ZIP은 확장자로 빠지고, 심볼릭 링크는 따라가지 않는다
     out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -277,7 +279,7 @@ def _targets(run_dir: Path) -> list[Path]:
 
 def redact_run_dir(run_dir: Path, values: list[str] | None = None) -> int:
     """실행 폴더의 텍스트 출력에서 비밀 값을 마스킹하고 바뀐 파일 수를 반환한다.
-    ``values``가 None이면 ``live_secret_values()``를 쓴다. 마스킹할 값이 없으면 파일을 읽지 않고 0을 반환한다."""
+    ``values``가 None이면 ``live_secret_values()``를 쓴다. 마스킹할 값이 없으면 파일을 읽지 않고 0이다."""
     vals = live_secret_values() if values is None else [v for v in values if v]
     if not vals:
         return 0
