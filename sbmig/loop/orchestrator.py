@@ -1182,7 +1182,8 @@ class Orchestrator:
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         """분석 단계를 실행한다. 프로젝트 정보(케이스 타입, Java, Spring/Boot 버전, 라이브러리)와 권고를 만든다.
-        여기서 멈추거나 중단하면 False를 반환한다. Maven 프로젝트가 아니거나 pom.xml이 없을 때다."""
+        여기서 멈추거나 중단하면 False를 반환한다. ADF 프로젝트, Maven이 아닌 프로젝트, pom.xml이나 루트 pom이 없는
+        프로젝트가 그렇다. ``stop_after``가 analyze일 때도 False다."""
         with stage("analyze"):
             return self._step_analyze(report, stop_after)
 
@@ -1393,7 +1394,7 @@ class Orchestrator:
                 self.ws.save_model("profile.json", profile)
             if not use.found:
                 self.ws.journal({"event": "framework_check", "found": False, "unchecked": list(use.unchecked)})
-                # 판단에 필요한 부모 pom도 의존성 트리도 읽지 못했다. 실행은 그대로 하고 그 사실만 알린다
+                # 부모 pom도 의존성 트리도 읽지 못했으면 사내 프레임워크인지 알 수 없다. 실행은 그대로 하고 그 사실만 알린다
                 if _framework_undecided(use):
                     self._flag(FRAMEWORK_UNCHECKED_FLAG)
                     log.warning("분석: 사내 프레임워크 여부를 확인하지 못함 (%s)", "; ".join(use.unchecked)[:300])

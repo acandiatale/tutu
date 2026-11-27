@@ -665,7 +665,8 @@ def table_hash(table: dict[str, tuple], paths: list[str]) -> str:
 def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
                     paths: list[str]) -> tuple[list[str], list[str]]:
     """``tree``의 파일을 기록된 표와 비교해서 없거나 다른 파일만 기대한 바이트로 되돌린다.
-    ``tree``의 파일은 많아야 한 번 읽는다. 같은 파일이면 기대한 쪽 파일은 열지 않는다.
+    ``tree``의 파일은 많아야 한 번 읽는다. 표에 있는 경로는 같은 파일이면 기대한 쪽 파일을 열지 않는다.
+    표에 없는 경로는 기대한 쪽 파일과 바이트로 비교한다.
     (없던 경로, 바뀐 경로)를 반환한다. 하나라도 되돌리지 못하면 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
 
     Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
@@ -756,7 +757,7 @@ def copy_tree(src: Path, dst: Path, paths: list[str]) -> None:
 def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo:
     """``paths``의 파일만 담은 ZIP을 원자적으로 쓴다.
     경로를 정렬하고 시각(1980-01-01), 권한(0644, 실행 파일은 0755), 압축 방식(deflate)을 고정한다.
-    파일 내용이 같으면 항상 같은 바이트가 나온다. 재검사 때 이 바이트를 그대로 IVAS에 올린다.
+    경로 목록, 파일 내용, 실행 비트가 같으면 항상 같은 바이트가 나온다. 재검사 때 이 바이트를 그대로 IVAS에 올린다.
 
     The `tree_hash` of the
     result is computed from the bytes written into the ZIP (each file is read once; the same rows as `tree_hash`,

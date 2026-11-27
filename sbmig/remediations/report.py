@@ -2058,7 +2058,7 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     else:
         L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
     left_out = bool(state.intake is not None and state.intake.build_output_files)
-    # 검사한 ZIP의 sha256이 원본과 같으면 이전 버전이 빌드 산출물이 든 원본 ZIP을 그대로 검사한 실행이다
+    # 빌드 산출물을 뺀 업로드인데 검사한 ZIP의 sha256이 원본과 같으면, 이전 버전이 원본 ZIP을 그대로 검사한 실행이다
     original_scanned = bool(left_out and fx.base is not None and state.intake is not None
                             and fx.base.zip_sha256 == state.intake.zip_sha256)
     if state.delivery is not None and state.delivery.round == 0:

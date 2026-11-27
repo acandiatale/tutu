@@ -626,7 +626,7 @@ def known_coordinates(ws: Any) -> list[tuple[str, str, str]]:
 
 def stubs_used(cfg: Any, coords: list[tuple[str, str, str]], *, skip: Optional[set[str]] = None,
                limit: int = MAX_USED_CHECKS) -> list[dict[str, Any]]:
-    """로컬 저장소에 있는 pom 중 sbmig가 만든 최소 pom을 찾는다.
+    """주어진 좌표마다 로컬 저장소의 pom이 sbmig가 만든 최소 pom인지 확인한다.
     찾은 것의 {ga, version, path} 목록을 반환한다. ``limit``개 좌표까지만 확인한다.
 
     For at most `limit` coordinates (not in `skip`, plain only): `<local repository>/<g>/<a>/<v>/<a>-<v>.pom` exists

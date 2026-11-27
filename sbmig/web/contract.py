@@ -59,7 +59,7 @@ MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드가 읽는 동시 Job �
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1"이면 Worker가 llm.record_dir을 유지한다. 기본은 끈다
 # 이 단어가 들어간 환경 변수는 비밀 값으로 보고 로그와 보고서에서 마스킹한다
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")
-MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 마스킹하지 않는다. 우연히 겹친 글자까지 가리면 로그가 망가진다
+MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 마스킹하지 않는다. 로그의 다른 문자열과 우연히 겹쳐서 엉뚱한 곳까지 가린다
 # 이름에 위 단어가 없어도 비밀로 다루는 환경 변수. 회사 규칙상 IVAS 사용자, 비밀번호, 토큰은 모두 비밀이다.
 # 조치는 빌드 파드에서 실행돼서 Job 로그에 남을 수 있다. 아이디는 짧을 수 있어서 최소 길이를 따로 둔다
 SECRET_NAMES = frozenset({"IVAS_USER_ID"})
@@ -226,7 +226,7 @@ def new_owner_token() -> str:
 def is_secret_name(name: str) -> bool:
     """환경 변수 이름이 비밀 값으로 보이는지 확인한다.
     이름에 ``SECRET_NAME_WORDS``의 단어가 있으면 비밀로 본다. ``SECRET_NAMES``에 있는 이름도 비밀이다.
-    설정 덮어쓰기 ``SBMIG_<섹션>__<키>``는 비밀이 아니다. 그래서 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``도 빠진다."""
+    설정 덮어쓰기 ``SBMIG_<섹션>__<키>``는 비밀로 보지 않는다. 이름에 TOKEN이 든 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``도 그렇다."""
     up = str(name).upper()
     if up.startswith("SBMIG_") and "__" in up:
         return False

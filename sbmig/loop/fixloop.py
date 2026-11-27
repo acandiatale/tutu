@@ -845,7 +845,8 @@ class VersionResolver:
         """새 부모 체인이 관리하는 g:a의 버전을 반환한다. 없으면 None을 반환한다.
         캡처에 선언한 모듈의 항목이 있으면 그 모듈의 effective dependencyManagement만 본다.
         다른 모듈이 관리한다고 이 모듈도 관리되는 것은 아니다.
-        모듈 항목이 없으면 합친 ``managed``를 본다. 재구성 뒤 캡처가 없으면 ``chain``의 관리 버전을 본다.
+        모듈 항목이 없으면 합친 ``managed``를 본다.
+        재구성 뒤 캡처가 없으면 모듈 pom이 상속하는 사내 부모의 관리 버전만 본다. 그 부모를 모르면 체인 전체를 본다.
 
         Without the post-restructure capture: the set of the company parent the module's pom
         inherits (`per_parent`; a parent that is no configured root manages nothing) when the facts carry per-parent
@@ -1000,7 +1001,8 @@ class BuildFixLoop:
         self._http400: dict[str, set[str]] = {}  # 400 본문: 프롬프트 해시 목록. 해시가 없으면 클러스터 id를 쓴다
         self.aborted: Optional[str] = None       # 실행을 멈춰야 할 때의 사유. 설정한 부모를 찾지 못한 경우 등
         # 멈춤 요청으로 루프를 빠져나왔는지, 마지막 run()의 마지막 빌드, 루프 끝에 되돌린 시도 수를 남긴다
-        # 프로젝트가 그 마지막 빌드 때와 다를 때만 오케스트레이터가 최종 빌드를 다시 한다
+        # 멈춤 요청으로 루프를 빠져나왔고 그 뒤 되돌린 것이 없으면 오케스트레이터는 이 마지막 빌드를 최종 빌드로 쓴다
+        # 루프가 실행을 중단했으면 빌드하지 않는다. 그 밖에는 최종 빌드를 다시 한다
         # stopped_by_request는 실행 내내 유지되고 나머지 셋은 마지막 run()의 값이다
         self.stopped_by_request = False
         self.left_on_stop = False
@@ -1027,7 +1029,8 @@ class BuildFixLoop:
         self._introduced: dict[tuple[str, str], FixAttempt] = {}
         # 개선으로 평가된 시도가 없앤 (파일, 서명)과 그 시도다. 다른 케이스의 시도가 그 오류를 되살리면 악화로 본다
         # trade-back은 (오류를 되살린 케이스, 해결했던 케이스) 쌍마다 센다
-        # `loop.oscillation_limit`에 이르면 OSCILLATION으로 차단할 케이스에 넣는다. 값은 (시도, 근거)다
+        # `loop.trade_back: revert`일 때 `loop.oscillation_limit`에 이르면 OSCILLATION으로 차단할 케이스에 넣는다
+        # 값은 (시도, 근거)다. 기본값 observe에서는 세어서 저널에만 남긴다
         self._resolved_by: dict[tuple[str, str], FixAttempt] = {}
         self._resolved_lines: dict[tuple[str, str], frozenset[int]] = {}   # 그 시도 전 빌드가 보여 준 줄 번호
         self._trade_backs: Counter = Counter()
@@ -1279,7 +1282,7 @@ class BuildFixLoop:
                 if self._parent_abort(pr, phase, build, build_no):
                     break
                 # 정체는 오류 집합이 직전 빌드와 같은 경우, 진동은 그보다 이전 빌드와 같은 경우다
-                # 정체가 쌓이면 상위 모델로 바꾼다. 진동이 2번 일어나면 관련 케이스를 OSCILLATION으로 차단한다
+                # 정체가 쌓이면 상위 모델로 바꾼다. 진동이 `loop.oscillation_limit`번(기본 2) 일어나면 관련 케이스를 차단한다
                 # 다른 파일이나 다른 모듈의 같은 오류는 다른 오류다. 그래서 (위치, 서명)별 횟수로 비교한다
                 multiset = Counter(_pair(e) for e in build.errors)
                 stalled = prev_multiset is not None and multiset == prev_multiset
@@ -1903,8 +1906,10 @@ class BuildFixLoop:
         """직전 라운드의 시도를 이 빌드 결과로 평가한다. 시도를 되돌려 프로젝트가 바뀌었으면 True를 반환한다.
         - improved: 대상 오류가 모두 사라지고 빌드가 그 단계까지 갔다
         - partial: 일부만 사라지고 수정한 파일에 새 오류가 없다
-        - regressed: 되돌린다. 수정한 파일에 새 오류가 생긴 경우, 오류 수가 ``regression_ratio``배를 넘은 경우,
-          pom 수정 뒤 새 구조적 오류나 더 이른 단계의 오류가 대상을 가린 경우다
+        - regressed: 수정한 파일에 새 오류가 생긴 경우, 케이스를 해결한 시도가 하나도 없는데 오류 수가
+          ``regression_ratio``배를 넘은 경우, pom 수정 뒤 새 구조적 오류나 더 이른 단계의 오류가 대상을 가린 경우다
+        - 악화된 시도는 ``loop.revert_on_regression``이 켜져 있으면 되돌린다. 뒤에 남길 커밋이 있으면 구조적 악화와
+          trade-back만 되돌리고 나머지는 남긴다
         - inconclusive: 타임아웃이나 읽은 오류가 없는 실패처럼 빌드로 판단할 수 없다. KB 실적 없이 다시 평가한다
 
         `restored` = the errors that round's rollbacks brought back: part of the baseline (`prev`), so they
@@ -2207,7 +2212,8 @@ class BuildFixLoop:
                             traded: dict[str, list[tuple[BuildError, FixAttempt]]], build: BuildResult,
                             prev_count: Counter, *,
                             observed: Optional[dict[str, list[tuple[BuildError, FixAttempt]]]] = None) -> None:
-        """되돌리기가 끝난 뒤 trade-back을 케이스 쌍마다 세어 저널에 남긴다. 한도에 이르면 그 케이스를 차단 대기에 넣는다.
+        """되돌리기가 끝난 뒤 trade-back을 케이스 쌍마다 세어 저널에 남긴다.
+        ``loop.trade_back: revert``일 때 한도에 이르면 그 케이스를 차단 대기에 넣는다. observe 모드는 차단하지 않는다.
         이어서 프로젝트에 남아 있지 않은 시도의 해결 기록을 지운다. 이번에 개선된 시도가 없앤 오류는 새로 기록한다.
         예외를 던지지 않는다.
 
@@ -2452,7 +2458,7 @@ class BuildFixLoop:
                    max_rounds: int = 0) -> tuple[list[_Pending], bool, list[TriageDecision], bool, list[BuildError]]:
         """수정 라운드 하나를 실행한다. 케이스마다 한 번까지 시도한다.
         한 라운드에 ``loop.max_clusters_per_iteration``개 케이스까지 다룬다. 미룬 케이스와 차단된 케이스는 세지 않는다.
-        가리고 있는 케이스가 차단되거나 에스컬레이트되어 손댈 수 없으면 가려진 케이스도 다룬다.
+        가리고 있는 케이스가 모두 차단되거나 에스컬레이트됐고 한도가 남아 있으면 가려진 케이스도 다룬다.
 
         The caller sets the log stage `fix r<round_no>`. Returns (pending tries, anything applied, decisions,
         a try was made, errors brought back by rollbacks)."""
@@ -2493,7 +2499,8 @@ class BuildFixLoop:
                 continue
             if self._handle_cluster(pr, st, c2) not in ("blocked", "deferred"):
                 handled += 1
-        # 가리고 있던 pom 문제 등이 차단되거나 에스컬레이트됐으면 가려 둔 컴파일 오류도 이제 고친다
+        # 가리고 있던 케이스가 모두 차단되거나 에스컬레이트됐으면 가려 둔 케이스도 이번 라운드에 고친다
+        # 라운드의 케이스 수 한도가 남아 있을 때만이다. 아니면 그대로 건너뛴다
         for c, skip, by in masked:
             if self._ask_halt:
                 break
@@ -3447,7 +3454,8 @@ class BuildFixLoop:
     def _earlier_fix_context(self, c: ErrorCluster, att: FixAttempt) -> tuple[str, set[int]]:
         """이 케이스의 오류를 남긴 다른 케이스의 시도를 설명하는 프롬프트 절을 만든다.
         절 본문과 설명한 시도의 id() 집합을 반환한다.
-        이미 되돌렸거나 diff를 읽지 못한 시도는 절에서 빼고 힌트 한 줄로 남긴다. 예외를 던지지 않는다.
+        자기 케이스를 해결한 시도만 절에서 설명한다. 해결하지 못했거나, 이미 되돌렸거나, diff를 읽지 못한 시도는
+        힌트 한 줄로 남긴다. diff에 이 케이스 파일의 줄이 없는 시도도 힌트로 남긴다. 예외를 던지지 않는다.
 
         "v2.1z-by": the body of the section "Earlier fix these errors come from (it is in the tree)"
         (`FixContext. earlier_fix`, capped at EARLIER_FIX_CHARS) and the ids of the attempts it describes.
@@ -3531,7 +3539,8 @@ class BuildFixLoop:
         - 실행할 스크립트는 실행 전에 저장한다. 실패해도 이력이 남는다
         - edits 답에 딸린 스크립트는 unverified로 저장한다
         - 보강한 버전에는 부모 버전(``parent``)과 만든 이유(``reason``)를 남긴다
-        같은 버전을 이번 실행에서 이미 실행했으면 False를 반환한다. 그 버전은 다시 실행하지 않는다.
+        같은 버전을 이번 실행에서 같은 위치에 이미 실행했으면 False를 반환한다. 그 버전은 다시 실행하지 않는다.
+        다른 위치에서 실행한 버전은 여기서 다시 실행한다.
 
         `kb.cases.add_script`, source = the try's. `reason` = `v1: <the parent's failure in words>`."""
         store = self.cases
@@ -5313,7 +5322,7 @@ class BuildFixLoop:
                        st: _Round | None = None) -> list[tuple[str, str, str, str]]:
         """적용한 스크립트나 edits가 바꾼 pom에서 버전 없는 ``<dependencies>`` 항목에 버전을 채운다.
         시도의 커밋에 함께 들어가도록 커밋 전에 실행한다. 쓴 버전 목록을 반환한다. 예외를 던지지 않는다.
-        - 시도가 추가한 의존성은 관리 버전, as-is, 저장소 순서로 채운다
+        - 시도가 추가한 의존성은 관리되는 버전이 있으면 그대로 둔다. 없으면 목표 Boot BOM, as-is, 저장소 순서로 채운다
         - 원래 있던 의존성은 빌드가 버전이 없다고 보고했을 때만 as-is 버전으로 채운다
         - 시도가 버전을 지운 의존성은 재구성 뒤 캡처가 있을 때만 채운다
         - 시도가 버전을 써서 추가한 의존성을 새 부모 체인이 관리하면 ``<version>``을 지운다
@@ -5422,7 +5431,8 @@ class BuildFixLoop:
                 if key in local:
                     continue
                 if key not in pre_versions:          # 이 시도가 추가했다
-                    # as-is나 저장소 버전을 쓴다. 비워 두면 다음 빌드의 pom_invalid가 구조적 악화로 잡혀 시도 전체가 되돌려진다
+                    # 목표 Boot BOM, as-is, 저장소 순서로 찾은 버전을 쓴다.
+                    # 비워 두면 다음 빌드의 pom_invalid가 구조적 악화로 잡혀 시도 전체가 되돌려진다
                     v, src = r.resolve(key, module, allow_repository=True)
                 elif pre_versions[key]:              # 시도가 버전을 지웠다
                     # 새 체인을 모르면 LLM의 판단을 그대로 둔다. 이전 Boot 2 버전 같은 as-is 버전을 되살리는 것이 더 나쁘다

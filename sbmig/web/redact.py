@@ -132,7 +132,7 @@ def _has_non_ascii(raw: str) -> bool:
 
 
 def _redact_structured(path: Path, text: str, values: list[str], mask: str) -> str:
-    # .json은 파일 전체를, .jsonl은 줄마다 JSON으로 읽어 문자열 값 안에서만 바꾼다. 읽히지 않으면 텍스트로 바꾼다
+    # .json은 파일 전체를, .jsonl은 줄마다 JSON으로 읽어 문자열 값 안에서만 바꾼다. JSON으로 읽히지 않으면 일반 텍스트로 마스킹한다
     suffix = path.suffix.lower()
     if suffix == ".json":
         new = redact_json_text(text, values, mask)
@@ -279,7 +279,7 @@ def _targets(run_dir: Path) -> list[Path]:
 
 def redact_run_dir(run_dir: Path, values: list[str] | None = None) -> int:
     """실행 폴더의 텍스트 출력에서 비밀 값을 마스킹하고 바뀐 파일 수를 반환한다.
-    ``values``가 None이면 ``live_secret_values()``를 쓴다. 마스킹할 값이 없으면 파일을 읽지 않고 0이다."""
+    ``values``가 None이면 ``live_secret_values()``를 쓴다. 마스킹할 값이 없으면 파일을 읽지 않고 0을 반환한다."""
     vals = live_secret_values() if values is None else [v for v in values if v]
     if not vals:
         return 0

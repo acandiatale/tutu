@@ -358,7 +358,7 @@ class K8sClient:
         self.timeout_s = timeout_s
         self._injected_session = session       # None이면 ``session`` 속성이 스레드마다 세션을 만든다
         self._local = threading.local()
-        self.source = ""                        # 접속 정보를 어디서 읽었는지. 로그에 남긴다
+        self.source = ""                        # 접속 정보를 읽은 곳. 로그에 남긴다
         self._tmp: Any = None                   # kubeconfig 인증서를 풀어 둔 임시 폴더. 클라이언트가 살아 있는 동안 유지한다
         self._headers = {"Accept": "application/json", "Content-Type": "application/json"}
         # 이벤트 조회가 403이면 False가 되고 이 프로세스에서는 다시 조회하지 않는다

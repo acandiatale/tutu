@@ -250,7 +250,8 @@ class DeliveryRecordNotWritten(Exception):
 
 
 class ScanSourceChanged(Exception):
-    """검사용 ZIP(``original/scan-source.zip``)을 다시 만들었는데 기록한 sha256과 다를 때 던지는 예외.
+    """검사용 ZIP(``original/scan-source.zip``)의 sha256이 기록한 값과 다를 때 던지는 예외.
+    ZIP을 다시 만들었을 때와 결과 폴더로 복사했을 때 확인한다.
 
     The scan source ZIP cannot be made again with the sha256 the state recorded; the run ends FAILED
     `zip_hash_mismatch` with `SCAN_SOURCE_CHANGED`."""
@@ -447,10 +448,10 @@ class _Holder:
 
     def finish(self, status: str, reason: str, message: str = "", reasons: list[str] | None = None) -> str:
         """최종 상태(FAILED / INCOMPLETE / SUCCEEDED)를 정하고 다음 노드로 보고서 노드를 반환한다.
-        조치 전 빌드 실패를 받아들인 실행에서 빌드로 확인하지 못한 변경이 있으면 SUCCEEDED가 되지 않는다.
-        이때 상태는 INCOMPLETE이고 첫 사유가 ``baseline_build_failed``다.
-        FAILED로 끝나면 변경과 상관없이 사유 끝에 ``baseline_build_failed``를 붙인다.
-        FAILED가 아니고 확인하지 못한 변경도 없으면 그 사유를 빼고 원래대로 끝낸다.
+        조치 전 빌드 실패를 받아들인 실행은 아래처럼 끝낸다.
+        - FAILED면 상태는 그대로 두고 사유 끝에 ``baseline_build_failed``를 붙인다
+        - 빌드로 확인하지 못한 변경이 있으면 INCOMPLETE로 끝낸다. 첫 사유는 ``baseline_build_failed``다
+        - 확인하지 못한 변경이 없으면 그 사유를 빼고 원래대로 끝낸다
 
         Tolerated baseline failure: FAILED keeps its reasons and gets `baseline_build_failed` appended. Otherwise, when
         a committed round applied a proposal whose candidate build failed with the baseline's errors (changes no build

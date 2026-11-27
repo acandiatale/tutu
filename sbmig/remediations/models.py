@@ -253,7 +253,7 @@ class DeliveryInfo(Record):
     files: int
     tree_hash: str                    # ZIP에 담은 파일 전체의 해시
     round: int = 0
-    # False면 빌드가 실패한 수정본이다. 재검사하지 않았으니 성공을 판단할 때 쓰지 않는다
+    # False면 빌드가 실패한 수정본이다. 성공을 판단할 때 쓰지 않는다. build_tolerated도 False면 재검사하지 않았다
     build_ok: bool = True
     scanned: bool = False             # sha256이 같은 ZIP을 IVAS가 끝까지 검사했으면 True
     # True면 조치 전 빌드에 있던 오류로만 실패한 수정본이다. 재검사는 했지만 빌드로 확인한 변경은 아니다

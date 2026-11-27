@@ -798,7 +798,8 @@ class _Parser:
     def finish(self, text: str) -> list[BuildError]:
         """파싱을 마무리하고 오류 목록을 반환한다.
         javac 오류마다 루트 경로를 지우고, 빠진 symbol을 소스에서 채운 뒤 서명을 만든다.
-        빌드가 실패했는데 오류를 하나도 못 찾았으면 UNKNOWN 오류 하나를 만든다. 메시지는 처음 나온 [ERROR] 줄이다."""
+        빌드가 실패했는데 오류를 하나도 못 찾았으면 UNKNOWN 오류 하나를 만든다.
+        메시지는 상투 문구를 뺀 첫 [ERROR] 줄이다. 그런 줄이 없으면 "BUILD FAILURE"다."""
         sources = _SourceLines(self.root)
         for err in self._javac.values():
             err.raw = _scrub(err.raw, self.prefixes)

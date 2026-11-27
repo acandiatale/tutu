@@ -1,5 +1,5 @@
 """웹 화면에서 올린 이관 실행을 시작하고, 상태와 진행 이벤트를 관리하는 모듈.
-in-process에서는 이 프로세스의 작업 스레드가, Job 모드에서는 Job 파드가 이관을 실행한다.
+in-process에서는 이 프로세스의 작업 스레드가, Job 모드에서는 Job(개발 PC에서는 로컬 Worker 프로세스)이 이관을 실행한다.
 
 A run = an uploaded zip + the server's `config/*.yml` files. `start()` validates the request, builds the
 `Config`, the `Workspace` (`<out>/<run id>/`) and the `Orchestrator` synchronously (so a bad request fails
@@ -841,7 +841,7 @@ class RunManager:
         self.closing = threading.Event()       # 서버 종료. 열린 SSE 스트림을 닫고 실행 중인 실행에 중지를 요청한다
         self._job_template_doc: dict | None = None   # k8s-job에서 시작할 때 검증한 템플릿. Job은 이것으로 만든다
         self.recovered: list[str] = []         # 시작할 때 recover()가 control/state.json에서 이어받은 실행 id
-        # k8s-job에서는 잘못된 템플릿, 권한, 접속 정보를 시작할 때 거부한다. 첫 업로드를 기다리지 않고 앱이 뜨지 않게 한다
+        # k8s-job에서는 잘못된 템플릿, 권한, 접속 정보를 첫 업로드 때가 아니라 시작할 때 거부한다. 그러면 앱이 뜨지 않는다
         if self.effective_mode == "k8s-job":
             self._startup_k8s(constructed=job_client is None)
         if self.effective_mode in ("k8s-job", "local-job"):

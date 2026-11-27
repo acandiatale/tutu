@@ -1832,7 +1832,7 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
         return await one_run(request, run_id, True)
 
     def locate_source(run_id: str) -> tuple[int, dict[str, Any]] | tuple[Path, str, int]:
-        # 원본의 (경로, 내려받을 이름, 크기)를 반환한다. 찾지 못하면 (상태 코드, 오류 본문)이다
+        # 원본의 (경로, 내려받을 이름, 크기)를 반환한다. 실행 id가 잘못됐거나 원본을 찾지 못하면 (상태 코드, 오류 본문)이다
         if not RUN_ID_RE.match(run_id):
             return 400, {"error": "bad run id"}
         rd = find_run(run_id)

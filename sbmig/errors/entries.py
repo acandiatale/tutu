@@ -308,7 +308,8 @@ class _Build:
 
     def can_show(self, e: ErrorEntry) -> bool:
         """지금 보이지 않는 오류 ``e``를 이 빌드가 보고할 수 있었는지 확인한다.
-        void 빌드이거나 다른 모듈이 실패해서 건너뛴 모듈의 오류면 False다. 해결됐는지 알 수 없다."""
+        void 빌드, 다른 모듈이 실패해서 건너뛴 모듈의 오류, 빌드가 그 오류의 단계까지 가지 못한 경우는 False다.
+        이때는 해결됐는지 알 수 없다."""
         if self.void:
             return False
         if self.ok or not self.real:

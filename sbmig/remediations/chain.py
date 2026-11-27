@@ -190,7 +190,8 @@ def claim_refusal(info: dict[str, Any] | None) -> str:
 
 class RunClaim:
     """조치 폴더 하나를 상태를 진행시키는 프로세스 하나만 쓰도록 점유하는 클래스.
-    ``acquire``가 ``claim.json``을 배타적으로 만든다. ``with`` 블록이 끝나면 어떻게 끝나든 지운다.
+    ``acquire``가 ``claim.json``을 배타적으로 만든다. ``with`` 블록이 끝나면 어떻게 끝나든 정리한다.
+    ``claim.json``은 아직 이 점유의 것일 때만 지운다.
 
     `claim.json` is created with ``O_CREAT | O_EXCL`` and holds pid, host, attempt, start time, purpose and a
     token. A fresh claim of anyone else -> `StateConflict` (nothing touched). A stale claim (the holder's pid
@@ -1055,7 +1056,8 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     """이관 보고서(``RunReport.remediation``)에 넣을 짧은 JSON 요약을 만든다.
     status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message를 담는다. 결과 파일 경로와 결과 ZIP 정보도 담는다.
     조치 전 빌드를 실행했으면 ``baseline_build_ok``를 담는다.
-    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated``와 ``delivery.build_tolerated``가 True다.
+    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated``가 True다.
+    결과 ZIP이 조치 전 오류로만 실패한 빌드의 것이면 ``delivery.build_tolerated``도 True다.
 
     `fix_llm_calls` (only when > 0) = the LLM calls of the build fix loop over every round
     (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count the

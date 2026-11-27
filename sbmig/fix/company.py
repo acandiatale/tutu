@@ -429,7 +429,8 @@ class CompanyClient:
 
     def _busy_delay(self, n: int, retry_after: Optional[float]) -> float:
         """n번째 바쁨 응답 뒤에 쉴 시간(초)을 계산한다.
-        Retry-After가 있으면 그 값에 0~10%를 더해 기다린다. 없으면 상한이 있는 지수 백오프 값의 절반에서 전부 사이로 기다린다.
+        Retry-After가 있으면 그 값을 1초에서 120초 사이로 맞춘 뒤 0~10%를 더해 기다린다.
+        없으면 상한이 있는 지수 백오프 값의 절반에서 전부 사이로 기다린다.
         여러 파드가 같은 시점에 다시 몰리지 않게 한다."""
         if retry_after is not None:
             return max(BUSY_MIN_DELAY, min(retry_after, BUSY_RETRY_AFTER_CAP)) * self._rand(1.0, 1.1)
@@ -546,7 +547,8 @@ class CompanyClient:
                 log.warning("llm company HTTP %d (attempt %d/%d)", resp.status_code, attempt + 1,
                             self.max_retries + 1)
             if attempt + 1 < total:
-                # Retry-After가 있으면 그대로 따른다. 없으면 지수 대기에 0~25% 무작위 지연을 더해 파드끼리 재시도 시점을 흩는다
+                # Retry-After가 있으면 그 시간만큼 기다린다. 120초를 넘으면 120초만 기다린다
+                # 없으면 지수 대기(최대 30초)에 0~25% 무작위 지연을 더한다. 파드끼리 재시도 시점이 겹치지 않게 한다
                 delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt) * self._rand(1.0, 1.25)
                 log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s%s)", delay, attempt + 1,
                          self.max_retries + 1, last_status, f" cause={cause}" if cause else
