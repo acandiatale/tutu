@@ -1,11 +1,12 @@
-"""운영자가 일괄 실행을 다루는 ``sbmig fleet`` 명령(run / resume / status)을 정의하는 모듈.
-``sbmig/cli.py``가 이 typer 앱(``fleet_cli``)을 ``sbmig fleet``으로 등록한다. ``run``과 ``resume``은
-:class:`~sbmig.fleet.runner.FleetRunner`를 실행하고, ``status``는 ``<out>/fleet/state.json``만 읽으므로 실행
-중에도 안전하게 볼 수 있다.
-- 명령 함수의 docstring이 ``--help`` 문구가 되므로 첫 줄은 운영자가 보는 명령 요약이다
-- typer가 대괄호를 rich 마크업으로 읽어 없애므로 명령 docstring에는 대괄호를 쓰지 않는다
-- ``run``은 매니페스트, 설정, 덮어쓴 값을 ``fleet/fleet-config.json``에
-  남기고 ``resume``은 그것을 읽어 같은 조건으로 이어서 실행한다"""
+"""운영자가 일괄 실행을 다루는 ``sbmig fleet`` 명령(run, resume, status)을 정의하는 모듈.
+
+``sbmig/cli.py`` mounts this typer app (``fleet_cli``) as ``sbmig fleet``. ``run`` and ``resume`` drive
+:class:`~sbmig.fleet.runner.FleetRunner`; ``status`` only reads ``<out>/fleet/state.json``, so it is safe
+while a fleet runs. A command function's docstring is its ``--help`` text: the first line is the operator's
+summary, and it never holds square brackets (typer reads them as rich markup and drops them). ``run`` stores
+the manifest, the configs and the overrides in ``fleet/fleet-config.json``; ``resume`` reads them back and
+goes on under the same conditions.
+"""
 
 from __future__ import annotations
 
@@ -78,7 +79,7 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
             import logging
 
             from sbmig.cli import attach_file_log
-            # 프로젝트 수백 개의 DEBUG 로그는 한 파일에 담을 수 없으므로 일괄 실행 로그는 INFO만 남긴다.
+            # 일괄 실행 로그는 INFO만 남긴다. 프로젝트 수백 개의 DEBUG 로그는 한 파일에 담을 수 없다
             # 프로젝트별 DEBUG는 FleetRunner가 각 실행 폴더의 sbmig.log에 붙였다 뗀다
             fleet_log = attach_file_log(Path(runner.fleet_dir) / "sbmig.log", level=logging.INFO)
         except Exception:  # pragma: no cover
@@ -94,13 +95,13 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
 
 
 def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrides: dict, dry_run: bool, cfg) -> int:
-    """재개용 ``fleet-config.json``을 먼저 쓰고 러너를 실행한 뒤 진행 표와 요약 파일 경로를 출력한다.
+    """재개용 ``fleet-config.json``을 먼저 쓰고 러너를 실행한다. 끝나면 진행 표와 요약 파일 경로를 출력한다.
     ``--dry-run``이면 순서와 프로젝트별 결정(run / retry / keep / skip / done)만 출력하고 아무것도 실행하지 않는다."""
     from sbmig.kb.store import atomic_write
 
     from .summary import render_table
 
-    # 도중에 프로세스가 죽어도 ``fleet resume <out>``이 같은 매니페스트와 설정으로 이어서 실행하도록 실행 전에 쓴다
+    # 실행 전에 쓴다. 도중에 프로세스가 죽어도 ``fleet resume <out>``이 같은 매니페스트와 설정으로 이어서 실행한다
     if not dry_run:
         atomic_write(
             saved,
@@ -130,7 +131,7 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
     typer.echo(render_table(state))
     typer.echo("")
     typer.echo(f"summary: {runner.fleet_dir / 'summary.md'}   learning: {runner.fleet_dir / 'learning.md'}")
-    # 운영자가 옮겨 적는 줄이므로 인프라 문제로 멈췄으면 ``fleet stopped: …`` 줄을 화면 맨 끝에 한 번 더 출력한다
+    # 인프라 문제로 멈췄으면 ``fleet stopped: …`` 줄을 화면 맨 끝에 한 번 더 출력한다. 운영자가 옮겨 적는 줄이다
     if runner.stopped_on_infra:
         typer.echo(next((n for n in reversed(state.notes) if n.startswith("fleet stopped: ")), ""))
     return runner.exit_code
@@ -198,7 +199,7 @@ def resume_cmd(
         typer.secho(f"no fleet state in {out}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     prev = json.loads(saved.read_text(encoding="utf-8")) if saved.exists() else {}
-    # 이전 fleet-config.json에 남은 제거된 스위치(no_kb, overrides.fix.mode 등)는 덮어쓰기에서 빼고,
+    # 이전 fleet-config.json에 남은, 지금은 없는 스위치(no_kb, overrides.fix.mode 등)는 덮어쓰기에서 뺀다
     # 남은 프로젝트가 다른 설정으로 실행된다는 것을 운영자가 알도록 한 줄 알린다
     dropped = ["no_kb"] if prev.get("no_kb") else []
     fix_ov = (prev.get("overrides") or {}).get("fix") or {}

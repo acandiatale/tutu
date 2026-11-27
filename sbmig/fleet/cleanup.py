@@ -1,11 +1,10 @@
-"""끝난 실행 폴더에서 큰 파일을 지워 디스크를 확보하는 모듈.
-Windows 드라이브 하나에 실행 복사본이 수백 개 쌓이므로 필요하다.
-- 일괄 실행: 프로젝트마다 보고서와 ``result.zip``을 쓴 뒤 러너가 :func:`cleanup_run`을
-  호출한다(``fleet.cleanup``: ``none`` / ``build-output`` / ``workspace``)
-- ``sbmig clean``: :func:`plan_clean`이 지울 목록을 만들고(``--dry-run``은 여기까지) :func:`execute`가 지운다
-- 실행 중이거나 대기 중인 실행은 건드리지 않는다
-- 이관된 코드가 남아 있어야 하므로 ``workspace`` 모드도 ``result.zip``이 있을 때만 프로젝트 복사본을 지운다
-- ``target``은 옆에 ``pom.xml``이 있는 것만 지운다. 지우지 못한 파일은 로그만 남기고 계속 진행한다
+"""끝난 실행 폴더에서 프로젝트 복사본과 빌드 결과물을 지워 디스크를 확보하는 모듈.
+
+Hundreds of run copies pile up on one Windows drive. The fleet runner calls :func:`cleanup_run` after a
+project's report and ``result.zip`` are written (``fleet.cleanup``: ``none`` / ``build-output`` /
+``workspace``); ``sbmig clean`` builds the list with :func:`plan_clean` (``--dry-run`` stops there) and
+:func:`execute` deletes it. A run that is still running or waiting is never touched. A ``target`` directory
+is deleted only beside a ``pom.xml``; a file that cannot be removed is logged and the cleanup goes on.
 
 * :func:`cleanup_run`: ``build-output`` deletes the ``target/`` directories of the run copy (a Java package
   named ``target`` is never touched); ``workspace`` also deletes ``<run dir>/project`` (git history included)
@@ -40,7 +39,7 @@ KEEP_FILES = ("result.zip", "report.md", "report.json", "errors.jsonl", "errors.
               "sbmig.log", "plan.json", "profile.json")      # logs/ 폴더도 남는다
 _SKIP_DIRS = {".git", "node_modules", ".idea", ".svn"}
 # 웹 업로드 파일 이름 <실행 id>-<파일 이름>에서 실행 id(<앞부분>-YYYYMMDD-HHMMSS-<hex 6>)를 찾는다
-# 앞부분은 사람이 적은 프로젝트명일 수 있으므로 대문자와 _도 받는다(웹의 RUN_ID_RE와 같은 문자)
+# 앞부분은 사람이 입력한 프로젝트명일 수 있다. 그래서 대문자와 _도 받는다(웹의 RUN_ID_RE와 같은 문자)
 _UPLOAD_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*?-\d{8}-\d{6}-[0-9a-f]{6})-")
 # 업로드 중 임시 파일 `.incoming-*.part`가 하루가 지나도 남아 있으면 끊긴 업로드로 본다
 STALE_PART_S = 24 * 3600
@@ -66,7 +65,8 @@ def _size(path: Path) -> int:
 
 
 def _on_rm_error(func, path, _exc_info) -> None:
-    """Windows에서 읽기 전용인 git 객체 파일을 ``rmtree``가 지우지 못하면 쓰기 가능으로 바꾸고 한 번 더 지운다."""
+    """``rmtree``가 지우지 못한 파일을 쓰기 가능으로 바꾸고 한 번 더 지운다.
+    Windows에서는 git 객체 파일이 읽기 전용이라 그냥 지워지지 않는다."""
     try:
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
         func(path)
@@ -75,7 +75,7 @@ def _on_rm_error(func, path, _exc_info) -> None:
 
 
 def remove(path: Path) -> int:
-    """파일이나 디렉토리 트리를 지우고 실제로 확보된 바이트 수를 반환한다.
+    """파일이나 디렉토리를 통째로 지우고 실제로 확보된 바이트 수를 반환한다.
     일부만 지워졌으면 그만큼만 반환한다. 지우지 못하면 경고만 남긴다."""
     path = Path(path)
     if not path.exists() and not path.is_symlink():
@@ -83,7 +83,7 @@ def remove(path: Path) -> int:
     before = _size(path)
     try:
         if path.is_dir() and not path.is_symlink():
-            # Python 3.12부터 onerror가 폐기 예정이므로 onexc를 쓰고, 그 아래 버전은 onerror를 쓴다
+            # Python 3.12부터 onerror는 폐기 예정이다. 3.12 이상은 onexc를, 그 아래 버전은 onerror를 쓴다
             if sys.version_info >= (3, 12):
                 shutil.rmtree(path, onexc=_on_rm_error)
             else:  # pragma: no cover - Python 3.10 / 3.11
@@ -100,7 +100,7 @@ def remove(path: Path) -> int:
 
 
 def build_output_dirs(project_dir: Path) -> list[Path]:
-    """``project_dir`` 아래에서 같은 폴더에 ``pom.xml``이 있는 ``target/``만 모아 반환한다.
+    """``project_dir`` 아래의 ``target/`` 중 같은 폴더에 ``pom.xml``이 있는 것만 모아 반환한다.
     ``.git``과 찾은 ``target`` 안으로는 들어가지 않는다."""
     out: list[Path] = []
     project_dir = Path(project_dir)
@@ -123,7 +123,7 @@ def human(n: int) -> str:
 
 
 def cleanup_run(run_dir: str | Path, mode: str) -> dict:
-    """끝난 실행 폴더 하나에 ``fleet.cleanup``을 적용하고 ``{"mode", "freed", "removed"}``를 반환한다.
+    """끝난 실행 폴더 하나를 ``fleet.cleanup`` 모드대로 정리한다. ``{"mode", "freed", "removed"}``를 반환한다.
     ``workspace`` 모드인데 ``result.zip``이 없거나 비어 있으면 복사본을
     지우지 않고 ``build-output``처럼 ``target/``만 지운다.
     보고서와 ``result.zip``을 쓴 뒤에 호출해야 한다."""
@@ -165,8 +165,8 @@ def _report(run_dir: Path) -> Optional[dict]:
 
 
 def _failed(data: Optional[dict], run_dir: Path) -> bool:
-    """``--keep-failed``의 기준으로 종료 코드가 0이 아닌 실행인지 확인한다.
-    report.json이 없으면 web-status.json을 보고, 그것도 없으면 실패로 보고 남긴다.
+    """종료 코드가 0이 아닌 실행인지 확인한다. ``--keep-failed``가 이 결과로 남길 실행을 고른다.
+    report.json이 없으면 web-status.json을 본다. 둘 다 없으면 실패로 보고 남긴다.
 
     Mirrors ``sbmig.cli.run_exit_code``: no green final build, something blocked, or aborted."""
     if data is None:
@@ -182,7 +182,7 @@ def _failed(data: Optional[dict], run_dir: Path) -> bool:
 
 def _finished(run_dir: Path) -> bool:
     """끝난 실행인지 확인한다.
-    report.json이나 web-status.json이 없으면 실행 중이거나 대기 중으로 보고 False를 반환한다."""
+    report.json도 web-status.json도 없으면 실행 중이거나 대기 중이다. 이때는 False를 반환한다."""
     return (run_dir / "report.json").is_file() or (run_dir / "web-status.json").is_file()
 
 
@@ -207,8 +207,8 @@ def plan_clean(out_dir: str | Path, *, older_than_days: float = 0.0, keep_failed
     """``sbmig clean``이 지울 목록을 만든다. 아직 지우지는 않는다.
     끝난 실행의 ``project/`` 복사본만 지우고 result.zip, 보고서, 패치, 로그는 남긴다.
     ``fleet=True``이면 그 일괄 실행의 폴더만 본다.
-    웹 업로드는 실행이 끝난 것만, ``.part``는 하루가 지난 것만, LLM 기록은 ``record_dirs``의
-    ``llm-*.json``을 대상으로 한다.
+    웹 업로드는 실행이 끝난 것만, ``.part``는 하루가 지난 것만 지운다.
+    LLM 기록은 ``record_dirs``의 ``llm-*.json``이 대상이다.
 
     Finished = report.json or web-status.json present. ``fleet=True`` matches ``<fleet id>-…`` from
     ``<out_dir>/fleet/state.json`` and skips uploads."""

@@ -1,12 +1,11 @@
-"""에이전트 하나가 프로젝트 여러 개를 하나씩 차례로 이관하는 일괄 실행(플릿) 패키지.
-모든 프로젝트가 파일 KB 하나를 함께 쓰므로 앞 프로젝트가 남긴 수정 스크립트를 다음 프로젝트가 재사용한다.
-``sbmig/cli.py``가 ``fleet_cli``를 ``sbmig fleet`` 명령으로 등록하고, :class:`FleetRunner`가 프로젝트마다
-``sbmig run``과 같은 오케스트레이터를 실행한다.
-- 진입점: ``load_manifest``, ``FleetRunner.run``, ``write_summaries``,
-  ``sbmig.fleet.preflight``, ``sbmig.fleet.cleanup``
-- 동시에 실행하면 앞 프로젝트가 KB에 남긴 결과를 다음 프로젝트가 보지 못하므로 병렬로 실행하지 않는다
+"""에이전트 하나가 여러 프로젝트를 하나씩 차례로 이관하는 일괄 실행(플릿) 패키지.
+앞 프로젝트가 KB에 남긴 수정 스크립트를 다음 프로젝트가 재사용한다.
 
 Operator doc: docs/FLEET.md.
+
+All projects share one file KB. `sbmig/cli.py` mounts ``fleet_cli`` as ``sbmig fleet``; :class:`FleetRunner`
+runs the same orchestrator as ``sbmig run`` for each project. Projects never run in parallel: a later
+project must see what an earlier one left in the KB.
 
 Public API:
     load_manifest(path) -> list[FleetProject]
@@ -35,7 +34,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """``import sbmig.fleet``이 typer와 CLI 모듈까지 읽지 않도록 ``fleet_cli``는 필요할 때 import한다."""
+    """``fleet_cli``는 처음 쓸 때 import한다. ``import sbmig.fleet``만으로 typer와 CLI 모듈까지 읽지 않게 한다."""
     if name == "fleet_cli":
         from .cli import fleet_cli
 

@@ -1,16 +1,11 @@
-"""회사 LLM 게이트웨이를 호출하는 클라이언트 모듈. 기본 provider `company`가 이 모듈이다.
-요청마다 ``requests.post(url, headers=, json=, timeout=)``를 한 번 호출한다.
-`make_llm_client(cfg)`가 클라이언트를 만들고, 수정 루프, 구조 검토, 운영자 가이드의 LLM 호출이 모두 이
-클라이언트를 거친다. `sbmig llm-probe`와 fleet preflight는 `probe_llm`을 쓴다.
-- 설정은 환경 변수와 `.env`에서만 읽는다(`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_RESPONSE_PATH`)
-- 본문은 model, messages에 `llm.payload_extra`를 더한 것이다. max_tokens / temperature / stop은 보내지 않는다
-- 다른 사내 에이전트처럼 단순하게 호출한다. 프로필, LangChain, 세션, 커넥션 풀 설정을 넣지 않는다
-- 키는 헤더에만 넣고 repr, 로그, 기록에 남기지 않는다
-- 실패 메시지는 운영자가 손으로 다시 입력하고, 수정 루프가 그 문구로 분류한다.
-  전송 장애는 `cause=<예외 클래스>: <ASCII 메시지>` 형식이다
-- 전송 오류와 `RETRY_STATUS`에만 `max_retries`번 재시도한다. 호출 하나의 전체 시간은 기본 `timeout + 30초`로 제한한다
+"""회사 LLM 게이트웨이를 호출하는 모듈. 기본 provider `company`가 이 클라이언트다.
 
 The company LLM gateway, the plain way: ``requests.post(url, headers=, json=, timeout=)``.
+
+`make_llm_client(cfg)` builds the client; the fix loop, the structure review and the operator guide all call
+the LLM through it. The key goes into the header only, never into a repr, a log or a record. Only transport
+errors and `RETRY_STATUS` are retried, `max_retries` times; one call's total time is capped at
+`timeout + 30s` by default.
 
 Everything comes from the environment / ``.env`` (read by ``load_config``):
 
@@ -71,7 +66,7 @@ PostFn = Callable[..., Any]   # requests.post와 같은 형태: post(url, header
 
 
 class LLMHardDeadline(requests.RequestException):
-    """호출 하나가 `hard_deadline_s`를 넘겼을 때 던지는 예외 클래스. 전송 장애로 처리한다.
+    """호출 하나가 `hard_deadline_s`를 넘기면 던지는 예외 클래스. 전송 장애로 본다.
 
     Raised when the gateway never closes the connection."""
 
@@ -88,7 +83,7 @@ _OS_ERROR_RE = re.compile(r"\[(?:WinError|Errno) -?\d+\][^'\"()]*")
 
 def ascii_safe(text: Any, limit: int = CAUSE_CHARS) -> str:
     """텍스트를 운영자가 손으로 다시 입력할 수 있는 ASCII 한 줄로 바꾼다.
-    공백을 하나로 합치고, ASCII가 아닌 문자 묶음은 `?`로 바꾸고, `limit`자에서 자른다.
+    공백은 하나로 합치고, ASCII가 아닌 문자 묶음은 `?`로 바꾼다. `limit`자를 넘으면 자른다.
     회사 Windows PC에서는 복사와 붙여넣기가 안 되어 콘솔 줄을 손으로 다시 입력한다."""
     t = _NON_ASCII_RUN_RE.sub("?", " ".join(str(text).split()))
     return t if len(t) <= limit else t[:max(0, limit - 3)] + "..."
@@ -147,13 +142,13 @@ def finish_reason_of(data: Any) -> Optional[str]:
     return finish or data.get("finish_reason") or data.get("stop_reason")
 
 
-# 여러 빌드 파드가 같은 게이트웨이를 호출하므로 바쁘다는 응답은 장애로 보지 않고 기다린다
-BUSY_WITH_RETRY_AFTER = frozenset({502, 503, 504})   # Retry-After가 있을 때만 바쁨으로 보고, 없으면 일반 5xx로 재시도한다
-BUSY_FIRST_DELAY = 2.0          # Retry-After 없는 바쁨의 첫 대기 시간, 두 배씩 늘리고 무작위 지연을 더한다
+# 여러 빌드 파드가 같은 게이트웨이를 호출한다. 그래서 바쁘다는 응답은 장애로 보지 않고 기다린다
+BUSY_WITH_RETRY_AFTER = frozenset({502, 503, 504})   # Retry-After가 있을 때만 바쁨으로 본다. 없으면 일반 5xx로 재시도한다
+BUSY_FIRST_DELAY = 2.0          # Retry-After 없는 바쁨의 첫 대기 시간. 두 배씩 늘리고 무작위 지연을 더한다
 BUSY_MAX_DELAY = 60.0           # 바쁨 대기 시간의 상한
 BUSY_RETRY_AFTER_CAP = 120.0    # Retry-After를 따르되 한 번에 이보다 오래 쉬지 않는다
-BUSY_MIN_DELAY = 1.0            # 빈 루프를 막으려고 Retry-After가 0이어도 지키는 최소 대기
-BUSY_LOG_EVERY = 60.0           # "still busy" 로그를 남기는 간격, 대기 시간 기준
+BUSY_MIN_DELAY = 1.0            # Retry-After가 0이어도 이만큼은 기다린다. 쉬지 않고 반복하지 않게 한다
+BUSY_LOG_EVERY = 60.0           # "still busy" 로그를 남기는 간격. 기다린 시간으로 잰다
 AUTH_PAUSE_MIN, AUTH_PAUSE_MAX = 1.0, 5.0   # 토큰 교환 직후 401이 오면 다시 교환하기 전에 쉬는 무작위 시간(초)
 
 TOKEN_RACE_WARNING = ("LLM gateway rejected a token right after it was exchanged \u2014 another client may be exchanging "
@@ -174,7 +169,7 @@ def _warn_token_race_once() -> None:
 
 class TokenManager:
     """사내 GPT 에이전트 게이트웨이의 토큰을 받아 관리하는 클래스.
-    ``POST <token_url>``에 앱 토큰을 Bearer로 보내 access token을 받고 메모리에 둔다.
+    ``POST <token_url>``에 앱 토큰을 Bearer로 보내 access token을 받는다. 받은 토큰은 메모리에만 둔다.
     만료 ``margin_s``초 전이거나 401이 오면 다시 받는다. 두 토큰 모두 로그, repr, 기록에 남기지 않는다.
 
     Answer: `access_token` + `expires_in` (default 3600 when missing / unreadable)."""
@@ -216,7 +211,7 @@ class TokenManager:
     def invalidate(self, rejected: Optional[str] = None) -> None:
         """다음 ``token()`` 호출이 토큰을 새로 받게 한다.
         ``rejected``를 주면 지금 토큰이 그 거절된 토큰일 때만 버린다.
-        다른 호출이 이미 새로 받은 토큰까지 버리고 또 교환하면 그 토큰이 무효가 될 수 있기 때문이다."""
+        다른 호출이 이미 새로 받은 토큰은 버리지 않는다. 또 교환하면 그 토큰이 무효가 될 수 있다."""
         with self._lock:
             if rejected is not None and self._token and self._token != rejected:
                 return
@@ -247,7 +242,7 @@ class TokenManager:
         except (TypeError, ValueError):
             ttl = 3600.0
         self._token, self._expires_at, self.expires_in = str(tok), self._clock() + ttl, ttl
-        note_secret(self._token)     # 환경 변수에 없는 비밀 값이므로 출력 마스킹 대상에 등록한다
+        note_secret(self._token)     # 환경 변수에 없는 비밀 값이다. 출력 마스킹 대상에 등록한다
         self.refreshes += 1
         log.info("llm token refreshed: expires in %.0fs (refreshed again %.0fs before expiry)", ttl, self.margin_s)
 
@@ -287,7 +282,7 @@ class CompanyClient:
                  busy_wait_s: float = 600.0, auth_retries: int = 2,
                  rand: Callable[[float, float], float] = random.uniform):
         self.url = (url or "").strip()
-        # 여러 빌드 파드가 같은 게이트웨이를 쓰므로 바쁨은 이 시간까지 기다리고, 교환 직후 401이면
+        # 여러 빌드 파드가 같은 게이트웨이를 쓴다. 바쁘다는 응답은 이 시간까지 기다리고, 교환 직후 401이면
         # `auth_retries`번 더 교환한다. `rand`는 무작위 지연 함수이고 테스트에서 고정값을 넣는다
         self.busy_wait_s = max(0.0, float(busy_wait_s or 0))
         self.auth_retries = max(0, int(auth_retries or 0))
@@ -308,9 +303,9 @@ class CompanyClient:
         self.extra_headers = dict(extra_headers or {})
         self._post = post or requests.post
         self._sleep = sleep
-        self.heartbeat_s = float(heartbeat_s)       # 호출이 끝나지 않는 동안 N초마다 로그를 남긴다, 0이면 끈다
-        # requests의 timeout은 바이트 사이의 대기만 재므로, 연결을 잡고 조금씩 보내는 게이트웨이 때문에
-        # 실행이 몇 시간씩 멈출 수 있다. 전체 시간 상한을 넘으면 호출 스레드를 버리고 전송 장애로 처리한다
+        self.heartbeat_s = float(heartbeat_s)       # 호출이 끝나지 않는 동안 N초마다 로그를 남긴다. 0이면 끈다
+        # requests의 timeout은 바이트 사이의 대기만 잰다. 연결을 잡고 조금씩 보내는 게이트웨이면 실행이 몇 시간씩
+        # 멈출 수 있다. 전체 시간 상한을 넘으면 호출 스레드를 버리고 전송 장애로 처리한다
         self.hard_deadline_s = float(hard_deadline_s) if hard_deadline_s is not None else self.timeout + 30.0
 
     def __repr__(self) -> str:                        # 키가 새어 나가지 않게 한다
@@ -319,7 +314,7 @@ class CompanyClient:
     # ---- 실제로 보내는 헤더와 본문
     def headers(self) -> dict[str, str]:
         """요청에 보낼 헤더를 만든다. `Authorization: Bearer <키>`와 `llm.extra_headers`가 들어간다.
-        키가 들어 있으므로 로그, 기록, 화면에 내보내지 않는다."""
+        키가 들어 있으니 로그, 기록, 화면에 내보내지 않는다."""
         return self._auth_headers()[0]
 
     def _auth_headers(self) -> tuple[dict[str, str], str]:
@@ -330,8 +325,8 @@ class CompanyClient:
                 temperature: Optional[float] = None, metadata: Optional[dict] = None) -> dict[str, Any]:
         """요청에 보낼 JSON 본문을 만든다.
         - legacy: model, messages, payload_extra를 회사 형식 그대로 보낸다
-        - agent: asset id를 `model`로, 고른 모델 이름을 `params.role`로 보내고 호출마다 새 trace_id를 넣는다
-        - agent의 session_id는 세션을 이어 가는 호출만 ``metadata["session_id"]``로 넘긴다
+        - agent: asset id를 `model`로, 고른 모델 이름을 `params.role`로 보낸다. 호출마다 새 trace_id를 넣는다
+        - agent의 session_id는 세션을 이어 갈 때만 보낸다. 그 id는 ``metadata["session_id"]``로 받는다
 
         agent also sends max_tokens / temperature when given; `thread_id` is deprecated and never sent."""
         msgs = [{"role": m.role, "content": m.content} for m in messages]
@@ -353,7 +348,7 @@ class CompanyClient:
 
     def asked_name(self, payload: dict[str, Any]) -> str:
         """요청 본문에서 이번 호출이 요청한 모델 이름을 꺼낸다.
-        agent 게이트웨이는 `params.role`을, legacy는 `model`을 쓴다. agent의 `model`은 asset id이기 때문이다."""
+        agent 게이트웨이는 `params.role`을, legacy는 `model`을 쓴다. agent의 `model`은 asset id다."""
         if self.gateway == "agent":
             params = payload.get("params")
             role = params.get("role") if isinstance(params, dict) else None
@@ -374,8 +369,8 @@ class CompanyClient:
         return self._post(self.url, headers=headers, json=payload, timeout=self.timeout)
 
     def _post_with_heartbeat(self, payload: dict[str, Any], label: str, sent: Optional[dict] = None) -> Any:
-        """`post_once`를 작업 스레드에서 실행하고, 답이 없는 동안 `heartbeat_s`마다 INFO 로그를 한 줄 남긴다.
-        운영자가 느린 답과 멈춘 실행을 구분할 수 있게 하려는 것이다.
+        """`post_once`를 작업 스레드에서 실행한다. 답을 기다리는 동안 `heartbeat_s`마다 INFO 로그를 한 줄 남긴다.
+        그래야 운영자가 느린 답과 멈춘 실행을 구분할 수 있다.
         `hard_deadline_s`가 지나면 스레드를 버리고 `LLMHardDeadline`을 던진다."""
         done = threading.Event()
         t0 = time.monotonic()
@@ -385,7 +380,7 @@ class CompanyClient:
                 log.info("llm call still in flight: %.0fs elapsed (timeout %.0fs) — %s", time.monotonic() - t0,
                          self.timeout, label)
 
-        # 웹 앱이 contextvar로 실행별 로그를 나누므로 두 스레드 모두 호출한 쪽 context의 복사본에서 실행한다
+        # 웹 앱은 contextvar로 실행별 로그를 나눈다. 그래서 두 스레드 모두 호출한 쪽 context의 복사본에서 실행한다
         # 그렇지 않으면 heartbeat 줄이 sbmig.log에 남지 않는다
         th = threading.Thread(target=contextvars.copy_context().run, args=(beat,), name="llm-heartbeat", daemon=True)
         if self.heartbeat_s > 0:
@@ -434,8 +429,8 @@ class CompanyClient:
 
     def _busy_delay(self, n: int, retry_after: Optional[float]) -> float:
         """n번째 바쁨 응답 뒤에 쉴 시간(초)을 계산한다.
-        Retry-After가 있으면 그 값에 0~10%를 더하고, 없으면 상한이 있는 지수 백오프의 절반에서 전부 사이로 쉰다.
-        여러 파드가 같은 시점에 다시 몰리지 않게 하려는 것이다."""
+        Retry-After가 있으면 그 값에 0~10%를 더해 기다린다. 없으면 상한이 있는 지수 백오프 값의 절반에서 전부 사이로 기다린다.
+        여러 파드가 같은 시점에 다시 몰리지 않게 한다."""
         if retry_after is not None:
             return max(BUSY_MIN_DELAY, min(retry_after, BUSY_RETRY_AFTER_CAP)) * self._rand(1.0, 1.1)
         base = min(BUSY_MAX_DELAY, BUSY_FIRST_DELAY * 2.0 ** min(n, 16))
@@ -443,31 +438,31 @@ class CompanyClient:
 
     def _complete(self, messages: list[ChatMessage], payload: dict[str, Any], role: Optional[str]) -> LLMResponse:
         """게이트웨이에 요청을 보내고 실패하면 다시 시도한다.
-        전송 오류와 `RETRY_STATUS`는 재시도하고, 그 밖의 HTTP 오류는 바로 `LLMError`를 던진다.
+        전송 오류와 `RETRY_STATUS`의 상태 코드는 다시 시도한다. 그 밖의 HTTP 오류는 바로 `LLMError`를 던진다.
         - 바쁨 응답은 `busy_wait_s`초 동안 `max_retries`와 별도로 재시도한다. 0이면 이 대기를 하지 않는다
-        - 401이면 토큰을 새로 받아 한 번 더 보내고, 그래도 401이면 1~5초 쉬고 `auth_retries`번까지 더 시도한다
+        - 401이면 토큰을 새로 받아 한 번 더 보낸다. 그래도 401이면 1~5초 쉬고 `auth_retries`번까지 더 시도한다
         - 포기할 때 예외 메시지에 전송 장애면 `cause=`를, HTTP 오류면 응답 본문 앞부분을 넣는다"""
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
         label = self._label(payload, role)
         chars = sum(len(m.content) for m in messages)
-        cause: Optional[str] = None             # 마지막 전송 장애의 `<Class>: <message>`, HTTP 응답을 받으면 None
+        cause: Optional[str] = None             # 마지막 전송 장애의 `<Class>: <message>`. HTTP 응답을 받으면 None
         token_error: Optional[TokenExchangeError] = None   # 마지막 시도가 토큰 교환에서 실패했다
         auth_retried = False                    # 401 뒤 새 토큰으로 한 번 더 보냈는지
         auth_rounds = 0                         # 새로 교환한 토큰도 401을 받은 뒤 더 시도한 횟수
         total = self.max_retries + 1            # 401 재시도 때만 하나씩 늘어난다
-        busy_tries = 0                          # 이 호출의 바쁨 응답 수, `max_retries`에 세지 않는다
-        busy_waited = 0.0                       # 바쁨으로 쉰 시간(초), `llm.busy_wait_seconds` 예산
+        busy_tries = 0                          # 이 호출의 바쁨 응답 수. `max_retries`에 세지 않는다
+        busy_waited = 0.0                       # 바쁨으로 쉰 시간(초). 한도는 `llm.busy_wait_seconds`다
         busy_logged = 0.0                       # 마지막 "busy" 로그를 남긴 시점의 `busy_waited`
         posts = 0
-        quiet_start = False                     # 다음 POST는 바쁨 응답 뒤 다시 보내는 것이다
+        quiet_start = False                     # 다음 POST는 바쁨 응답 뒤에 다시 보내는 요청이다
         attempt = -1
         while attempt + 1 < total:
             attempt += 1
             wait: Optional[float] = None
             posts += 1
-            # 운영자에게는 1분에 한 번 "still busy"만 보이도록 바쁨 재시도의 시작 줄은 DEBUG로 남긴다
+            # 바쁨 재시도의 시작 줄은 DEBUG로 남긴다. 운영자에게는 1분에 한 번 "still busy"만 보인다
             log.log(logging.DEBUG if quiet_start else logging.INFO,
                     "llm call provider=company %s attempt %d/%d → POST %s (prompt %d chars, timeout %.0fs)", label,
                     attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
@@ -476,7 +471,7 @@ class CompanyClient:
             try:
                 resp = self._post_with_heartbeat(payload, label, sent)
             except TokenExchangeError as exc:
-                # 토큰 교환 실패는 게이트웨이 장애이므로 채팅 호출의 전송 장애처럼 다시 시도한다
+                # 토큰 교환 실패는 게이트웨이 장애다. 채팅 호출의 전송 장애처럼 다시 시도한다
                 token_error, cause = exc, None
                 last_status, last_body = exc.status, ""
                 log.warning("llm company %s (attempt %d/%d)", exc, attempt + 1, self.max_retries + 1)
@@ -505,12 +500,12 @@ class CompanyClient:
                 if resp.status_code == 401 and self._tokens is not None and not auth_retried:
                     auth_retried = True
                     total += 1
-                    # 다른 호출이 이미 새 토큰을 받았으면 다시 교환하지 않도록, 우리가 보낸 토큰일 때만 버린다
+                    # 우리가 보낸 토큰일 때만 버린다. 다른 호출이 이미 새 토큰을 받았으면 다시 교환하지 않는다
                     self._tokens.invalidate(sent.get("token"))
                     log.warning("llm company HTTP 401: the access token is refreshed and the call retried once")
                     continue
                 if resp.status_code == 401 and self._tokens is not None and auth_rounds < self.auth_retries:
-                    # 방금 교환한 토큰도 거절됐으면 다른 파드가 같은 앱 토큰으로 교환해 무효가 됐을 수 있다
+                    # 방금 교환한 토큰도 거절됐다. 다른 파드가 같은 앱 토큰으로 교환해서 무효가 됐을 수 있다
                     # 잠시 쉰 뒤 다시 받는다
                     auth_rounds += 1
                     total += 1
@@ -551,7 +546,7 @@ class CompanyClient:
                 log.warning("llm company HTTP %d (attempt %d/%d)", resp.status_code, attempt + 1,
                             self.max_retries + 1)
             if attempt + 1 < total:
-                # Retry-After는 그대로 따르고, 지수 대기에는 0~25% 무작위 지연을 더해 여러 파드가 동시에 재시도하지 않게 한다
+                # Retry-After가 있으면 그대로 따른다. 없으면 지수 대기에 0~25% 무작위 지연을 더해 파드끼리 재시도 시점을 흩는다
                 delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt) * self._rand(1.0, 1.25)
                 log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s%s)", delay, attempt + 1,
                          self.max_retries + 1, last_status, f" cause={cause}" if cause else
@@ -584,14 +579,14 @@ class CompanyClient:
 
     def _parse(self, data: Any, model: str) -> LLMResponse:
         """게이트웨이 JSON 응답을 LLMResponse로 바꾼다.
-        콘텐츠 필터에 걸렸거나, 답이 비었는데 finish_reason이 length면 그 요청만 거절된 것으로 보고
-        `LLMError`(status 200)를 던진다. 내용이 있는 잘린 답은 경고만 남긴다.
+        콘텐츠 필터에 걸린 답과, finish_reason이 length인데 비어 있는 답은 그 요청만 거절된 것으로 본다.
+        이때는 `LLMError`(status 200)를 던진다. 내용이 있는 잘린 답은 경고만 남긴다.
 
         The fix loop's request-rejected rule keeps these status-200 errors out of the
         "LLM unavailable" streak."""
         filtered = content_filter_reason(data)
         if filtered:
-            # Azure 형식 게이트웨이는 콘텐츠 필터에 걸리면 HTTP 200에 빈 content를 준다, 장애가 아니라 이 요청의 문제다
+            # Azure 형식 게이트웨이는 콘텐츠 필터에 걸리면 HTTP 200에 빈 content를 준다. 장애가 아니라 이 요청의 문제다
             raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
                            f"content filtered by the gateway ({filtered}); this request only, not an outage")
         finish = finish_reason_of(data)
@@ -605,14 +600,14 @@ class CompanyClient:
                 raise
             content = ""
         if str(finish or "").lower() == "length" and not content.strip():
-            # 추론 모델이 답을 쓰기 전에 max_tokens를 다 썼다, 요청 크기 문제이므로 요청 거절로 센다
+            # 추론 모델이 답을 쓰기 전에 max_tokens를 다 썼다. 요청 크기 문제라서 요청 거절로 센다
             log.warning("llm company: empty answer, finish_reason=length (output tokens %d)", out_tokens)
             raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
                            EMPTY_LENGTH_MESSAGE + (f" (output tokens {out_tokens})" if out_tokens else ""))
         if str(finish or "").lower() == "length":
             log.warning("llm company: answer cut at the gateway's max_tokens (finish_reason=length, output tokens %d)",
                         out_tokens)
-        # 모델 이름은 요청한 이름(agent는 role)을 쓰고, 응답의 model과 usage.by_model[].model은 served_models에 둔다
+        # 모델 이름은 요청한 이름(agent는 role)을 쓴다. 응답의 model과 usage.by_model[].model은 served_models에 둔다
         out = LLMResponse(content=content, model=model or "",
                           input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
                           output_tokens=out_tokens, finish_reason=finish)
@@ -628,7 +623,7 @@ class CompanyClient:
 
 
 def content_filter_reason(data: Any) -> Optional[str]:
-    """OpenAI / Azure 형식 응답이 콘텐츠 필터 때문에 비었으면 그 이유를, 아니면 None을 반환한다.
+    """OpenAI / Azure 형식 응답이 콘텐츠 필터 때문에 비었으면 그 이유를 반환한다. 아니면 None이다.
     HTTP 200이어도 걸러진 답일 수 있다.
 
     Hits: `choices[0].finish_reason == "content_filter"`, a `content_filter_result` entry with
@@ -661,7 +656,7 @@ def content_filter_reason(data: Any) -> Optional[str]:
 # 연결 확인용 작은 호출: `sbmig llm-probe`와 fleet preflight
 # ---------------------------------------------------------------------------
 PROBE_PROMPT = "Reply with the single word: pong"
-PROBE_SKIP_PROVIDERS = ("fake",)          # 연결할 곳이 없으므로 preflight가 호출을 건너뛴다
+PROBE_SKIP_PROVIDERS = ("fake",)          # 연결할 곳이 없다. preflight가 호출을 건너뛴다
 
 
 def probe_messages(prompt: str = PROBE_PROMPT, no_system: bool = False) -> list[dict]:
@@ -694,7 +689,7 @@ class ProbeResult:
 
     @property
     def transient(self) -> bool:
-        """시간이 지나면 저절로 나아질 수 있는 실패인지 확인한다. 전송 장애와 5xx / 408 / 429가 해당한다."""
+        """시간이 지나면 저절로 나아질 수 있는 실패인지 확인한다. 전송 장애와 5xx / 408 / 429가 그렇다."""
         if self.ok:
             return False
         if self.kind == "transport":
@@ -715,9 +710,9 @@ class ProbeResult:
 def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
               on_request: Optional[Callable[[dict], None]] = None) -> ProbeResult:
     """설정된 provider로 작은 요청 하나를 재시도 없이 보내 연결을 확인한다.
-    company는 토큰 교환을 먼저 확인하고, 실제 실행과 같은 본문으로 `post_once`를 한 번 호출한다.
+    company는 토큰 교환부터 확인한다. 그다음 실제 실행과 같은 본문으로 `post_once`를 한 번 호출한다.
     다른 provider는 `client.complete(…, role="other")`를 호출한다.
-    LLM 문제로는 예외를 던지지 않고 결과를 ProbeResult로 반환한다."""
+    LLM 문제로는 예외를 던지지 않는다. 결과는 ProbeResult로 반환한다."""
     from sbmig.core.interfaces import ChatMessage
 
     from .client import LLMConfigError, make_llm_client
@@ -752,7 +747,7 @@ def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
             on_request(payload)
         try:
             resp = inner.post_once(payload)
-        except Exception as e:  # noqa: BLE001 - 전송 장애, cause가 프록시 / DNS / 연결 거부 / TLS를 알려 준다
+        except Exception as e:  # noqa: BLE001 - 전송 장애다. cause를 보면 프록시, DNS, 연결 거부, TLS 중 무엇인지 안다
             res.latency_s = time.monotonic() - t0
             res.kind, res.problem = "transport", f"cause={transport_cause(e)}"
             res.hints.append("check the URL (the full endpoint, http://...) and the proxy (NO_PROXY=<gateway host> "

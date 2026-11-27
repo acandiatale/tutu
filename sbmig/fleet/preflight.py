@@ -1,10 +1,10 @@
-"""일괄 실행(플릿)을 시작하기 전에 디스크, Maven, Java, settings.xml, 저장소, LLM이 정상인지 점검하는 모듈.
-러너(:mod:`sbmig.fleet.runner`)가 첫 프로젝트 전에 한 번, 그리고 인프라 장애로 기다린 뒤 다시 시작하기
-전마다 :func:`run_preflight`를 호출한다.
-- 점검마다 ASCII 한 줄(``preflight: <점검> ok|FAIL|skip …``)을 출력하므로 운영자가 cp949 콘솔에서 그대로 옮겨 쓸 수 있다
-- 실패에는 인프라 종류(``disk | maven | jdk | repository | llm``)와 기다리면 풀릴 수 있는지(``transient``)를 함께 담는다
-- 설정 오류(Maven 없음, Java 버전 불일치, 키 거부 등)는 기다려도 풀리지 않으므로 러너가 바로 중단한다
-- 저장소 점검은 Maven과 마찬가지로 셸의 프록시 환경 변수를 사용하지 않는다
+"""일괄 실행을 시작하기 전에 디스크, Maven, Java, settings.xml, 저장소, LLM이 정상인지 점검하는 모듈.
+
+The runner (:mod:`sbmig.fleet.runner`) calls :func:`run_preflight` once before the first project and again
+before it restarts after waiting out an infrastructure outage. A failed check carries the infrastructure
+kind (``disk | maven | jdk | repository | llm``) and ``transient``; a configuration error (no Maven, wrong
+Java version, key rejected) does not pass by waiting, so the runner stops at once. The lines are ASCII so
+they read the same on a cp949 console.
 
 One short ASCII line per check, so the operator can retype the failing one:
 
@@ -51,7 +51,7 @@ _JAVA_RE = re.compile(r"Java version:\s*(\d+)(?:\.(\d+))?")
 class Check:
     """점검 하나의 결과를 담는 데이터 클래스.
     실패하면 인프라 종류(``kind``)와 기다리면 풀릴 수 있는지(``transient``)를 담는다.
-    ``skipped``는 점검하지 않았다는 뜻이며 실패로 보지 않는다."""
+    ``skipped``는 점검하지 않았다는 뜻이다. 실패로 보지 않는다."""
     name: str                              # disk | maven | java | settings | repository | llm
     ok: bool
     detail: str = ""
@@ -67,14 +67,14 @@ class Check:
 
     def line(self) -> str:
         """``preflight: <이름> ok|FAIL|skip <설명>`` 형식의 한 줄을 만든다.
-        cp949 콘솔에서 읽히도록 ASCII만 쓰고 설명은 160자에서 자른다."""
+        cp949 콘솔에서도 읽히게 ASCII만 쓴다. 설명은 160자에서 자른다."""
         state = "skip" if self.skipped else ("ok" if self.ok else "FAIL")
         return f"preflight: {self.name:<10} {state:<4} {ascii_safe(self.detail, 160)}"
 
 
 def _existing(path: Path) -> Path:
     """경로가 아직 없으면 존재하는 가장 가까운 상위 폴더를 반환한다.
-    같은 드라이브의 여유 공간을 재기 위해 사용한다."""
+    그 폴더로 같은 드라이브의 여유 공간을 잰다."""
     p = Path(path).resolve()
     while not p.exists() and p.parent != p:
         p = p.parent
@@ -82,9 +82,9 @@ def _existing(path: Path) -> Path:
 
 
 def check_disk(path: str | Path, min_free_gb: float) -> Check:
-    """``path``(일괄 실행의 ``--out``)가 있는 드라이브의 여유 공간이 ``fleet.min_free_gb`` 이상인지 점검한다.
-    설정값이 0이면 점검하지 않는다.
-    공간 부족은 파일을 지우면 풀리므로 ``transient``이고, 공간을 잴 수 없으면 건너뛴다."""
+    """일괄 실행의 ``--out``(``path``)이 있는 드라이브에 여유 공간이 ``fleet.min_free_gb`` 이상인지 점검한다.
+    설정값이 0이면 점검하지 않는다. 공간을 잴 수 없어도 건너뛴다.
+    공간 부족은 파일을 지우면 풀리므로 ``transient``로 본다."""
     if not min_free_gb or min_free_gb <= 0:
         return Check("disk", True, "no check (fleet.min_free_gb: 0)", skipped=True)
     try:
@@ -107,9 +107,9 @@ def java_major(text: str) -> Optional[int]:
 
 
 def check_maven_java(cfg: Config, maven: Optional[Callable[[Config], Any]] = None) -> list[Check]:
-    """``mvn -v``를 한 번 실행해서 Maven이 실행되는지와 Maven이 쓰는 Java 메이저 버전이
-    ``build.require_java_major``와 같은지 점검한다.
-    두 실패 모두 설정 오류이므로 ``transient``가 아니다.
+    """``mvn -v``를 한 번 실행해서 Maven이 실행되는지 점검한다.
+    Maven이 쓰는 Java 메이저 버전이 ``build.require_java_major``와 같은지도 점검한다.
+    둘 다 설정 오류라서 실패해도 ``transient``가 아니다.
 
     Maven is ``build.mvn`` with ``build.java_home``. ``build.require_java_major`` 0 skips the Java check."""
     if maven is None:
@@ -175,7 +175,7 @@ def _catch_all(mirrors: list[dict]) -> Optional[dict]:
 
 
 def check_settings(cfg: Config) -> Check:
-    """``build.settings_file``이 있고 읽히는지 점검하고, 빌드가 거치는 미러를 알려 준다(RUNBOOK §0.1).
+    """``build.settings_file``이 있고 읽히는지 점검한다. 빌드가 거치는 미러도 알려 준다(RUNBOOK §0.1).
     설정되지 않았거나 ``${…}``가 치환되지 않았으면 건너뛴다.
     파일이 없거나 깨졌으면 설정 오류(kind ``repository``)로 본다."""
     sf = (cfg.build.settings_file or "").strip()
@@ -211,7 +211,7 @@ def _proxies_for(url: str, proxies: list[dict]) -> dict[str, str]:
 
 def _http_get(url: str, proxies: dict[str, str], timeout: float) -> int:
     """URL에 GET을 한 번 보내고 HTTP 상태 코드를 반환한다.
-    Maven과 다른 경로로 접속하면 점검 결과가 틀리므로 셸의 HTTP_PROXY / NO_PROXY는 사용하지 않는다.
+    셸의 HTTP_PROXY / NO_PROXY는 쓰지 않는다. Maven과 다른 경로로 접속하면 점검 결과가 틀린다.
     본문은 받지 않는다."""
     import requests
 
@@ -229,7 +229,7 @@ def check_repository(settings: Check, *, http_get: Optional[Callable[[str, dict,
     """settings 미러 URL에 GET을 한 번 보내 저장소가 살아 있는지 점검한다.
     Nexus 장애면 빌드를 실패시키는 대신 일괄 실행을 기다리게 한다.
     500 미만 응답(401, 404 포함)은 살아 있다고 본다.
-    사내 CA를 파이썬이 몰라 TLS 검증이 실패해도 서버가 응답했으므로 살아 있다고 본다.
+    TLS 검증이 실패해도 살아 있다고 본다. 파이썬이 사내 CA를 모를 뿐 서버는 응답했다.
     연결 실패와 5xx는 ``transient``로 본다."""
     mirror = settings.data.get("mirror") if settings.ok else None
     url = (mirror or {}).get("url", "")
@@ -279,7 +279,7 @@ def run_preflight(cfg: Config, out_dir: str | Path, *, echo: Optional[Echo] = No
                   http_get: Optional[Callable[[str, dict, float], int]] = None) -> list[Check]:
     """모든 점검을 disk, maven, java, settings, repository, llm 순서로 실행한다.
     하나가 실패해도 끝까지 실행한다.
-    ``echo``가 있으면 줄이 나올 때마다 전달하고, 없으면 로그에만 기록한다."""
+    ``echo``가 있으면 줄이 나올 때마다 넘긴다. 없으면 로그에만 기록한다."""
     checks: list[Check] = []
 
     def add(c: Check) -> None:

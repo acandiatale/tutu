@@ -1,15 +1,10 @@
 """LLM의 수정 답변을 태그별로 나누어 읽는 모듈.
-LLMFixer가 답변마다 `parse_script_response`를 호출하고, 구조 검토(`sbmig.review.parse`)도 이 모듈로 수정 블록을 읽는다.
-`clean_code`, `script_problem`, `normalize_path`도 다른 모듈이 쓴다.
-- 모든 태그는 없어도 되고, 어떤 답변에도 예외를 던지지 않는다
-- 설명 글과 데이터 블록을 먼저 꺼내 지우므로 분석 글이나 JSP 편집 안의 `<script>`를 수정 스크립트로 잘못 읽지 않는다
-- 여기서는 코드가 파싱되고 모듈 수준 `def fix`가 있는지만 확인한다.
-  정적 검사는 `sbmig.script.check_script`, 편집 검증은 `sbmig.script.edits.edits_from_json`이 맡는다
-- `<verify>`만 있는 답변은 답변으로 보지 않는다
-- `<blocked>`는 한 문장으로 줄여 `blocked_reason`에 담는다.
-  편집이 함께 와도 읽고, 거절로 처리할지는 수정 루프가 정한다
 
 Fix answer protocol: docs/v2/PLAN-v2.1.md §3.6; script contract docs/INTERFACES.md "Script contract (S)".
+
+LLMFixer calls `parse_script_response` for every answer; the structure review (`sbmig.review.parse`) reads
+its edit blocks through this module too, and other modules use `clean_code`, `script_problem` and
+`normalize_path`.
 
 The model answers with these parts (the change notes are what the business team reads)::
 
@@ -93,34 +88,35 @@ _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$")
 _FENCED_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(?:python3?|py)?[ \t]*\n(.*?)^[ \t]*\1[ \t]*$",
                               re.IGNORECASE | re.MULTILINE | re.DOTALL)
 _DEF_FIX_RE = re.compile(r"^def\s+fix\s*\(", re.MULTILINE)
-# 연산이 하나 이상 있는 SEARCH/REPLACE 형식 답, 빈 <patches></patches>는 "수정 없음"이다
+# SEARCH/REPLACE 형식 답을 찾는다. 연산이 하나 이상 있어야 한다. 빈 <patches></patches>는 "수정 없음"이다
 _PATCHES_RE = re.compile(r"^\s*(?:[#*>\-]\s*)*={3}\s*(?:MODIFY|CREATE|DELETE|RENAME)\b", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass
 class ParsedScript:
     """LLM 답변 하나를 나눈 결과를 담는 데이터 클래스.
-    실행할 수 있는 코드(`code`), 쓸 수 없지만 꺼내 둔 후보(`candidate`), 편집, 변경 설명, 추가 자료 요청, 경고를 담는다."""
-    code: str = ""                                 # 파싱되고 모듈 수준 fix가 있는 코드, 아니면 빈 문자열
+    실행할 수 있는 코드(`code`)와 쓸 수 없지만 꺼내 둔 후보(`candidate`)를 담는다.
+    편집, 변경 설명, 추가 자료 요청, 경고도 담는다."""
+    code: str = ""                                 # 파싱되고 모듈 수준 fix가 있는 코드. 아니면 빈 문자열
     candidate: str = ""                            # 쓸 수 없어도 꺼내 둔 스크립트 텍스트
     analysis: str = ""                             # 원인
     solution: str = ""                             # 해결 방법
-    verify: str = ""                               # 메이저 업그레이드 뒤의 운영자 확인 사항, 없으면 빈 문자열
-    edits: list[Edit] = field(default_factory=list)   # 검증한 편집, 없거나 읽지 못하면 빈 목록
-    edits_block: bool = False                      # <edits> 블록이 있었는지, 비었거나 못 읽었어도 참
-    edits_problem: str = ""                        # "edits JSON unreadable: …" / "edits invalid: …", 없으면 빈 값
+    verify: str = ""                               # 메이저 업그레이드 뒤의 운영자 확인 사항. 없으면 빈 문자열
+    edits: list[Edit] = field(default_factory=list)   # 검증한 편집. 없거나 읽지 못하면 빈 목록
+    edits_block: bool = False                      # <edits> 블록이 있었는지. 비었거나 못 읽었어도 참
+    edits_problem: str = ""                        # "edits JSON unreadable: …" / "edits invalid: …". 없으면 빈 값
     changes: list[EditNote] = field(default_factory=list)   # <changes> 목록과 편집마다의 desc
     changes_count: int = 0                         # `changes` 중 <changes> 목록에서 온 항목 수
     changes_block: bool = False                    # <changes> 블록이 있었는지
-    changes_problem: str = ""                      # "changes unreadable: …"나 건너뛴 항목, 문제없으면 빈 문자열
+    changes_problem: str = ""                      # "changes unreadable: …"나 건너뛴 항목. 문제없으면 빈 문자열
     no_script_reason: str = ""                     # <no_script>
     blocked_reason: str = ""                       # <blocked>: 프로젝트 안에서 고칠 수 없는 이유
     need_files: list[str] = field(default_factory=list)
     need_grep: list[str] = field(default_factory=list)
     problem: str = ""                              # `code`가 빈 이유: NO_SCRIPT, NO_FIX_DEF, 파싱 오류
-    # 닫는 태그 없이 답변 끝까지 이어진 블록 이름(script / edits), 토큰 한도에서 잘린 답인지 판단할 때 쓴다
+    # 닫는 태그 없이 답변 끝까지 이어진 블록 이름(script / edits). 토큰 한도에서 잘린 답인지 판단할 때 쓴다
     unclosed: list[str] = field(default_factory=list)
-    # 토큰 한도에서 잘려 쓰지 않는 답의 이유, 파서가 아니라 LLMFixer가 finish_reason을 보고 채운다
+    # 토큰 한도에서 잘려 쓰지 않는 답의 이유. 파서가 아니라 LLMFixer가 finish_reason을 보고 채운다
     cut: str = ""
     raw: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -161,8 +157,8 @@ class ParsedScript:
 # 도우미
 # ---------------------------------------------------------------------------
 def normalize_path(raw: str) -> tuple[Optional[str], Optional[str]]:
-    """LLM이 준 경로를 posix 상대 경로로 정규화해 (경로, 경고)로 반환한다.
-    절대 경로, 드라이브 문자, `~`, `..`는 거부하고 경로 자리에 None을 반환한다."""
+    """LLM이 준 경로를 posix 상대 경로로 바꿔 (경로, 경고)로 반환한다.
+    절대 경로, 드라이브 문자, `~`, `..`는 거부한다. 이때 경로는 None이다."""
     p = raw.strip().strip("`'\"*").strip()
     p = re.sub(r"\s+\(.*\)$", "", p)          # "path (new file)"에서 괄호 부분을 뗀다
     p = p.replace("\\", "/")
@@ -222,7 +218,7 @@ def _find_simple(text: str, name: str) -> Optional[tuple[str, int]]:
 
 def clean_code(body: str) -> str:
     """스크립트 텍스트에서 앞뒤 빈 줄과 코드 펜스만 지우고 반환한다.
-    블록 전체가 들여쓰기되어 있으면 들여쓰기를 걷어 낸다. 끝에는 줄바꿈 하나를 붙이고, 나머지는 건드리지 않는다."""
+    블록 전체가 들여쓰기되어 있으면 들여쓰기를 걷어 낸다. 끝에 줄바꿈 하나를 붙이고, 나머지는 그대로 둔다."""
     lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -264,7 +260,7 @@ def script_problem(code: str) -> str:
 
 def _script_block_at(rest: str) -> tuple[str, bool]:
     """여는 태그 뒤의 텍스트에서 스크립트 내용과 닫는 태그가 있었는지를 반환한다.
-    코드 안에도 `</script>`가 나올 수 있으므로 자기 줄에 있고 앞의 코드가 파싱되는 닫는 태그를 먼저 고른다.
+    코드 안에도 `</script>`가 나올 수 있다. 자기 줄에 있고, 그 앞까지의 코드가 파싱되는 닫는 태그를 먼저 고른다.
     닫는 태그가 없으면 다음 <analysis> / <need_*> 줄이나 텍스트 끝에서 끝낸다."""
     closes = [c.start() for c in _CLOSE_SCRIPT_LINE_RE.finditer(rest)]
     closes += [c.start() for c in _CLOSE_SCRIPT_RE.finditer(rest) if c.start() not in closes]
@@ -296,7 +292,7 @@ def _script_from_tag(t: str, start: int, warnings: list[str]) -> Optional[str]:
     if outer:
         if len(outer) > 1:
             warnings.append(SEVERAL_SCRIPTS.format(n=len(outer)))
-        # 마지막 완성 블록 뒤에 닫히지 않은 블록이 있으면 답이 잘렸을 수 있으므로 표시해 둔다
+        # 마지막 완성 블록 뒤에 닫히지 않은 블록이 있으면 경고로 남긴다. 답이 잘렸을 수 있다
         if any(m.start() >= outer[-1][1] and not _script_block_at(t[m.end():])[1] for m in opens):
             warnings.append(MISSING_CLOSE_SCRIPT)
         return outer[-1][2]
@@ -329,7 +325,7 @@ _PY_LITERALS = {"None": "null", "True": "true", "False": "false"}
 
 def _repair_json(s: str) -> str:
     """LLM이 자주 틀리는 JSON 표기를 고친다.
-    문자열 밖의 끝 쉼표, `//` / `/* */` 주석, Python `None` / `True` / `False`를 고치고,
+    문자열 밖의 끝 쉼표와 `//` / `/* */` 주석을 지우고, Python `None` / `True` / `False`를 JSON 값으로 바꾼다.
     작은따옴표 문자열은 JSON 문자열로, 문자열 안의 잘못된 이스케이프(`\\d`)는 `\\\\d`로 바꾼다."""
     out: list[str] = []
     i, n = 0, len(s)
@@ -386,7 +382,7 @@ def _repair_json(s: str) -> str:
 
 def load_edits_json(text: str) -> tuple[Optional[Any], str]:
     """편집 JSON을 읽어 (객체, 빈 문자열)을 반환한다.
-    `json.loads`가 실패하면 너그럽게 다시 읽고, 그래도 실패하면 (None, 디코더 메시지)를 반환한다.
+    `json.loads`가 실패하면 너그럽게 다시 읽는다. 그래도 실패하면 (None, 디코더 메시지)를 반환한다.
 
     Lenient order: raw control characters in strings, `_repair_json`, the first `[` / `{` value with
     prose around it."""
@@ -457,7 +453,7 @@ def parse_changes(text: str) -> tuple[list[EditNote], str]:
 
 def blocked_text(body: str) -> str:
     """`<blocked>` 블록의 내용을 한 문장으로 줄인다. 공백을 합치고 `BLOCKED_MAX_CHARS`자에서 자른다.
-    태그가 비어 있으면 "(no reason given)"을 반환한다. 이유가 없어도 차단 답으로 처리한다."""
+    태그가 비어 있으면 "(no reason given)"을 반환한다. 이유가 없어도 차단 답으로 본다."""
     text = " ".join(_strip_outer_fence(body.replace("\r\n", "\n")).split())
     if not text:
         return "(no reason given)"
@@ -476,7 +472,7 @@ def _mask(t: str, start: int, end: int) -> str:
 
 
 def _take_block(t: str, masked: str, name: str) -> tuple[Optional[str], str]:
-    """`masked`에서 <name>…</name>을 찾아 그 내용과, 블록 자리를 공백으로 지운 masked를 반환한다.
+    """`masked`에서 <name>…</name>을 찾아 내용을 꺼낸다. 블록 자리를 공백으로 지운 masked도 함께 반환한다.
     공백으로 지우므로 다른 위치 값은 바뀌지 않는다. 내용은 원문 `t`에서 가져온다."""
     m = re.search(rf"<\s*{name}\s*>", masked, re.IGNORECASE)
     if not m:
@@ -501,7 +497,7 @@ def parse_script_response(text: str) -> ParsedScript:
     res = ParsedScript(raw=raw)
     t = raw.replace("\r\n", "\n").replace("\r", "\n")
 
-    # 설명 글과 데이터 블록을 먼저 꺼내 지운다. 그 안의 <script>(분석 글, JSP 편집)를 수정 스크립트로 읽지 않으려는 것이다
+    # 설명 글과 데이터 블록을 먼저 꺼내 지운다. 그 안의 <script>(분석 글, JSP 편집)를 수정 스크립트로 읽지 않게 한다
     masked = t
     body, masked = _take_block(t, masked, "analysis")
     if body is not None:
@@ -559,7 +555,7 @@ def parse_script_response(text: str) -> ParsedScript:
         if _PATCHES_RE.search(masked):
             res.warnings.append(PATCHES_WARNING)
 
-    # <verify>만 있는 답변은 답변으로 보지 않으므로 아래 조건에 verify를 넣지 않는다
+    # <verify>만 있는 답변은 답변으로 보지 않는다. 그래서 아래 조건에 verify를 넣지 않는다
     answered = (res.code or res.candidate or res.wants_context or res.analysis or res.solution or res.edits_block
                 or res.no_script_reason or res.blocked_reason or res.changes_block)
     if not answered and raw.strip():

@@ -1,12 +1,10 @@
 """일괄 실행 매니페스트를 읽어 어떤 프로젝트를 어떤 순서와 설정으로 이관할지 정하는 모듈.
-``FleetRunner.run``이 맨 먼저 ``load_manifest``를 호출하며 재개할 때도 매번 다시 읽는다.
-- 형식: 디렉토리(``*.zip``과 pom이 맨 위나 한 단계 아래 있는 하위 폴더), ``.txt``(한 줄에 경로 하나),
-  ``.yml``, ``.csv``(``name,input,tags``). 상대 경로는 매니페스트 파일 위치 기준이다
-- 입력이 없거나 쓸 수 없어도 예외를 던지지 않고 ``error``를 채워 반환하며, 러너는 그 프로젝트를 ``skipped``로 둔다
-- Windows 운영자를 위해 UTF-8(BOM 유무), UTF-16, cp949를 모두 읽는다
-- 이름은 실행 ID와 폴더명이 되므로 ASCII로 만든다. 한글 이름은 slug에 입력 경로 해시를 붙인다
-- 이름이 바뀌어도 다른 프로젝트의 성공을 물려받지 않도록 일괄 실행
-  상태는 입력 경로(:func:`input_key`)로 프로젝트를 찾는다
+
+``FleetRunner.run`` calls ``load_manifest`` first and reads the manifest again on every resume. Relative
+paths are relative to the manifest file. A missing or unusable input never raises: the project gets an
+``error`` and the runner marks it ``skipped``. Names become run ids and folder names, so they are ASCII. The
+fleet state finds a project by its input path (:func:`input_key`), so a renamed project never inherits
+another project's success.
 
 Accepted forms (``load_manifest(path)``):
 
@@ -43,7 +41,7 @@ log = logging.getLogger("sbmig.fleet")
 class FleetProject:
     """매니페스트의 프로젝트 하나를 담는 데이터 클래스.
     이름(ASCII), 절대 입력 경로, 프로젝트별 설정, 덮어쓴 값, 태그를 담는다.
-    입력을 쓸 수 없으면 ``error``를 채우고, 러너는 실행하지 않고 ``skipped``로 둔다."""
+    입력을 쓸 수 없으면 ``error``를 채운다. 러너는 이 프로젝트를 실행하지 않고 ``skipped``로 둔다."""
     name: str
     input: str  # 프로젝트 폴더나 zip의 절대 경로
     configs: list[str] = field(default_factory=list)
@@ -59,7 +57,7 @@ class FleetProject:
 
 class ManifestError(ValueError):
     """매니페스트 자체가 잘못되었을 때(형식 오류, 필수 키 누락) 던지는 예외.
-    입력 하나가 없는 경우는 ``FleetProject.error``로 처리한다."""
+    입력 하나가 없는 것은 예외가 아니라 ``FleetProject.error``로 알린다."""
 
 
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -74,7 +72,7 @@ def safe_name(name: str) -> str:
 
 
 def input_key(path: str | Path) -> str:
-    """일괄 실행 상태에서 프로젝트를 구분하는 키로, 입력 경로를 절대 경로로 정규화해서 반환한다.
+    """입력 경로를 절대 경로로 정규화해서 반환한다. 일괄 실행 상태에서 프로젝트를 구분하는 키다.
     Windows에서는 대소문자도 통일한다.
 
     Older state files stored the same resolved path, so they match unchanged."""
@@ -94,7 +92,7 @@ def path_hash(path: str | Path, n: int = HASH_CHARS) -> str:
 
 
 def name_with_hash(name: str, path: str | Path) -> str:
-    """``<slug>-<경로 해시>`` 형태의 이름을 만든다. 한글 이름이나 겹치는 이름을 서로 구분하기 위해 쓴다."""
+    """``<slug>-<경로 해시>`` 형태의 이름을 만든다. 한글 이름이나 겹치는 이름을 구분할 때 쓴다."""
     return f"{safe_name(name)}-{path_hash(path)}"
 
 
@@ -103,7 +101,7 @@ def read_text_any(path: str | Path) -> str:
     UTF-8(BOM 유무), UTF-16, 그 밖에는 cp949로 읽는다.
     UnicodeDecodeError를 던지지 않는다."""
     data = Path(path).read_bytes()
-    # PowerShell 5.1의 ``>``는 UTF-16LE로 저장하므로 BOM이 있거나, BOM이
+    # PowerShell 5.1의 ``>``는 UTF-16LE로 저장한다. BOM이 있거나, BOM이
     # 없어도 둘째와 넷째 바이트가 NUL이면 UTF-16으로 읽는다
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return data.decode("utf-16")
@@ -113,7 +111,7 @@ def read_text_any(path: str | Path) -> str:
         except UnicodeDecodeError:
             pass
     try:
-        # 엑셀 "CSV UTF-8"의 BOM 때문에 첫 열 이름(``name``)이 깨지지 않도록 utf-8-sig로 읽는다
+        # utf-8-sig로 읽는다. 엑셀 "CSV UTF-8"의 BOM 때문에 첫 열 이름(``name``)이 깨지지 않게 한다
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return data.decode("cp949", errors="replace")
@@ -129,16 +127,17 @@ def _resolve(base: Path, p: str) -> Path:
 
 
 def has_pom(d: Path) -> bool:
-    """``pom.xml``이 맨 위나 한 단계 아래(``*/pom.xml``)에 있어 Maven 프로젝트로 보이는지 확인한다.
-    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 이 함수를 함께 쓴다.
+    """맨 위나 한 단계 아래(``*/pom.xml``)에 ``pom.xml``이 있으면 Maven 프로젝트로 보고 True를 반환한다.
+    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 같은 기준으로 쓴다.
 
     One level down is enough because intake turns sibling poms into an aggregator."""
     return (d / "pom.xml").is_file() or any(q.is_file() for q in d.glob("*/pom.xml"))
 
 
 def _validate(proj: FleetProject) -> FleetProject:
-    """입력을 쓸 수 있는지 확인하고, 아니면 ``error``를 채운다. 예외를 던지지 않는다.
-    입력이 없거나, pom.xml이 없거나(:func:`has_pom`), 디렉토리도 zip도 아니거나, 프로젝트별 설정 파일이 없으면 오류다."""
+    """입력을 쓸 수 있는지 확인한다. 쓸 수 없으면 ``error``를 채운다. 예외를 던지지 않는다.
+    입력이 없거나, pom.xml이 없거나(:func:`has_pom`), 디렉토리도 zip도 아니면 오류다.
+    프로젝트별 설정 파일이 없어도 오류다."""
     p = Path(proj.input)
     if not p.exists():
         proj.error = f"input not found: {proj.input}"
@@ -155,7 +154,8 @@ def _validate(proj: FleetProject) -> FleetProject:
 
 def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
     """이름을 겹치지 않는 ASCII로 정리한다.
-    slug로 바꾸면서 문자를 잃거나 앞 이름과 겹치면 입력 경로 해시를 붙이고, 같은 입력이 두 번이면 번호를 붙인다.
+    slug로 바꾸면서 문자를 잃거나 앞 이름과 겹치면 입력 경로 해시를 붙인다.
+    그래도 겹치면(같은 입력이 두 번 나온 경우) 번호를 붙인다.
 
     The path hash stays the same when the manifest is reordered or a folder is added."""
     taken: set[str] = set()
@@ -177,8 +177,8 @@ def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
 
 def _from_dir(d: Path) -> list[FleetProject]:
     """디렉토리 매니페스트를 읽는다.
-    ``*.zip``과 pom이 있는 하위 폴더를 이름순으로 모으고, 점으로 시작하는 폴더는 뺀다.
-    pom이 없는 폴더는 프로젝트가 아니므로 빼고, 조용히 사라지지 않도록 폴더 이름을 경고로 남긴다."""
+    ``*.zip``과 pom이 있는 하위 폴더를 이름순으로 모은다. 점으로 시작하는 폴더는 뺀다.
+    pom이 없는 폴더도 뺀다. 조용히 사라지지 않게 폴더 이름을 경고로 남긴다."""
     out = []
     for p in sorted(d.iterdir(), key=lambda x: x.name):
         if p.name.startswith("."):
@@ -186,7 +186,7 @@ def _from_dir(d: Path) -> list[FleetProject]:
         if (p.is_file() and p.suffix.lower() == ".zip") or (p.is_dir() and has_pom(p)):
             out.append(FleetProject(name=_name_for(p), input=str(p.resolve())))
         elif p.is_dir():
-            # pom이 없는 트리는 이관하지 않으므로 운영자가 알 수 있도록 이름만 경고로 남긴다
+            # pom이 없는 폴더는 이관하지 않는다. 운영자가 알 수 있게 이름을 경고로 남긴다
             log.warning("fleet manifest: %s left out - no pom.xml at its top or one level down", p)
     return out
 
@@ -258,8 +258,8 @@ def _from_csv(f: Path) -> list[FleetProject]:
 
 
 def load_manifest(path: str | Path) -> list[FleetProject]:
-    """매니페스트(디렉토리, .txt, .yml, .csv)를 읽어 이름을 정리하고 입력을 검사한 프로젝트 목록을 반환한다.
-    매니페스트가 없거나 형식이 틀리면 :class:`ManifestError`를 던지고,
+    """매니페스트(디렉토리, .txt, .yml, .csv)를 읽어 프로젝트 목록을 반환한다. 이름을 정리하고 입력도 검사한다.
+    매니페스트가 없거나 형식이 틀리면 :class:`ManifestError`를 던진다.
     입력 하나가 없으면 그 프로젝트의 ``error``를 채운다."""
     path = Path(path)
     if not path.exists():
