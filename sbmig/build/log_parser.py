@@ -118,7 +118,7 @@ def _cause_line(lines: list[str]) -> str:
 
 def strip_ansi(text: str) -> str:
     """텍스트에서 ANSI 색상과 커서 제어 코드를 제거한다.
-    ``-B`` 없이 실행한 Maven이나 Windows 콘솔의 출력도 똑같이 파싱할 수 있게 된다."""
+    ``-B`` 없이 실행한 Maven이나 Windows 콘솔의 출력도 똑같이 파싱하려고 지운다."""
     return ANSI_RE.sub("", text)
 
 

@@ -1,9 +1,10 @@
 """JSON 응답과 SSE 이벤트를 보낼 때 NaN과 무한대를 null로 바꾸는 모듈.
 브라우저는 NaN이 들어 있는 JSON을 읽지 못한다.
 
-Starlette's JSONResponse refuses NaN (the answer becomes a 500) and json.dumps writes a bare ``NaN``. The run
-list (``GET /api/runs``) is serialized by FastAPI through pydantic and already sends null. Serialization is tried
-as it is first and the values are replaced only when it fails, so an ordinary answer keeps its bytes and cost.
+Starlette's JSONResponse refuses NaN (the answer becomes a 500) and json.dumps writes a bare ``NaN``. The
+run list (``GET /api/runs``) is serialized by FastAPI through pydantic and already sends null. Serialization
+is tried as it is first and the values are replaced only when it fails, so an ordinary answer keeps its
+bytes and cost.
 """
 from __future__ import annotations
 

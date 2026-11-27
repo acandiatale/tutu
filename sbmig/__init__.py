@@ -10,7 +10,7 @@
 - core/: 공유 계약. models.py(모든 레코드), config.py(설정 키와 기본값), interfaces.py(플러그인 인터페이스)
 - loop/: orchestrator.py(단계 실행 순서)와 fixloop.py(수정 루프: 재사용 -> 보강 -> 신규, 결과 평가, 되돌리기)
 - graph/: 위 루프를 LangGraph StateGraph로 감싼 엔진(``loop.engine: graph``, 웹 UI가 쓰는 ``stream_graph``)
-- analyze/: 접수, 프로필, 권고 탐지(Maven만 지원, pom 없는 트리 거부, ``sbmig inventory``)
+- analyze/: 접수, 프로필, 권고 탐지(Maven만 지원, pom 없는 프로젝트 거부, ``sbmig inventory``)
 - plan/: 계획 단계 목록(planner.py), 레시피 카탈로그(``knowledge/recipes/catalog.yml``), jar 확인
 - rewrite/: OpenRewrite 1회 실행(레시피 yml 생성, BOM 3.37.0)
 - restructure/: 회사 레이아웃({name}-boot / -back / -front, 사내 부모 pom, 정적 리소스 복사, pom 편집기)

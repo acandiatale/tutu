@@ -422,7 +422,7 @@ def build_graph(orch: Orchestrator, flow: str | None = None) -> Any:
     g.add_node("plan", _staged("plan", plan, orch))
     g.add_node("phase", _staged(phase_stage, phase, orch))
     g.add_node("finalize", _staged("report", finalize, orch))
-    # 조치 설정이 꺼져 있으면 graph_node_end 줄을 남기지 않는다. 로컬 실행마다 쓸데없는 줄이 쌓이지 않게 한다
+    # 취약점 조치가 꺼져 있으면 remediation 노드는 graph_node_end 줄을 남기지 않는다. 로컬 실행마다 줄이 쌓이지 않게 한다
     g.add_node("remediation", _staged("remediation", remediation, orch if remediation_enabled(orch.cfg) else None))
     g.add_edge(START, "intake")
     g.add_conditional_edges("intake", after_step, {"next": "analyze", "finalize": "finalize"})

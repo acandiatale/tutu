@@ -126,7 +126,7 @@ class LLMClientLike(Protocol):
 class LLMAdapterLike(Protocol):
     """사내 게이트웨이나 에이전트 플랫폼을 연결하는 1단계 어댑터의 Protocol.
     LLMRequest 하나를 받아 LLMResponse 하나를 반환한다.
-    `llm.provider: plugin`에 `llm.plugin`이나 entry point로 연결한다. sbmig가 LLMClientLike로 감싸고 호출 기록도 남긴다.
+    `llm.provider: plugin`으로 두고 `llm.plugin`이나 entry point로 연결한다. sbmig가 LLMClientLike로 감싸고 호출 기록도 남긴다.
 
     `llm.plugin: "pkg.module:attr"`, or an entry point in group `sbmig.llm_adapters`; wrapper
     `sbmig.llm.AdapterClient`."""
@@ -177,8 +177,8 @@ class RestructureResult(BaseModel):
     moved_files: int = 0
     generated_files: list[str] = Field(default_factory=list)
     optional_bumped: list[str] = Field(default_factory=list)      # "g:a old→new"
-    # 트리거 의존성(ArtifactSpec.when_present)이 있어서 새로 선언한 선택 사내 아티팩트
-    # 그리고 replaces: true로 지운 트리거 선언
+    # 트리거 의존성(ArtifactSpec.when_present) 때문에 새로 선언한 선택 사내 아티팩트를 담는다
+    # replaces: true로 지운 트리거 선언도 함께 담는다
     # Formats: "g:a → <pom> (for <matched g:a>[, …])" / "<matched g:a> removed from <pom> → g:a".
     optional_added: list[str] = Field(default_factory=list)
     optional_replaced: list[str] = Field(default_factory=list)
@@ -357,7 +357,7 @@ class FixContext(BaseModel):
     signature_generic: str = ""
     script_base: Optional[ScriptBase] = None      # augment일 때 이전 버전과 이 프로젝트에서의 결과
     # 프롬프트 "Dependency versions" 절에 넣을 정보. libraries.yml 항목과 이 케이스 라이브러리의 저장소 버전을 한 줄씩 둔다
-    # 저장소 버전은 같은 메이저 릴리스, jakarta 빌드인지, 더 높은 메이저다. 모르면 빈 목록이다
+    # 저장소 버전 줄에는 같은 메이저의 릴리스, 그 릴리스가 jakarta 빌드인지, 더 높은 메이저가 나온다. 모르면 빈 목록이다
     library_hints: list[str] = Field(default_factory=list)
     # 재구성 뒤의 프로젝트 정보를 한 줄씩 담는다.
     # Boot 전환 여부, 모듈과 부모, 생성 파일, starter, 사내 아티팩트 규칙, BOM import다.

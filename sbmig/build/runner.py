@@ -215,7 +215,7 @@ class MavenRunner:
                        skip_test_compile: bool, skip_tests: bool, result: BuildResult,
                        text: str) -> tuple[BuildResult, str]:
         """저장소에 pom이 없는 라이브러리 때문에 실패했으면 최소 pom을 두고 같은 빌드를 다시 실행한다.
-        마지막 실행의 (결과, 로그)를 반환한다. 규칙은 ``sbmig.build.pomless.run_with_stubs``와 같다.
+        ``sbmig.build.pomless.run_with_stubs``로 다시 실행하고, 마지막 실행의 (결과, 로그)를 반환한다.
 
         Runs before the -U retry: -U cannot help here (Maven does not cache the transfer error; it asks the
         failing repository again). Labels `<label>-pomless<k>`. Contract: docs/INTERFACES.md "v2.1z-ax"."""

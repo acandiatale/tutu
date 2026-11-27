@@ -518,9 +518,9 @@ def _decl_key(pp: ProjectPoms, mod: PomFile, dep: Any) -> tuple[str, str]:
 
 def _decl_problem(pp: ProjectPoms, mod: PomFile, ga: str, *, management: bool) -> str:
     """``_find_decl``이 고르는 선언을 고쳐도 되는지 확인한다. 안 되면 이유 한 줄을, 괜찮으면 빈 문자열을 반환한다.
-    부모 체인에서 ``ga``를 처음 선언한 pom만 본다. 다음 선언은 고치지 않는다.
-    - 기본으로 켜지지 않는 프로필에만 있는 선언. Maven이 쓰지 않을 수 있다
-    - 한 ``<dependencies>`` 안에 같은 관리 키로 두 번 있는 선언. Maven은 그중 하나만 쓴다"""
+    부모 체인에서 ``ga``를 처음 선언한 pom만 본다. 그 pom의 선언이 아래 경우면 고치지 않는다.
+    - 기본으로 켜지지 않는 프로필에만 있다. Maven이 쓰지 않을 수 있다
+    - 한 ``<dependencies>`` 안에 같은 관리 키로 두 번 있다. Maven은 그중 하나만 쓴다"""
     for p in pp.chain(mod):
         if not p.ok:
             continue

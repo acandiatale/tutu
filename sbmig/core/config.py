@@ -196,7 +196,7 @@ class LayoutConfig(BaseModel):
     # 웹 루트 안 리소스 폴더(media, templates, css 등)의 파일을 소스 모듈 classpath에 남기고
     # front 정적 폴더에도 원래 웹 경로 그대로 복사한다. false면 소스 모듈에만 두고 옮길 파일을 인수인계에 남긴다
     front_copy_resource_dirs: bool = True
-    # 레시피는 JSP를 읽지 못한다. 그래서 파일이 최종 위치로 옮겨진 뒤 재구성이 JSP와 태그 파일의 javax EE 이름을 바꾼다
+    # 레시피는 JSP를 읽지 못한다. 그래서 파일이 최종 위치로 옮겨진 뒤 재구성이 JSP와 태그 파일의 javax EE 이름을 jakarta로 바꾼다
     # 코드 영역만 바꾸고 Java 문자열, 주석, 태그 라이브러리 URI는 그대로 둔다. false면 인수인계 항목만 남긴다
     jsp_jakarta_rename: bool = True
     # 프로젝트 안에 있지만 어떤 pom도 선언하지 않은 jar를 첫 빌드 전에 선언한다. 저장소에 좌표가 있으면 compile 의존성,
@@ -754,7 +754,7 @@ class PlanConfig(BaseModel):
     """계획 설정을 담는 클래스.
     계획은 규칙으로 세워서 늘 같은 결과가 나온다. LLM 검토는 선택이고 기본으로 꺼져 있다.
     레시피 id는 catalog_file 한 곳에서만 정의한다."""
-    # none(기본값)은 검토하지 않는다. llm이면 llm.recipe_model이 변환 단계에 레시피를 더할 수 있다. catalog.yml의 레시피만 된다
+    # none(기본값)은 검토하지 않는다. llm이면 llm.recipe_model이 변환 단계에 레시피를 더할 수 있다. 더할 수 있는 레시피는 catalog.yml에 있는 것뿐이다
     advisor: Literal["none", "llm"] = "none"
     # 레시피 목록 파일(레시피 id의 유일한 출처). 없거나 읽을 수 없으면 경고를 남기고 내장 최소 목록을 쓴다
     catalog_file: str = "knowledge/recipes/catalog.yml"

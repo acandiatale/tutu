@@ -456,10 +456,10 @@ class OpenRewriteRunner:
         """재시도를 포함해 변환을 한 번 실행한다.
         ``extra_args``(예: ``-pl order-service -am``)로 reactor 루트에서 대상 모듈 하나만 실행한다.
         그러면 형제 모듈을 로컬 저장소가 아니라 reactor에서 찾는다.
-        재시도 순서는 다음과 같다. HTTP 차단 미러에 막혔으면 재시도하지 않는다.
-        - OOM이면 큰 힙으로 1회, 아니면 다운로드 실패일 때 기다렸다가 다시 실행한다
-        - 캐시된 해결 실패면 -U로 1회
-        - 그래도 fork된 compile에서 실패하면 runNoFork로 1회"""
+        HTTP 차단 미러에 막혔으면 재시도하지 않는다. 그 밖에는 아래 순서로 다시 실행한다.
+        - OOM이면 큰 힙으로 한 번 다시 실행한다. 아니면 다운로드 실패일 때 기다렸다가 다시 실행한다
+        - 캐시된 해결 실패면 -U를 붙여 한 번 다시 실행한다
+        - 그래도 fork된 compile에서 실패하면 runNoFork로 한 번 다시 실행한다"""
         self._extra_args = list(extra_args)      # 이 호출 안의 모든 _run_once가 쓴다(OOM, runNoFork 재시도 포함)
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
                              label=label, fork=fork)

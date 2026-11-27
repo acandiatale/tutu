@@ -49,7 +49,8 @@ STOP_REQUEST_FILE = "stop.request"
 STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
 
 GIT_TIMEOUT_S = 600.0      # 작업 공간 git 명령 하나의 타임아웃(초)
-# git 호출마다 넘기는 설정. 260자 넘는 경로, 되돌릴 때 `.sh`가 CRLF로 바뀌는 문제를 막는다.
+# git 호출마다 넘기는 설정. 260자가 넘는 경로도 다룰 수 있게 한다.
+# 전역 autocrlf 때문에 되돌릴 때 `.sh`가 CRLF로 바뀌는 문제도 막는다.
 # 한글 파일 이름의 8진수 이스케이프, 다른 계정 소유 디렉토리에서의 실패도 막는다
 GIT_CONFIG: tuple[str, ...] = ("commit.gpgsign=false", "tag.gpgsign=false", "core.longpaths=true",
                                "core.autocrlf=false", "core.quotepath=false", "safe.directory=*",

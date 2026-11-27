@@ -358,7 +358,7 @@ class LegacyContextMixin:
         """복사한 XML의 ``<import resource>``를 따라가며 연결된 파일도 그 옆에 복사한다.
         - 상대 경로는 복사한 위치 기준으로 같은 상대 경로에 둔다. 앞의 ``/``는 Spring이 무시한다
         - ``classpath:`` 파일 하나를 가리키거나 ``legacy-config/`` 밖을 가리키는 경로는 복사본을 가리키게 고친다
-        - 여러 파일에 맞거나 ``classpath:``인 와일드카드 import는 그대로 두고 메모를 남긴다. Spring이 as-is 파일을 읽는다"""
+        - 와일드카드 import가 여러 파일에 맞거나 ``classpath:``로 시작하면 그대로 두고 메모를 남긴다. Spring은 as-is 파일을 읽는다"""
         queue = [asis]
         while queue:
             imp = queue.pop(0)

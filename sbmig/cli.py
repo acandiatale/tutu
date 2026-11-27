@@ -395,7 +395,7 @@ def run(
     raise typer.Exit(code)
 
 
-REMEDIATION_MARK = "SBMIG-REMEDIATION"      # 취약점 조치를 이어 간 실행의 결과 줄 머리. 이관 결과 줄은 SBMIG-RESULT다
+REMEDIATION_MARK = "SBMIG-REMEDIATION"      # 취약점 조치를 이어 간 실행의 결과 줄 맨 앞에 붙는 표시. 이관 결과 줄은 SBMIG-RESULT로 시작한다
 
 
 @app.command("remediation-resume")
@@ -706,7 +706,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         typer.echo(f"{label}: {res.problem}")
         for h in res.hints:
             typer.echo(f"hint: {h}")
-    typer.echo(res.line())                          # 문의할 때 옮겨 적는 짧은 ASCII 한 줄
+    typer.echo(res.line())                          # 문의할 때 옮겨 쓰는 짧은 ASCII 한 줄
     raise typer.Exit(0 if res.ok else 1)
 
 

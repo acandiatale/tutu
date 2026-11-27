@@ -1,5 +1,5 @@
 """구조 검토 단계(`restructure.review`)를 실행하는 모듈.
-LLM이 pom, 의존성, 모듈 구조를 회사 규칙에 맞는지 보고, critical 문제는 LLM이 준 `<edits>`로 고친다.
+LLM이 pom, 의존성, 모듈 구조가 회사 규칙에 맞는지 본다. critical 문제는 LLM이 준 `<edits>`로 고친다.
 
 Spec: docs/v2/PLAN-v2.md §3.3, docs/v2/PLAN-v2.1.md §2.
 * Answer: the `<review>` JSON + `<analysis>`, `<solution>`, `<edits>` (JSON list of `Edit`) and an

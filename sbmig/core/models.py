@@ -106,7 +106,7 @@ EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved",
 # - review: 구조 검토가 직접 한 수정
 # - sbmig-*: LLM 없이 sbmig가 직접 고치는 사전 시도. 저장 스크립트는 남지 않는다
 #   version은 빠진 의존성 버전, resources는 필터링 제외 확장자, jakarta는 jakarta 빌드로 교체,
-#   bundled는 트리에 있는 jar 연결, parent는 저장소에 없는 사내 부모 버전을 설정 버전으로 맞춘다
+#   bundled는 프로젝트에 들어 있는 jar 연결, parent는 저장소에 없는 사내 부모 버전을 설정 버전으로 맞춘다
 TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version", "sbmig-resources",
                     "sbmig-jakarta", "sbmig-bundled", "sbmig-parent"]
 # sbmig-version은 as-is 빌드의 버전을 쓰고, 없으면 저장소의 최신 릴리스를 쓴다.
@@ -402,7 +402,7 @@ class PomInfo(BaseModel):
 
 
 class SourceStats(BaseModel):
-    """소스 트리 통계를 담는 데이터 클래스.
+    """소스 파일 통계를 담는 데이터 클래스.
     main 클래스, 서블릿, javax import, web.xml, JSP와 정적 리소스 위치를 담는다.
     프로젝트 종류를 정하고 재구성(front 모듈, web.xml 등록, 큰 미디어 파일 안내)을 할 때 근거로 쓴다."""
     java_files: int = 0
@@ -1156,7 +1156,7 @@ class VersionCandidate(BaseModel):
     version: str
     jakarta: Optional[bool] = None                 # pom이 jakarta.*에 의존하는지. 확인하지 않았으면 None
     prerelease: bool = False                       # milestone, RC, alpha, beta, SNAPSHOT
-    java: Optional[int] = None                     # pom에 적힌 최소 Java(maven.compiler.release, target)
+    java: Optional[int] = None                     # pom에 선언된 최소 Java(maven.compiler.release, target)
 
 
 class RepositoryVersions(BaseModel):
@@ -1856,7 +1856,7 @@ FleetStatus = Literal["pending", "running", "success", "incomplete", "aborted", 
 class FleetProjectResult(BaseModel):
     """`sbmig fleet`에서 프로젝트 하나의 결과를 담는 데이터 클래스. fleet/state.json과 플릿 요약에 쓴다."""
     name: str
-    input: str                                     # 매니페스트에 적힌 경로 그대로
+    input: str                                     # 매니페스트에 있는 경로 그대로
     status: FleetStatus = "pending"
     run_id: Optional[str] = None
     out_dir: Optional[str] = None

@@ -141,13 +141,14 @@ _LLM_400_BODY_RE = re.compile(r"status=400\)?:?\s*(?P<body>.*)", re.S)
 LLM_CONFIG_ERROR_PROMPTS = 2
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 REFERENCE_MAX_CHARS = 12_000         # 수정 프롬프트에 넣는 병합 탈락 복사본 하나의 최대 길이
-# 루프가 오래 조용하면 감시 스레드가 스스로 경고하고 스레드 덤프를 남긴다. Windows에는 SIGUSR1이 없어서다
+# 루프가 오래 조용하면 감시 스레드가 스스로 경고하고 스레드 덤프를 남긴다. Windows에는 SIGUSR1이 없기 때문이다
 WATCHDOG_S = 30.0                    # 감시 스레드가 깨어나는 주기
 WATCHDOG_QUIET_S = 60.0              # 이 시간 동안 진행이 없으면 경고한다
 WATCHDOG_DUMP_S = 300.0              # 이 시간이 지나면 실행 폴더에 스레드 덤프를 남긴다
 REFERENCE_MAX_FILES = 3              # 케이스당 병합 탈락 복사본 수
 _TRUNCATED_MARK = "\n… (truncated)"
-# 개선됐거나 빌드에 성공한 시도만 남긴다. 나머지 시도는 되돌린다
+# 같은 케이스의 다음 시도 전에는 개선됐거나 빌드에 성공한 시도만 남기고 나머지는 되돌린다.
+# 부분 해결된 사전 시도는 남긴다
 # NO_ROLLBACK의 나머지 상태는 되돌릴 것이 없다. 이미 빠졌거나 아직 결과가 나오지 않은 시도다
 SCRIPT_KEEP = frozenset({"improved", "build_ok"})
 NO_ROLLBACK = frozenset({"improved", "build_ok", "reverted", "pending", "apply_failed", "blocked"})
@@ -429,7 +430,7 @@ MISSING_VERSION_SIG = "pom_invalid|missing_version"   # "'…version' for g:a is
 SBMIG_VERSION_SOURCE = "sbmig-version"               # 누락된 버전 채우기
 SBMIG_RESOURCES_SOURCE = "sbmig-resources"           # nonFilteredFileExtensions 추가
 SBMIG_JAKARTA_SOURCE = "sbmig-jakarta"               # javax 시절 의존성을 jakarta 빌드로 바꾸기
-SBMIG_BUNDLED_SOURCE = "sbmig-bundled"               # 트리에 들어 있는 jar 연결
+SBMIG_BUNDLED_SOURCE = "sbmig-bundled"               # 프로젝트에 들어 있는 jar 연결
 SBMIG_PARENT_SOURCE = "sbmig-parent"                 # as-is 사내 부모 버전 맞추기
 RESOURCE_FACTS_FILES = 10                             # 리소스 필터링 프롬프트 정보에 이름을 넣는 바이너리 파일 수
 PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG_JAKARTA_SOURCE,

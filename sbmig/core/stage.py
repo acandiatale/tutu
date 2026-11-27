@@ -1,8 +1,9 @@
 """로그 줄마다 `[intake]`, `[fix r3 7a52b1cea8]` 같은 단계 태그를 붙이는 모듈.
 
-Entry points: `with stage(...)`, set_stage / reset_stage (graph nodes), install_stage_filter, stage_formatter.
-In the fix loop the tag is the round and the case id; outside any stage it is `-`. The stage is a ContextVar, so
-it survives LangGraph's executor threads and concurrent runs of the web server do not mix.
+Entry points: `with stage(...)`, set_stage / reset_stage (graph nodes), install_stage_filter,
+stage_formatter. In the fix loop the tag is the round and the case id; outside any stage it is `-`. The
+stage is a ContextVar, so it survives LangGraph's executor threads and concurrent runs of the web server do
+not mix.
 Stage names: `intake`, `analyze`, `plan`, `rewrite`, `compile`, `restructure`, `review`, `build`, `fix r3`,
 `fix r3 <case>`, `kb`, `report`, `fleet`. Output: `10:14:00 INFO  [fix r1 7a52b1cea8] KB 탐색: ...`.
 """

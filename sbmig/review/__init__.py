@@ -1,5 +1,5 @@
 """재구성이 끝난 프로젝트를 첫 빌드 전에 LLM으로 검토하는 패키지.
-pom, 의존성, 모듈 구조, 소스 인코딩, 필터링되는 리소스를 회사 규칙에 맞는지 보고 critical 문제는 바로 고친다.
+pom, 의존성, 모듈 구조, 소스 인코딩, 필터링되는 리소스가 회사 규칙에 맞는지 본다. critical 문제는 바로 고친다.
 
 Spec: docs/v2/PLAN-v2.md §3.3, docs/INTERFACES.md "Structure review". Edits for critical issues go through
 `sbmig.script.apply_edits` and stay uncommitted for the orchestrator; a script-only answer runs through the

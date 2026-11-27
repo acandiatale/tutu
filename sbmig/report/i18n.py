@@ -1460,7 +1460,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
       r"가져오는 라이브러리에 Jakarta 빌드가 필요합니다: \g<libs>")),
 )]}
 
-# tr이 채우는 값 가운데 tr_line으로 한 번 더 번역할 자리. 저장된 영어 줄(설정 값, 검토 메모)이 들어온다
+# tr이 채우는 값 가운데 tr_line으로 한 번 더 번역하는 값의 이름. 저장된 영어 줄(설정 값, 검토 메모)이 들어온다
 _LINE_FIELDS: dict[str, tuple[str, ...]] = {
     "Prices: {note}.": ("note",),
     "skipped ({note})": ("note",),

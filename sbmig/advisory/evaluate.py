@@ -119,7 +119,7 @@ def evaluate_advisories(profile: ProjectProfile, cfg: Config,
                         catalog: Optional[AdvisoryCatalog] = None) -> list[AdvisoryFinding]:
     """이 프로젝트에 해당하는 권고 목록을 만든다. 상태 순서(eol부터), 같으면 id 순서로 정렬한다.
     권고 기능이 꺼져 있거나 권고 파일이 비어 있으면 빈 목록을 반환한다.
-    프로젝트 유형(``applies_to``), 버전 상한(``applies_when_version_below``), off 설정에 걸리는 권고는 뺀다.
+    프로젝트 유형이 ``applies_to``에 없거나, 버전이 ``applies_when_version_below`` 이상이거나, off로 꺼 둔 권고는 뺀다.
     결과는 안내 전용(``policy="guide"``)이고 outcome은 "unknown"이다.
 
     Bundled jars (``profile.bundled_jars``, no pom declares them) are matched like declared dependencies."""

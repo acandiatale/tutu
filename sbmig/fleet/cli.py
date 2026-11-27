@@ -131,7 +131,7 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
     typer.echo(render_table(state))
     typer.echo("")
     typer.echo(f"summary: {runner.fleet_dir / 'summary.md'}   learning: {runner.fleet_dir / 'learning.md'}")
-    # 인프라 문제로 멈췄으면 ``fleet stopped: …`` 줄을 화면 맨 끝에 한 번 더 출력한다. 운영자가 옮겨 적는 줄이다
+    # 인프라 문제로 멈췄으면 ``fleet stopped: …`` 줄을 화면 맨 끝에 한 번 더 출력한다. 운영자가 옮겨 쓰는 줄이다
     if runner.stopped_on_infra:
         typer.echo(next((n for n in reversed(state.notes) if n.startswith("fleet stopped: ")), ""))
     return runner.exit_code

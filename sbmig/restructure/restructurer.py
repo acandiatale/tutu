@@ -219,7 +219,7 @@ def render(template: str, **kw: Any) -> str:
 
 
 def sanitize_identifier(name: str, fallback: str = "x") -> str:
-    """문자열을 생성하는 클래스의 이름으로 쓸 수 있게 Java 식별자로 바꾼다.
+    """문자열을 sbmig가 생성하는 클래스의 이름으로 쓸 수 있는 Java 식별자로 바꾼다.
     쓸 수 없는 문자는 _로 바꾼다.
     숫자로 시작하면 앞에, 예약어면 뒤에 _를 붙인다."""
     out = re.sub(r"[^A-Za-z0-9_$]", "_", name or "")
@@ -1681,7 +1681,8 @@ class Restructurer(LegacyContextMixin):
                         break
         if not c.war_overlays:
             return
-        # overlay는 웹 콘텐츠라 WAR에만 담을 수 있다. boot가 WAR이거나 jsp_boot_packaging이 war일 때만 옮긴다
+        # overlay는 웹 콘텐츠라 WAR에만 담을 수 있다. boot가 이미 WAR이거나 jsp_boot_packaging이 war면
+        # overlay를 옮기고 boot를 WAR로 만든다. jsp_boot_packaging이 jar면 옮기지 않고 후속 작업만 남긴다
         c.overlay_carry = c.boot_war or c.cfg.layout.jsp_boot_packaging == "war"
         c.boot_war = c.boot_war or c.overlay_carry
         for pom, g in c.war_overlays:

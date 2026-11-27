@@ -1,6 +1,8 @@
-"""Ant 프로젝트의 lib 폴더에 있는 jar 하나에 맞는 Maven 좌표를 찾는 모듈.
+"""jar 파일 하나에 맞는 Maven 좌표를 찾는 모듈. pom에 선언되지 않은 jar와 Ant 프로젝트의 lib jar에 쓴다.
 jar 안의 ``pom.properties``, jar 이름 표, sha1 저장소 조회 순서로 찾는다.
 
+Analyze's bundled-jar scan (``sbmig.analyze.bundled_jars``) calls :func:`resolve_jar_scan` for every jar no
+pom declares, in any Maven project.
 Intake's :func:`sbmig.analyze.ant.synthesize_pom` calls :func:`resolve_jar` per jar; :func:`mark_used` tells
 whether the sources use the jar's packages. Name table: ``knowledge/libraries/jar_names.yml`` merged with the
 company table ``<kb>/jar_names.yml``. The sha1 lookup runs only with ``intake.jar_lookup`` on; MANIFEST only

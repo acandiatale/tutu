@@ -261,7 +261,7 @@ def iter_run_dirs(out_root: Path) -> Iterator[Path]:
 
 
 def _read_json(run_dir: Path, rel: str) -> tuple[dict[str, Any] | None, bool]:
-    # 내용과 파일이 깨졌는지를 반환한다. 파일이 없으면 (None, False)다
+    # (내용, 파일이 깨졌는지)를 반환한다. 파일이 없으면 (None, False)다
     p = safe_file(run_dir, rel)
     if p is None:
         return None, False

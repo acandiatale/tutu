@@ -56,7 +56,8 @@ _XML_DECL_RE = re.compile(r"""^\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([\w.:-]+)[
 @lru_cache(maxsize=1)
 def jakarta_targets() -> dict[str, str]:
     """``jakarta_packages.yml`` 표에서 {원래 패키지: 새 패키지}를 반환한다. 표는 한 번만 읽는다.
-    파일이 없으면 빈 사전이다. ``to``가 없는 항목은 사전에 넣지 않는다. 바꿀 때 ``javax``를 ``jakarta``로 바꿔 쓴다."""
+    파일이 없으면 빈 사전이다. ``to``가 없는 항목은 사전에 넣지 않는다.
+    그런 항목은 이름을 바꿀 때 앞의 ``javax``만 ``jakarta``로 바꾼다(``_target_name``)."""
     table = Path(_jsp.__file__).resolve().with_name("jakarta_packages.yml")
     try:
         doc = yaml.safe_load(table.read_text(encoding="utf-8")) or {}

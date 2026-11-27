@@ -448,8 +448,9 @@ class _Holder:
     def finish(self, status: str, reason: str, message: str = "", reasons: list[str] | None = None) -> str:
         """최종 상태(FAILED / INCOMPLETE / SUCCEEDED)를 정하고 다음 노드로 보고서 노드를 반환한다.
         조치 전 빌드 실패를 받아들인 실행에서 빌드로 확인하지 못한 변경이 있으면 SUCCEEDED가 되지 않는다.
-        이때 사유에 ``baseline_build_failed``가 들어간다.
-        바꾼 버전이 없거나 수정본 빌드가 모두 통과했으면 그 사유를 빼고 원래대로 끝낸다.
+        이때 상태는 INCOMPLETE이고 첫 사유가 ``baseline_build_failed``다.
+        FAILED로 끝나면 변경과 상관없이 사유 끝에 ``baseline_build_failed``를 붙인다.
+        FAILED가 아니고 확인하지 못한 변경도 없으면 그 사유를 빼고 원래대로 끝낸다.
 
         Tolerated baseline failure: FAILED keeps its reasons and gets `baseline_build_failed` appended. Otherwise, when
         a committed round applied a proposal whose candidate build failed with the baseline's errors (changes no build

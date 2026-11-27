@@ -594,7 +594,7 @@ class Orchestrator:
         return [s for s in self._verify_steps() if s.id not in self._verify_done]
 
     def _final_build_after_abort(self, report: RunReport) -> None:
-        """내부 오류나 빠진 패키지로 중단된 실행도 최종 ``mvn clean package``를 시도한다.
+        """계획을 세운 뒤에 내부 오류나 빠진 패키지로 중단된 실행도 최종 ``mvn clean package``를 시도한다.
         그래야 report.md에 프로젝트에 남은 실제 오류가 나온다. 수정 루프는 실행하지 않는다.
         Maven이 없거나 parent를 찾을 수 없어 일부러 멈춘 실행은 빌드하지 않는다. 같은 이유로 실패하기 때문이다.
 
@@ -851,7 +851,8 @@ class Orchestrator:
                     else:
                         log.info("접수: 사내 부모 체인의 빌드 확장 %s — 읽힘 (%s)", c.coordinates, c.where)
                     if c.where.startswith("repository http"):
-                        # sbmig는 build.repository_url에서 읽지만 Maven은 settings 미러에서 받는다. 그래서 Maven은 404가 날 수 있다
+                        # sbmig는 build.repository_url에서 읽고 Maven은 settings 미러에서 받는다.
+                        # 그래서 sbmig가 찾은 확장도 Maven에서는 404가 날 수 있다
                         log.info("접수: Maven 은 이 URL 이 아니라 settings.xml 의 미러 URL 로 받는다 — 둘이 다른 저장소면 sbmig 는 읽어도 Maven 은 "
                                  "'Unresolveable build extension' 으로 실패할 수 있다(그 미러가 가리키는 저장소에 %s 가 있어야 한다)", c.coordinates)
                     continue
@@ -949,7 +950,7 @@ class Orchestrator:
         if res.unknown_jars:
             self._flag("jar-coordinates-unknown")
         counts = res.counts
-        # 운영자가 화면을 보고 옮겨 적는 한 줄. manifest에서 찾은 좌표는 참고용이라 미상으로 센다
+        # 운영자가 화면을 보고 옮겨 쓰는 한 줄. manifest에서 찾은 좌표는 참고용이라 미상으로 센다
         log.info("접수: Ant build.xml → pom.xml 합성 (jar %d개: pom.properties %d · 이름표 %d · 조회 %d · 미상 %d)",
                  len(res.jars), counts.get("pom_properties", 0), counts.get("name_table", 0),
                  counts.get("sha1_lookup", 0), counts.get("unknown", 0) + counts.get("manifest", 0))
@@ -1107,7 +1108,7 @@ class Orchestrator:
             line = stray_pom_followup(st)
             if line not in report.manual_followups:
                 report.manual_followups.append(line)
-        # 운영자가 화면에서 옮겨 적는 한국어 한 줄
+        # 운영자가 화면을 보고 옮겨 쓰는 한국어 한 줄
         log.info("접수: pom 복사본 %d개 무시 — %s", len(strays),
                  "; ".join(f"{st.path} (= {st.duplicate_of}, {st.coordinates})" for st in strays))
         self.ws.journal({"event": "stray_pom_ignored", "poms": [st.path for st in strays],
@@ -1169,7 +1170,7 @@ class Orchestrator:
                 self.ws.commit(message)
                 self._flag("reactor-duplicate-removed")
             report.manual_followups.extend(f for f in agg.reactor_followups(dups) if f not in report.manual_followups)
-            # 운영자가 화면에서 옮겨 적는 한 줄
+            # 운영자가 화면을 보고 옮겨 쓰는 한 줄
             log.info("접수: reactor 중복 모듈 %d개 정리 (지운 줄 %d · 메모 %d)", len(dups), len(removed),
                      len(notes) - len(removed))
             self.ws.journal({"event": "reactor_dedupe", "duplicates": [d.dir for d in dups],
@@ -3110,7 +3111,8 @@ class Orchestrator:
         for d in list(getattr(res, "bom_properties_removed", None) or []):
             pom, sep, nv = str(d).partition(": ")
             name = nv.split("=", 1)[0]
-            # 속성을 정의한 pom을 알면 그 pom을 이름으로 쓴다. 설정 목록에 있는 이름이면 사내 부모로 쓴다
+            # 지운 속성이 누구의 값을 덮어썼는지 문장에 쓴다. 정의한 BOM이나 부모 체인을 알면 그것을 쓴다.
+            # 설정 목록에 있는 이름이면 사내 부모를 쓴다. 둘 다 아니면 Boot BOM이다
             src = defined_by.get(name, "")
             if src.startswith("org.springframework.boot:spring-boot-dependencies:"):
                 whose = f"the Spring Boot {src.rsplit(':', 1)[1]} BOM's {name}"

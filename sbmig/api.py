@@ -53,7 +53,7 @@ def migrate(
 ) -> "RunReport":
     """프로젝트 하나(디렉토리나 zip)를 `sbmig run`과 같은 파이프라인으로 이관하고 RunReport를 반환한다.
     - ``flow="remediation"``이면 이관 없이 취약점 조치만 한다
-    - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를 줄 수 있다. ``fixer``에는 사내 수정기(propose_script)를 준다
+    - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를 줄 수 있다. ``fixer``에는 사내 수정기(propose_script)를 줄 수 있다
     - ``stop_after``나 ``flow`` 값이 잘못되었으면 ValueError를 던진다
     - CLI 종료 코드는 ``exit_code(report)``로 얻는다
 

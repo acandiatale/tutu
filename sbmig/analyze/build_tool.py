@@ -1,10 +1,10 @@
 """프로젝트가 어떤 빌드 도구를 쓰는지 판별하는 모듈. Maven 프로젝트만 이관한다.
 
-The intake's `_check_build_tool` calls it first; a tool other than Maven stops the run with exit 3. The analyzer
-puts the result into `ProjectProfile.build_tool`. Gradle trees and trees without any pom are refused (a pom-less
-tree is described with `sbmig inventory <dir>`). Gradle / Ant files next to a pom are ignored.
-`ANT_REASON` is the technical description; the operator-facing refusal is `intake.ant_message`. With
-`intake.ant_to_maven: true` the intake synthesizes a pom.xml from `ant_build_file` instead.
+The intake's `_check_build_tool` calls it first; a tool other than Maven stops the run with exit 3. The
+analyzer puts the result into `ProjectProfile.build_tool`. Gradle trees and trees without any pom are
+refused (a pom-less tree is described with `sbmig inventory <dir>`). Gradle / Ant files next to a pom are
+ignored. `ANT_REASON` is the technical description; the operator-facing refusal is `intake.ant_message`.
+With `intake.ant_to_maven: true` the intake synthesizes a pom.xml from `ant_build_file` instead.
 `detect_build_tool(ws)` is cheap (root checks first, then recursive globs that skip `.git` / `target`) so it
 runs at intake before the effective-pom capture; the analyzer reuses it (+ `warnings[0]` when the tool is not
 Maven).

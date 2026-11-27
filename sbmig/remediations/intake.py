@@ -396,7 +396,7 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
     return result
 
 
-# ---------------------------------------------------------------------------- 트리 해시 / 복사
+# ---------------------------------------------------------------------------- 폴더 해시 / 복사
 def manifest_paths(manifest: Path) -> list[str]:
     """manifest.json에 있는 파일 경로 목록을 정렬해서 반환한다.
     읽을 수 없으면 ``RemediationError``를 던진다."""
@@ -417,7 +417,7 @@ def _file_sha(path: Path) -> str:
 
 
 def tree_hash(tree: Path, paths: list[str]) -> str:
-    """``paths``에 있는 파일만으로 폴더 전체의 해시를 계산한다.
+    """``paths``에 있는 파일만으로 폴더의 해시를 계산한다.
     정렬한 ``[경로, 파일 sha256]`` 쌍을 정규 JSON으로 만들어 sha256을 구한다.
     없는 파일은 ``"MISSING"``, 일반 파일이 아니면 ``"NOT_REGULAR"``로 넣는다.
     목록 밖의 파일(``target/`` 등)은 해시에 영향을 주지 않는다."""
@@ -635,7 +635,7 @@ NOT_REGULAR = "NOT_REGULAR"
 
 def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str, bool]]:
     """``paths``의 파일마다 (크기, sha256, 실행 비트)를 담은 표를 반환한다. 없는 파일은 넣지 않는다.
-    일반 파일이 아니면 sha256 자리에 ``"NOT_REGULAR"``를 넣는다. ``tree_hash``와 같은 규칙이다.
+    일반 파일이 아니면 sha256 값으로 ``"NOT_REGULAR"``를 넣는다. ``tree_hash``와 같은 규칙이다.
 
     `{path: (size, sha256, exec)}` of `paths` in `tree` (one full read); a missing path is left out; a path that is
     not a regular file (a folder, a link) is `(0, "NOT_REGULAR", False)`, so `table_hash` of the table equals

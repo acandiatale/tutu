@@ -721,7 +721,8 @@ class RoundState(Record):
 class RemediationState(Record):
     """작업 하나의 상태 전체(``state.json``)를 담는 데이터 클래스.
     - ``next_node``: 재개할 때 처음부터 다시 실행할 노드
-    - ``pending_upload``나 ``pending_receipt``가 있으면 검사 노드는 다시 올리지 않는다. 결과를 이어서 조회한다
+    - ``pending_receipt``가 있으면 검사 노드는 다시 올리지 않고 그 분석을 이어서 조회한다
+    - ``pending_upload``만 있으면 업로드 결과를 모르는 것이다. 다시 올리지 않고 AWAITING_CONFIRMATION으로 멈춘다
     - ``owner``: 실행 중인 프로세스의 토큰. 서버가 재시작되면 RUNNING, QUEUED 작업은 INTERRUPTED가 된다"""
     id: str
     name: str = ""                    # 업로드한 파일 이름

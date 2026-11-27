@@ -1,11 +1,11 @@
 """KB를 읽고 쓰는 모듈. KB는 빌드 오류와 그 오류를 고친 수정 스크립트를 파일로 쌓아 두는 저장소다.
 오케스트레이터, 플릿, 웹 서버가 모두 이 모듈로 KB를 쓴다.
 
-The facade over :class:`sbmig.errors.cases.CaseStore` (which owns the data): ``match`` (the stored fix script for a
-build error), ``record_run`` (a finished run's errors into the KB), ``reindex`` (re-sign, then recount),
-``export_zip`` / ``import_zip``. Nothing here raises during a run. Files only, never a database.
-Re-signing moves what was recorded under older signature rules to the current case ids; a failed re-sign leaves a
-WARNING and the run goes on.
+The facade over :class:`sbmig.errors.cases.CaseStore` (which owns the data): ``match`` (the stored fix
+script for a build error), ``record_run`` (a finished run's errors into the KB), ``reindex`` (re-sign, then
+recount), ``export_zip`` / ``import_zip``. Nothing here raises during a run. Files only, never a database.
+Re-signing moves what was recorded under older signature rules to the current case ids; a failed re-sign
+leaves a WARNING and the run goes on.
 
 Layout under ``cfg.kb_dir`` (``kb.dir``, default ``kb-v2/``): ``errors.jsonl``, ``cases.md``,
 ``cases/<case_id>/case.json`` + ``fix_v<N>.py``, ``.lock``. Nothing else is read or written (older KB files
@@ -179,7 +179,8 @@ class FileKnowledgeBase:
         ``dry_run``이면 무엇을 옮길지만 알려 주고 아무것도 쓰지 않는다.
         실패해도 예외를 던지지 않는다. 경고를 남기고 ``error``가 채워진 보고를 반환한다.
 
-        The report is also kept in ``last_resign``. An explicit call retries the cases the last re-sign skipped; the automatic triggers do not."""
+        The report is also kept in ``last_resign``. An explicit call retries the cases the last re-sign
+        skipped; the automatic triggers do not."""
         return self._resign(dry_run=dry_run, recount=True, retry=True)
 
     def _resign(self, dry_run: bool, recount: bool, retry: bool) -> ResignReport:
@@ -195,7 +196,8 @@ class FileKnowledgeBase:
         """이 KB를 처음 조회할 때 재서명이 필요한지 확인하고, 필요하면 한 번 재서명한다.
         프로세스당 한 번만 확인한다. 예외를 던지지 않는다.
 
-        Needed = ``kb.json`` is missing or older than the current signature version while the KB has records."""
+        Needed = ``kb.json`` is missing or older than the current signature version while the KB has
+        records."""
         key = os.path.abspath(str(self.root))
         if key in _FIRST_MATCH_CHECKED:
             return
