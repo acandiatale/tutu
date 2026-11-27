@@ -91,7 +91,7 @@ def test_scope_comes_from_the_journal_and_the_status() -> None:
     # a new run starts without the notice (a full run shows nothing special)
     assert "resetRail(runFlow); setFramework(null);" in SCRIPT
     # the upload notice follows /api/configs
-    assert "setUploadFramework(d.framework);" in SCRIPT and "f.configured === true" in SCRIPT
+    assert "setUploadFramework(fwCfg);" in SCRIPT and "f.configured === true" in SCRIPT
 
 
 def test_skipped_stages_are_drawn_and_never_current() -> None:
@@ -143,36 +143,36 @@ def _no_framework_env(monkeypatch):
 
 def test_configs_names_the_configured_framework(tmp_path) -> None:
     d = _client(tmp_path, FW_YML_NO_LOOP).get("/api/configs").json()
-    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False}
+    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False, "convert_available": True, "mode": "reduced"}
 
 
 def test_configs_framework_fix_loop_defaults_to_false(tmp_path) -> None:
     """Without `framework.fix_loop` in the yml the framework run is conversion-only (the switch is off by default)."""
     d = _client(tmp_path, FW_YML).get("/api/configs").json()
-    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False}
+    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False, "convert_available": True, "mode": "reduced"}
 
 
 def test_configs_framework_name_and_fix_loop_from_the_yml(tmp_path) -> None:
     yml = 'framework:\n  artifacts: ["com.example:example-fw-core"]\n  name: "Example Platform"\n  fix_loop: true\n'
     d = _client(tmp_path, yml).get("/api/configs").json()
-    assert d["framework"] == {"configured": True, "name": "Example Platform", "fix_loop": True, "remediation_always": False}
+    assert d["framework"] == {"configured": True, "name": "Example Platform", "fix_loop": True, "remediation_always": False, "convert_available": True, "mode": "reduced"}
 
 
 def test_configs_without_framework_or_with_full_scope(tmp_path) -> None:
     assert _client(tmp_path / "a", None).get("/api/configs").json()["framework"] == \
-        {"configured": False, "name": "", "fix_loop": False, "remediation_always": False}
+        {"configured": False, "name": "", "fix_loop": False, "remediation_always": False, "convert_available": False, "mode": "reduced"}
     # scope full: such a project gets the whole migration, nothing to announce before the upload
     full = FW_YML + "  scope: full\n"
     assert _client(tmp_path / "b", full).get("/api/configs").json()["framework"]["configured"] is False
     # a glob names no single artifact: configured, without a name (the page says 사내 프레임워크)
     glob = 'framework:\n  artifacts: ["example-fw-*"]\n  fix_loop: false\n'
     assert _client(tmp_path / "c", glob).get("/api/configs").json()["framework"] == \
-        {"configured": True, "name": "", "fix_loop": False, "remediation_always": False}
+        {"configured": True, "name": "", "fix_loop": False, "remediation_always": False, "convert_available": False, "mode": "reduced"}
 
 
 def test_configs_unloadable_config_is_not_a_500(tmp_path) -> None:
     r = _client(tmp_path, "framework:\n  artifacts: [\n").get("/api/configs")          # broken yaml
-    assert r.status_code == 200 and r.json()["framework"] == {"configured": False, "name": "", "fix_loop": False, "remediation_always": False}
+    assert r.status_code == 200 and r.json()["framework"] == {"configured": False, "name": "", "fix_loop": False, "remediation_always": False, "convert_available": False, "mode": "reduced"}
     r = _client(tmp_path / "x", "framework:\n  scope: nonsense\n").get("/api/configs")   # validation error
     assert r.status_code == 200 and r.json()["framework"]["configured"] is False
 
@@ -307,7 +307,7 @@ REM_FW_YML = FW_YML_NO_LOOP + "remediation:\n  after_migration: true\n"
 
 def test_configs_says_whether_the_remediation_follows_a_failed_build(tmp_path) -> None:
     on = _client(tmp_path / "a", REM_FW_YML).get("/api/configs").json()["framework"]
-    assert on == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": True}
+    assert on == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": True, "convert_available": True, "mode": "reduced"}
     # the chained remediation off, or switched to `never` after a failed build: nothing to promise
     off = _client(tmp_path / "b", FW_YML + "remediation:\n  after_migration: false\n").get("/api/configs").json()
     assert off["framework"]["remediation_always"] is False
@@ -316,7 +316,7 @@ def test_configs_says_whether_the_remediation_follows_a_failed_build(tmp_path) -
     # v2.1z-bi: with the fix loop on (the default) the remediation follows a failed build too
     loop = REM_FW_YML.replace("  fix_loop: false\n", "  fix_loop: true\n", 1)
     assert _client(tmp_path / "d", loop).get("/api/configs").json()["framework"] == \
-        {"configured": True, "name": "Example", "fix_loop": True, "remediation_always": True}
+        {"configured": True, "name": "Example", "fix_loop": True, "remediation_always": True, "convert_available": True, "mode": "reduced"}
     default = FW_YML + "remediation:\n  after_migration: true\n"
     assert _client(tmp_path / "g", default).get("/api/configs").json()["framework"]["remediation_always"] is True
     # nothing configured, or a config that cannot be loaded

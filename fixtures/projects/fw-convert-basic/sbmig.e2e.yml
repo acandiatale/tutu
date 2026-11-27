@@ -1,0 +1,28 @@
+# Per-fixture config override (fw-convert-basic), appended after config/artifacts.local-e2e.yml.
+# A framework project handled the conversion way: intake replaces the tree by the generated Spring Boot project
+# (root pom + shopApp-boot / -domain / -service / -store) and the run goes on like any multi-module Boot project.
+framework:
+  artifacts: ["example-fw-core"]
+  mode: convert
+# convert.versions keeps the default (the MyBatis starter's value is empty): the newest release is looked up in the
+# repository set at intake, so the fixture needs the network like every other e2e fixture.
+# The company layout with role parents (the local e2e config pins the older layout for the older fixtures). A Spring
+# Boot project keeps its directories (`boot_as_is: in-place`): only the poms change. Every in-house parent is stood in
+# by spring-boot-starter-parent 4.1.0 (base-parent = artifacts.parent in the local e2e config).
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review); a fix-script request gets "no fix".
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-convert-basic/replay"
+# Own KB; scripts/e2e.py clears it before the run (expect.kb.dir).
+kb:
+  dir: out/e2e/kb-fw-convert-basic

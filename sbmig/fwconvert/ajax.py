@@ -25,7 +25,10 @@ C / D: the inferred name), sorted, unique; B / F (service from an expression) ar
 searched only between the end of the previous call and the endpoint.
 
 A file is all or nothing: any occurrence that does not fit, an endpoint name left anywhere (a comment too) or a C / D
-call without an inferable service leaves the file byte-identical and gives one ``QueueItem``. Files are read as bytes,
+call without an inferable service leaves the file byte-identical and gives one ``QueueItem``. Its ``reason`` never holds
+text copied from the file (a line may carry a secret): it says in our own words what was not understood plus the
+line and column in the ORIGINAL file (a position in the rewritten text is mapped back, ``_original_pos``); the line
+itself goes to ``last_error`` and the start of the file to ``excerpt``, which only reach the run's queue file. Files are read as bytes,
 decoded with ``frontcopy.decode_source`` and written back in the same encoding only when that encoding reproduces the
 original bytes (CRLF and a BOM survive because nothing translates newlines)."""
 from __future__ import annotations
@@ -145,8 +148,24 @@ class _Names:
 class _Outcome:
     text: str
     count: int
-    problem: str = ""               # 비어 있지 않으면 파일을 그대로 둔다. 무엇을 이해하지 못했는지 쓴다
+    problem: str = ""               # 비어 있지 않으면 파일을 그대로 둔다. 무엇을 이해하지 못했는지 우리 말로 쓴다
     services: set[str] = field(default_factory=set)     # 바꾼 호출이 글자 그대로 부르는 서비스 이름
+    line: str = ""                  # 문제가 된 원본 줄. 이유에는 넣지 않는다. 비밀 값이 들어 있을 수 있다
+    line_no: int = 0                # 원본 파일의 줄 번호. 1부터 센다
+    col: int = 0                    # 그 줄의 칸 번호. 1부터 센다
+
+
+def _where(text: str, pos: int) -> tuple[int, int]:
+    """위치의 (줄 번호, 칸 번호)를 반환한다. 둘 다 1부터 센다."""
+    start = text.rfind("\n", 0, pos) + 1
+    return text.count("\n", 0, pos) + 1, pos - start + 1
+
+
+def _problem(text: str, pos: int, why: str) -> _Outcome:
+    """원본을 그대로 두는 결과를 만든다. 이유에는 줄 번호만 쓰고 줄 내용은 ``line``에 따로 둔다."""
+    line_no, col = _where(text, pos)
+    return _Outcome(text, 0, f"{why} (line {line_no}, column {col})", line=_line_at(text, pos),
+                    line_no=line_no, col=col)
 
 
 def _line_at(text: str, pos: int) -> str:
@@ -337,6 +356,7 @@ def _rewrite(text: str, file_name: str, rules: ConvertRules) -> _Outcome:
         return _Outcome(text, 0)
     inferred: Optional[str] = None
     services: set[str] = set()
+    edits: list[tuple[int, int, int]] = []     # 바꾼 범위(원본 시작, 원본 끝, 새 글 길이)
     out: list[str] = []
     pos = count = 0
     search = 0
@@ -352,8 +372,9 @@ def _rewrite(text: str, file_name: str, rules: ConvertRules) -> _Outcome:
             inferred = infer_service(text, file_name, rules)
             edit, why = _rewrite_one(text, at, n, inferred, pos)
         if edit is None:
-            return _Outcome(text, 0, f"{why}: {_line_at(text, at)}")
+            return _problem(text, at, why)
         start, end, new, service = edit
+        edits.append((start, end, len(new)))
         if service:
             services.add(service)
         out.append(text[pos:start])
@@ -365,8 +386,22 @@ def _rewrite(text: str, file_name: str, rules: ConvertRules) -> _Outcome:
     new_text = "".join(out)
     left = new_text.find(n.endpoint)
     if left >= 0:
-        return _Outcome(text, 0, f"endpoint name still present: {_line_at(new_text, left)}")
+        # 남은 위치를 원본 위치로 되돌린다. 파일은 원본 그대로 두므로 줄 번호도 원본 기준이다
+        return _problem(text, _original_pos(left, edits), "endpoint name still present")
     return _Outcome(new_text, count, services=services)
+
+
+def _original_pos(new_pos: int, edits: list[tuple[int, int, int]]) -> int:
+    """바꾼 본문의 위치를 원본 본문의 위치로 바꾼다. 바꾼 범위 안이면 그 범위의 시작이다."""
+    delta = 0
+    for start, end, new_len in edits:
+        new_start = start + delta
+        if new_pos < new_start:
+            break
+        if new_pos < new_start + new_len:
+            return start
+        delta += new_len - (end - start)
+    return new_pos - delta
 
 
 def rewrite_ajax_text(text: str, file_name: str, rules: ConvertRules) -> tuple[str, int, bool]:
@@ -430,9 +465,11 @@ def transform_ajax(out_root: Path, layout: Layout, rules: ConvertRules) -> AjaxR
         res = _rewrite(text, path.name, rules)
         if res.problem:
             result.unmatched_files.append(rel_out)
+            # 이유에는 프로젝트 파일의 글을 넣지 않는다. 줄은 last_error와 excerpt에만 둔다
             result.queue.append(QueueItem(component=f"js_ajax::{rel_static}",
                                           reason=f"[AJAX_UNMATCHED] {res.problem}",
-                                          source_path=rel_out, excerpt=text[:EXCERPT_CHARS]))
+                                          source_path=rel_out, last_error=res.line,
+                                          excerpt=text[:EXCERPT_CHARS]))
             continue
         if res.count == 0:
             continue

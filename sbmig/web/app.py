@@ -14,7 +14,9 @@ Routes:
                                          ("default": `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else
                                          artifacts.yml / artifacts.local-e2e.yml when present); "max_parallel"
                                          = how many migrations run at a time (Job modes, else 1); "framework"
-                                         = {configured, name, fix_loop, remediation_always} of those configs
+                                         = {configured, name, fix_loop, remediation_always, convert_available,
+                                         mode} of those configs (`mode` = the effective default: framework.mode,
+                                         read as reduced while convert_available is false)
     GET  /api/runs[?days=N][&keep=<id>]  known runs (newest first) with status ("runs"; a waiting run carries
                                          "queue", a Job run its "slot") and "parallel": {slots, running,
                                          waiting}; `days` = only runs started in the last N x 24 h (0 /
@@ -23,18 +25,25 @@ Routes:
                                          resumed, and `keep` are always listed; "days" and "hidden" (left
                                          out) beside "runs"
     POST /api/runs?name=<file.zip>&project=<name>[&configs=a.yml,b.yml][&stop_after=...][&llm_provider=...]
-                  [&flow=full|remediation]
+                  [&flow=full|remediation][&framework_mode=reduced|convert]
          body = the zip bytes                                       -> 202 {"run_id", "status"}
          `project` is required and must match `runs.PROJECT_RE` (letters, digits, `_`, `-`, 1-30, first a
          letter or digit; not trimmed), else 400 {"error", "message_ko"} before any body byte is read; the run
          id is `<project>-YYYYmmdd-HHMMSS-<hex 6>`.
          `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` omitted =
          `full` (migration, then the chained remediation), `remediation` = remediation only, another value
-         -> 400; `stop_after` with `flow=remediation` -> 400
+         -> 400; `stop_after` with `flow=remediation` -> 400.
+         `framework_mode` omitted = not chosen (the engine uses the server's `framework.mode`); another value ->
+         400 {"error", "message_ko"}; `convert` while the configs cannot convert (`runs.convert_available`) -> 400
+         {"error", "message_ko"}, both before any body byte is read; ignored with `flow=remediation`
     GET  /api/runs/{id}                  status ("framework": {name, scope, fix_loop} for a run in the reduced
                                          scope jdk-jakarta, from report.json or the journal; "project" when
                                          the upload carried one; "zip_name", the name result.zip is received
-                                         under)
+                                         under; "framework_mode" = the chosen mode, else report.json's, absent
+                                         when neither has one;
+                                         "conversion" = {framework, project, package, modules, counts,
+                                         queue_total, datasource} for a converted run, from report.json, before
+                                         it from the journal event framework_converted)
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
@@ -104,7 +113,16 @@ from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
 from .contract import zip_download_name
 from .jsonsafe import FiniteJSONResponse, finite_dumps
-from .runs import DOWNLOAD_NAMES, RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
+from .runs import (
+    DOWNLOAD_NAMES,
+    RUN_ID_RE,
+    SERVED_FILES,
+    FrameworkModeError,
+    ProjectNameError,
+    RunManager,
+    check_flow,
+    check_project,
+)
 
 log = logging.getLogger("sbmig.web")
 
@@ -544,7 +562,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     @app.post("/api/runs", status_code=202)
     async def start(request: Request, name: str = "project.zip", configs: str | None = None,
                     stop_after: str | None = None, llm_provider: str | None = None,
-                    flow: str | None = None, project: str | None = None) -> JSONResponse:
+                    flow: str | None = None, project: str | None = None,
+                    framework_mode: str | None = None) -> JSONResponse:
         def too_large() -> JSONResponse:
             return JSONResponse({"error": f"zip too large (max {describe_max_upload(max_upload)})"}, status_code=413)
 
@@ -558,6 +577,12 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             project = check_project(project)
         except ProjectNameError as e:
             return JSONResponse({"error": str(e), "message_ko": e.message_ko}, status_code=400)
+        # 프레임워크 프로젝트의 처리 방법도 본문을 받기 전에 확인한다. 전환을 쓸 수 없는 서버면 여기서 거절한다
+        fw_problem = await run_in_threadpool(mgr.framework_mode_problem, framework_mode, flow,
+                                             None if configs is None else [c for c in configs.split(",") if c])
+        if fw_problem is not None:
+            return JSONResponse({"error": str(fw_problem), "message_ko": fw_problem.message_ko,
+                                 "field": "framework_mode"}, status_code=400)
         length = request.headers.get("content-length")
         if max_upload and length and length.isdigit() and int(length) > max_upload:
             return too_large()
@@ -592,8 +617,12 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             cfgs = mgr.default_configs() if configs is None else [c for c in configs.split(",") if c]
             # 설정 읽기, zip 풀기, 오케스트레이터 생성은 블로킹 작업이라 스레드풀에서 실행한다. 잘못된 요청은 400이다
             try:
-                rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,
-                                              llm_provider or None, flow, project)
+                rid = await run_in_threadpool(lambda: mgr.start_file(tmp, name, cfgs, stop_after or None,
+                                                                     llm_provider or None, flow, project,
+                                                                     framework_mode=framework_mode))
+            except FrameworkModeError as e:
+                return JSONResponse({"error": str(e), "message_ko": e.message_ko, "field": "framework_mode"},
+                                    status_code=400)
             except (ValueError, OSError, zipfile.BadZipFile) as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
             return FiniteJSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)

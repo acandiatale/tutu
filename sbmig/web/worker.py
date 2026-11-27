@@ -53,6 +53,7 @@ import yaml
 
 from sbmig.core import scrub
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.models import FRAMEWORK_MODES, RUN_FLOWS
 from sbmig.web import contract
 from sbmig.web.redact import Redactor, redact_run_dir
 
@@ -66,6 +67,22 @@ REFUSE_NO_REQUEST = "control/request.json missing — the Worker runs only reque
 REFUSE_NO_RESUME = (f"control/{contract.RESUME_STATE_FILE} missing or not for {contract.ACTION_REMEDIATION_RESUME} — the Worker "
                     "resumes a remediation only when Main recorded that attempt")
 REFUSE_NO_CHAIN = "no chained remediation in this run directory (remediation/state.json missing)"
+
+
+def record_value_problems(record: contract.RequestRecord) -> list[str]:
+    """request.json의 실행 방식과 처리 방법이 아는 값인지 확인한다. 모르는 값마다 문장 하나를 반환한다.
+    빈 목록이면 통과다. 처리 방법이 빈 문자열이면 고르지 않은 것이라 통과다.
+
+    Main copies these values into the Job env, so the env comparison cannot catch a value no run knows (a hand
+    edit, another image); without this check the CLI would end with a usage error that reads like a failed run."""
+    out: list[str] = []
+    flow = record.flow or contract.FLOW_FULL
+    if flow not in RUN_FLOWS:
+        out.append(f"request.json's flow {flow!r} is not one of: {', '.join(RUN_FLOWS)}")
+    mode = record.framework_mode or ""
+    if mode and mode not in FRAMEWORK_MODES:
+        out.append(f"request.json's framework_mode {mode!r} is not one of: {', '.join(FRAMEWORK_MODES)}")
+    return out
 REMEDIATION_MARK = "SBMIG-REMEDIATION"       # 조치 재개를 실행한 자식이 마지막에 출력하는 결과 줄의 표시
 # COLUMNS가 없을 때 자식 출력의 줄 폭. 파이프에서는 rich가 80칸에서 줄을 바꾼다. 두 줄로 나뉜 비밀 값은 줄 단위 마스킹이 놓친다
 CHILD_COLUMNS = "200"
@@ -75,7 +92,8 @@ ENV_DIFFERS_EVENT = "worker_env_differs"
 ENV_DIFF_LABELS = (("differs", "values differ"), ("main_only", "set in the web pod only"),
                    ("worker_only", "set in the Job pod only"))
 # request.json의 실행별 값에 대응하는 환경 변수 이름. SBMIG_CONFIG는 파일 경로로 따로 비교한다
-RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "llm_provider"), (contract.FLOW_ENV, "flow"))
+RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "llm_provider"), (contract.FLOW_ENV, "flow"),
+                    (contract.FRAMEWORK_MODE_ENV, "framework_mode"))
 # 값이 비어 있으면 기본값으로 보고 비교한다. SBMIG_FLOW나 flow 키가 없으면 full이다
 RUN_VALUE_DEFAULTS = {contract.FLOW_ENV: contract.FLOW_FULL}
 # 거절이나 경고 메시지 끝에 붙이는 운영자 안내. 네임스페이스와 디플로이먼트 이름은 설치마다 달라서 넣지 않는다
@@ -601,12 +619,15 @@ def slot_message(data: dict) -> str:
 
 
 def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Path, out: str, run_id: str,
-                  stop_after: str | None, llm_provider: str | None, flow: str | None = None) -> list[str]:
+                  stop_after: str | None, llm_provider: str | None, flow: str | None = None,
+                  framework_mode: str | None = None) -> list[str]:
     """자식 프로세스로 실행할 ``sbmig.cli run`` 명령을 만든다.
     ``worker-paths.yml``을 마지막 ``--config``로 넣는다. ``--flow``는 CLI 기본값인 full이 아닐 때만 붙인다.
+    ``--framework-mode``는 처리 방법을 고른 실행에만 붙인다. 고르지 않으면 CLI가 설정의 framework.mode를 쓴다.
 
     Shape: `python -m sbmig.cli run <zip> --config ... --config <worker-paths.yml> --out <out> --run-id <id>
-    [--stop-after X] [--llm-provider Y] [--flow remediation]` (run-job.sh's shape)."""
+    [--stop-after X] [--llm-provider Y] [--flow remediation] [--framework-mode reduced|convert]` (run-job.sh's
+    shape). The remediation flow never gets `--framework-mode` (the web stores no mode for it)."""
     cmd = [python, "-m", "sbmig.cli", "run", zip_path]
     for c in configs:
         cmd += ["--config", c]
@@ -615,8 +636,11 @@ def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Pat
         cmd += ["--stop-after", stop_after]
     if llm_provider:
         cmd += ["--llm-provider", llm_provider]
-    if flow and flow != contract.FLOW_FULL:
+    # 모르는 값은 붙이지 않는다. main이 그런 request.json을 먼저 거절한다
+    if flow and flow != contract.FLOW_FULL and flow in RUN_FLOWS:
         cmd += ["--flow", flow]
+    elif framework_mode in FRAMEWORK_MODES and flow in (None, "", contract.FLOW_FULL):
+        cmd += ["--framework-mode", framework_mode]
     return cmd
 
 
@@ -704,7 +728,8 @@ def _run_value_problems(record: contract.RequestRecord, environ: dict[str, str],
 def check_environment(record: contract.RequestRecord, state: contract.ControlState | None, environ: dict[str, str],
                       repo_root: Path) -> EnvCheck | None:
     """Job을 만든 Main의 환경(``state.env_pins``)과 이 Worker의 환경이 같은지 확인한다.
-    - 실행별 값 ``SBMIG_CONFIG``, ``SBMIG_STOP_AFTER``, ``SBMIG_LLM_PROVIDER``, ``SBMIG_FLOW``도 request.json과 비교한다
+    - 실행별 값 ``SBMIG_CONFIG``, ``SBMIG_STOP_AFTER``, ``SBMIG_LLM_PROVIDER``, ``SBMIG_FLOW``,
+      ``SBMIG_FRAMEWORK_MODE``도 request.json과 비교한다
     - state나 ``env_pins``가 없거나 정책이 off면 None을 반환한다. 정책이 비어 있으면 refuse로 본다
     - 예외를 던지지 않는다. 확인 중 실패는 같은 정책 아래의 문제 하나로 센다
     - 결과에는 변수 이름만 담는다"""
@@ -828,6 +853,11 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     record = contract.RequestRecord.read(run_dir)
     if record is None:
         return _refuse(run_dir, run_id, REFUSE_NO_REQUEST, started_for, action)
+    # 실행 방식이나 처리 방법이 모르는 값이면 아무것도 실행하지 않고 거절한다. 환경 변수 고정 정책과 상관없다
+    bad_values = record_value_problems(record)
+    if bad_values:
+        return _refuse(run_dir, run_id, "; ".join(bad_values), started_for if started_for is not None
+                       else int(record.attempt), action)
     if action == contract.ACTION_REMEDIATION_RESUME:
         try:
             resume_state = contract.ControlState.read(run_dir, contract.RESUME_STATE_FILE)
@@ -893,7 +923,8 @@ def _run(env: dict[str, str], record: contract.RequestRecord, run_dir: Path, run
             # 실행 방식은 request.json 값을 따른다. SBMIG_FLOW는 비교에만 쓴다.
             # 조치만 요청한 실행이 환경 변수 때문에 이관 전체로 실행되면 안 된다
             cmd = build_command(python, zip_path, configs, paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
-                                env.get("SBMIG_LLM_PROVIDER") or None, flow=record.flow or contract.FLOW_FULL)
+                                env.get("SBMIG_LLM_PROVIDER") or None, flow=record.flow or contract.FLOW_FULL,
+                                framework_mode=record.framework_mode or None)
         child_env = child_environ(env)
         # 2번 슬롯부터 별도의 Maven 로컬 저장소를 쓴다. 환경 확인이 끝난 뒤 자식의 환경 변수에만 넣는다
         slot = apply_slot_repo(child_env, env, configs, paths_yml, cwd=repo_root, resolver=repo_resolver)

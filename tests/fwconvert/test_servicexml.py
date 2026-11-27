@@ -294,8 +294,10 @@ def test_decompose_writes_verdicts_and_handover_items(tmp_path, rules):
                     "plain": ("java_only", "not_db"), "missing": ("3", "ambiguous"), "byName": ("2a", "strong"),
                     "direct": ("2a", "strong")}
     queue = {q.component: q for q in res.queue}
+    # the two 2a classes are project-own DB activities: one [CUSTOM_ACTIVITY] each, named by class
     assert set(queue) == {"mix-service::remote", "mix-service::two", "mix-service::api", "mix-service::plain",
-                          "mix-service::missing"}
+                          "mix-service::missing", "com.example.biz.DirectActivity", "com.other.pkg.ByNameActivity"}
+    assert queue["com.example.biz.DirectActivity"].reason.startswith("[CUSTOM_ACTIVITY] ")
     assert queue["mix-service::remote"].reason.startswith("[extcall] ")
     assert queue["mix-service::two"].reason.startswith("[3] ")
     assert queue["mix-service::api"].reason.startswith("[2b] ")
@@ -317,7 +319,9 @@ def test_decompose_simple_name_must_be_unique(tmp_path, rules):
 
 def test_decompose_a6_db_activities_need_no_source(tmp_path, rules):
     rel = _write(tmp_path, "shop-service.xml", A6_XML)
-    res = decompose_services(tmp_path, [rel], [], _mappers(), rules)
+    shop = MapperFile("shop", "Shop", "ns.ShopStore", "m/shop-mapper.xml", keys=["shop"],
+                      statements=[Statement(i, f"shop.{i}") for i in ("getList", "upsertItem", "deleteItem")])
+    res = decompose_services(tmp_path, [rel], [], MapperIndex([shop]), rules)
     v = res.services[0].verdicts
     assert {k: x.pass_hit for k, x in v.items()} == {"router": "router", "getList": "1a", "saveRows": "1b",
                                                      "removeRows": "1b", "session": "user"}
@@ -396,8 +400,8 @@ def test_decompose_reads_every_service_of_a_file(tmp_path, rules):
     rel = _write(tmp_path, "all-service.xml", TWO_SERVICES)
     res = decompose_services(tmp_path, [rel], [], _mappers(), rules)
     assert [s.name for s in res.services] == ["a-service", "beanOne", "b-service"] and res.errors == []
-    assert [(q.component, q.reason.split()[0]) for q in res.queue] == [("all-service.xml", "[BEAN_DIALECT]")]
-    assert "beanOne" in res.queue[0].reason
+    bean = [q for q in res.queue if q.reason.startswith("[BEAN_DIALECT]")]
+    assert [q.component for q in bean] == ["all-service.xml"] and "beanOne" in bean[0].reason
 
 
 ENTITY_XML = """<?xml version="1.0"?>
@@ -419,3 +423,191 @@ def test_decompose_reports_an_unresolved_entity(tmp_path, rules):
     res = decompose_services(tmp_path, [rel], [], _mappers(), rules)
     assert len(res.services) == 1
     assert len(res.errors) == 1 and res.errors[0].startswith("e-service.xml:") and "&ns;" in res.errors[0]
+
+
+# ---- project-own activity classes: inheritance and [CUSTOM_ACTIVITY] ------------------
+
+
+def _svc_xml(name: str, *acts: tuple[str, str, str]) -> str:
+    body = "".join(f'<activity name="{a}" class="{c}">' + (f'<property name="sql-key" value="{k}"/>' if k else "")
+                   + "</activity>" for a, c, k in acts)
+    return f'<service name="{name}">{body}</service>'
+
+
+def _java(pkg: str, cls: str, parent: str, imports: str = "", body: str = "") -> str:
+    return f"package {pkg};\n{imports}\n/** {cls} */\npublic class {cls} extends {parent} {{ {body} }}\n"
+
+
+def _decompose(tmp_path, rules, java: dict[str, str], *services: str):
+    files = [_write(tmp_path, rel, text) for rel, text in java.items()]
+    rels = [_write(tmp_path, f"svc/s{i}-service.xml", text) for i, text in enumerate(services)]
+    return decompose_services(tmp_path, rels, files, _mappers(), rules)
+
+
+def test_kind_from_a_direct_framework_parent(tmp_path, rules):
+    res = _decompose(tmp_path, rules, {
+        "src/com/example/biz/OrderSearch.java": _java("com.example.biz", "OrderSearch", "ExampleMyBatisSearch",
+                                                      "import com.example.fw.ExampleMyBatisSearch;"),
+    }, _svc_xml("o-service", ("list", "com.example.biz.OrderSearch", "order.getList"),
+                ("bare", "com.example.biz.OrderSearch", "")))
+    svc = res.services[0]
+    assert [a.kind for a in svc.activities] == ["search", "search"]
+    v = svc.verdicts["list"]
+    assert (v.db_backed, v.confidence, v.pass_hit, v.statement) == (True, "strong", "1c", "order.getList")
+    assert "extends ExampleMyBatisSearch" in v.evidence
+    # no sql-key: the source steps decide, as for any other class (the parent's name is the 2b marker ExampleMyBatis)
+    assert svc.verdicts["bare"].pass_hit == "2b" and "extends ExampleMyBatisSearch" in svc.verdicts["bare"].evidence
+    # the class has a [2b] item, so no [CUSTOM_ACTIVITY] as well
+    assert [q.reason.split()[0] for q in res.queue] == ["[2b]"]
+
+
+def test_kind_through_a_second_project_class(tmp_path, rules):
+    res = _decompose(tmp_path, rules, {
+        "src/com/example/base/BaseUpdate.java": _java("com.example.base", "BaseUpdate", "ExampleJdbcUpdate"),
+        "src/com/example/biz/SaveOrder.java": _java("com.example.biz", "SaveOrder", "BaseUpdate",
+                                                    "import com.example.base.BaseUpdate;"),
+        "src/com/example/biz/SamePkg.java": _java("com.example.biz", "SamePkg", "SaveOrder"),
+    }, _svc_xml("o-service", ("save", "com.example.biz.SaveOrder", "order.save"),
+                ("same", "com.example.biz.SamePkg", "order.other")))
+    svc = res.services[0]
+    assert [a.kind for a in svc.activities] == ["update", "update"]
+    assert "extends ExampleJdbcUpdate" in svc.verdicts["same"].evidence
+
+
+def test_generic_header_and_comment_do_not_confuse_the_parent(tmp_path, rules):
+    text = ("package p;\n// class Fake extends ExampleJdbcUpdate\n"
+            "public class Gen<T extends Comparable<T>> extends ExampleMyBatisSearch implements Runnable { }\n")
+    res = _decompose(tmp_path, rules, {"src/p/Gen.java": text}, _svc_xml("g-service", ("a", "p.Gen", "g.x")))
+    assert res.services[0].activities[0].kind == "search"
+
+
+def test_cycle_and_too_long_chain_fall_back_to_other(tmp_path, rules):
+    java = {"src/c/A.java": _java("c", "A", "B"), "src/c/B.java": _java("c", "B", "A")}
+    # L0 -> L1 ... -> L5 -> ExampleMyBatisSearch: the framework class is the sixth ancestor
+    for i in range(6):
+        java[f"src/d/L{i}.java"] = _java("d", f"L{i}", f"L{i + 1}" if i < 5 else "ExampleMyBatisSearch")
+    res = _decompose(tmp_path, rules, java, _svc_xml("c-service", ("cyc", "c.A", "c.x"), ("long", "d.L0", "d.x"),
+                                                     ("five", "d.L1", "d.y")))
+    kinds = {a.name: a.kind for a in res.services[0].activities}
+    assert kinds == {"cyc": "other", "long": "other", "five": "search"}   # L1 reaches it at the fifth level
+
+
+def test_missing_source_keeps_other(tmp_path, rules):
+    res = _decompose(tmp_path, rules, {}, _svc_xml("m-service", ("a", "x.NotThere", "")))
+    svc = res.services[0]
+    assert svc.activities[0].kind == "other" and svc.verdicts["a"].pass_hit == "3"
+    assert not any(q.reason.startswith("[CUSTOM_ACTIVITY]") for q in res.queue)
+
+
+def test_one_custom_activity_item_per_class(tmp_path, rules):
+    java = {"src/com/example/biz/OrderActivity.java": _java("com.example.biz", "OrderActivity", "Object")}
+    a = _svc_xml("a-service", ("one", "com.example.biz.OrderActivity", "order.getList"),
+                 ("two", "com.example.biz.OrderActivity", "order.save"),
+                 ("builtin", "com.example.fw.ExampleMyBatisSearch", "order.getList"),
+                 ("table", "com.example.biz.ShopUpsert", "order.save"))
+    b = _svc_xml("b-service", ("three", "com.example.biz.OrderActivity", "order.del"),
+                 ("lost", "com.example.biz.Missing", ""))
+    res = _decompose(tmp_path, rules, java, a, b)
+    custom = [q for q in res.queue if q.reason.startswith("[CUSTOM_ACTIVITY]")]
+    assert len(custom) == 1
+    q = custom[0]
+    assert q.component == "com.example.biz.OrderActivity"
+    assert "a-service::one, a-service::two, b-service::three" in q.reason
+    assert "plain statement call" in q.reason
+    assert q.source_path == "src/com/example/biz/OrderActivity.java" and q.excerpt.startswith("package com.example.biz")
+    assert any(x.component == "b-service::lost" and x.reason.startswith("[3]") for x in res.queue)
+
+
+def test_custom_activity_lists_ten_uses_then_the_rest(tmp_path, rules):
+    acts = [(f"a{i:02d}", "x.Own", f"o.k{i}") for i in range(13)]
+    res = _decompose(tmp_path, rules, {}, _svc_xml("z-service", *acts))
+    [q] = [x for x in res.queue if x.reason.startswith("[CUSTOM_ACTIVITY]")]
+    assert "z-service::a09" in q.reason and "z-service::a10" not in q.reason and "and 3 more" in q.reason
+    assert q.source_path == "" and q.excerpt == ""
+
+
+def test_class_with_its_own_handover_item_gets_no_custom_item(tmp_path, rules):
+    java = {"src/p/Mixed.java": _java("p", "Mixed", "Object", body="SqlSession s;")}
+    res = _decompose(tmp_path, rules, java, _svc_xml("m-service", ("withKey", "p.Mixed", "m.x"), ("noKey", "p.Mixed", "")))
+    reasons = [q.reason.split()[0] for q in res.queue]
+    assert reasons == ["[2b]", "[UNKNOWN_SQL_KEY]"]         # m.x names no statement: its own item, not a custom one
+
+
+def test_custom_items_sorted_by_class(tmp_path, rules):
+    res = _decompose(tmp_path, rules, {}, _svc_xml("s-service", ("a", "z.Zed", "s.a"), ("b", "a.Alpha", "s.b")))
+    assert [q.component for q in res.queue if q.reason.startswith("[CUSTOM_ACTIVITY]")] == ["a.Alpha", "z.Zed"]
+
+
+# ---- nested activity classes --------------------------------------------------------
+
+
+GEN = ("package p;\npublic class GenSearch extends ExampleMyBatisSearch {\n"
+       "  public static class Inner extends ExampleMyBatisUpdate {}\n  static class Plain {}\n}\n")
+
+
+def test_nested_class_gets_its_own_kind(tmp_path, rules):
+    res = _decompose(tmp_path, rules, {"src/p/GenSearch.java": GEN}, _svc_xml(
+        "n-service", ("dollar", "p.GenSearch$Inner", "o.save"), ("dotted", "p.GenSearch.Inner", "o.save2"),
+        ("outer", "p.GenSearch", "o.list"), ("missing", "p.GenSearch$Nope", "o.x"), ("plain", "p.GenSearch$Plain", "o.y")))
+    kinds = {a.name: a.kind for a in res.services[0].activities}
+    assert kinds == {"dollar": "update", "dotted": "update", "outer": "search", "missing": "other", "plain": "other"}
+
+
+def test_a_file_without_the_class_gives_no_kind(tmp_path, rules):
+    # the file found by name declares another class: its extends is never taken
+    text = "package p;\nclass Helper extends ExampleMyBatisSearch {}\n"
+    res = _decompose(tmp_path, rules, {"src/p/Odd.java": text}, _svc_xml("o-service", ("a", "p.Odd", "o.x")))
+    assert res.services[0].activities[0].kind == "other"
+
+
+# ---- sql-keys that name no single statement ------------------------------------------
+
+
+def _two_files() -> MapperIndex:
+    a = MapperFile("order", "Order", "ns.OrderStore", "m/order-mapper.xml", source="sql/order.example_sql",
+                   keys=["order"], statements=[Statement("getList", "order.getList")])
+    b = MapperFile("order2", "Order2", "ns.Order2Store", "m/order2-mapper.xml", source="sql/order2.example_sql",
+                   keys=["order2"], statements=[Statement("getList", "order.getList", verb="delete")])
+    return MapperIndex([a, b])
+
+
+def test_ambiguous_and_unknown_sql_keys_are_handed_over(tmp_path, rules):
+    rel = _write(tmp_path, "svc/a-service.xml", _svc_xml(
+        "a-service", ("one", "ExampleMyBatisSearch", "order.getList"), ("two", "ExampleMyBatisSearch", "order.getList"),
+        ("prefixed", "ExampleMyBatisSearch", "ORDER.getList"),
+        ("ghost", "ExampleMyBatisSearch", "nowhere.fetch"), ("ghost2", "ExampleJdbcSearch", "nowhere.fetch"),
+        ("fine", "ExampleMyBatisSearch", "order2.getList")))
+    rel2 = _write(tmp_path, "svc/b-service.xml", _svc_xml("b-service", ("three", "ExampleMyBatisSearch", "order.getList")))
+    res = decompose_services(tmp_path, [rel, rel2], [], _two_files(), rules)
+    items = [(q.component, q.reason.split()[0]) for q in res.queue]
+    # sorted by key: nowhere.fetch before order.getList
+    assert items == [("a-service::ghost", "[UNKNOWN_SQL_KEY]"), ("a-service::one", "[AMBIGUOUS_SQL_KEY]")]
+    unk, amb = res.queue
+    assert "'order.getList'" in amb.reason
+    assert "sql/order.example_sql (getList)" in amb.reason and "sql/order2.example_sql (getList)" in amb.reason
+    assert "a-service::two" in amb.reason and "b-service::three" in amb.reason
+    assert amb.source_path == "sql/order.example_sql"
+    assert "'nowhere.fetch'" in unk.reason and "a-service::ghost2" in unk.reason
+    # ORDER.getList misses the exact original id and resolves through the key "order": no item
+    assert "prefixed" not in amb.reason
+    # the verdicts are unchanged: no statement is guessed
+    assert res.services[0].verdicts["one"].statement == "order.getList"
+
+
+def test_activity_with_its_own_item_gets_no_sql_key_item(tmp_path, rules):
+    # a [3] / [2b] activity has no statement, an external call none either: nothing to add
+    rel = _write(tmp_path, "svc/c-service.xml", _svc_xml(
+        "c-service", ("remote", "x.RemoteCallActivity", "nowhere.fetch"), ("lost", "x.Missing", "")))
+    res = decompose_services(tmp_path, [rel], [], _two_files(), rules)
+    assert [q.reason.split()[0] for q in res.queue] == ["[extcall]", "[3]"]
+
+
+def test_builtin_or_prefix_activity_without_sql_key_is_handed_over(tmp_path, rules):
+    rel = _write(tmp_path, "svc/k-service.xml", _svc_xml(
+        "k-service", ("bare", "ExampleMyBatisSearch", ""), ("shop", "com.example.biz.ShopUpsert", ""),
+        ("keyed", "ExampleMyBatisSearch", "order.getList")))
+    res = decompose_services(tmp_path, [rel], [], _mappers(), rules)
+    assert [(q.component, q.reason.split()[0]) for q in res.queue] == [("k-service::bare", "[NO_SQL_KEY]"),
+                                                                     ("k-service::shop", "[NO_SQL_KEY]")]
+    assert "names no SQL statement" in res.queue[0].reason
+    assert res.services[0].verdicts["bare"].pass_hit == "1a" and res.services[0].verdicts["shop"].pass_hit == "1b"

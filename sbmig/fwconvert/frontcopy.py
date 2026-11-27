@@ -237,6 +237,7 @@ _JSP_PATH_TAGS = re.compile(r"<%@\s*include\b|<jsp:include\b|<jsp:forward\b|<c:i
 _JSP_PATH_ATTR = {"<%@": "file", "<jsp:include": "page", "<jsp:forward": "page", "<c:import": "url"}
 _ATTR = re.compile(r"""\s*([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _TAG_WINDOW = 4000
+_MAX_PATH = 300
 
 
 @dataclass
@@ -327,6 +328,9 @@ def fix_jsp_paths(out_root: Path, layout: Layout, rules: ConvertRules,
             if "<%" in value or "${" in value or "#{" in value:
                 continue
             if not value.startswith("/") or value.startswith("//"):
+                continue
+            # 줄바꿈이 있거나 아주 긴 값은 경로가 아니다. 인수인계 이유에 파일의 글이 들어가지 않게 건너뛴다
+            if "\n" in value or "\r" in value or len(value) > _MAX_PATH:
                 continue
             cut = min((i for i in (value.find("?"), value.find("#")) if i >= 0), default=len(value))
             web, extra = value[:cut], value[cut:]

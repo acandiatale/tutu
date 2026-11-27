@@ -309,6 +309,10 @@ def run(
     flow: str = typer.Option("full", "--flow",
                              help="full (migration, then the chained remediation when switched on) | remediation "
                                   "(no migration: remediate the project as uploaded)"),
+    framework_mode: Optional[str] = typer.Option(None, "--framework-mode",
+                                                 help="reduced (in-house framework stays: JDK 21 + jakarta only) | "
+                                                      "convert (convert into the generated Spring Boot project); "
+                                                      "default: framework.mode; ignored with --flow remediation"),
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
                                                help="openai_compatible|anthropic|fake|plugin|<entry-point name>"),
     llm_plugin: Optional[str] = typer.Option(None, "--llm-plugin",
@@ -325,6 +329,7 @@ def run(
     종료 코드 0은 최종 `mvn clean package` 성공에 차단 없음, 2는 차단이나 미해결 오류가 남은 채 끝남(report.md의 오류
     목록), 3은 중단(Maven 없음, Maven 프로젝트 아님, 사내 부모 pom 해석 불가, 내부 오류)이다.
     `--flow remediation`이면 이관 없이 취약점 조치만 한다.
+    `--framework-mode convert`면 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환한 뒤 이관한다.
     운영자는 마지막 SBMIG-RESULT 줄로 결과를 확인한다.
 
     Migrate a project end to end.
@@ -359,6 +364,14 @@ def run(
         flow = check_flow(flow, phase, dry_run)
     except ValueError as e:
         raise typer.BadParameter(str(e), param_hint="'--flow'") from None
+    if framework_mode is not None and not str(framework_mode).strip():
+        framework_mode = None                   # 빈 값은 주지 않은 것과 같다(framework.mode를 쓴다)
+    if framework_mode is not None:
+        from sbmig.loop.convert import parse_framework_mode
+        try:
+            framework_mode = parse_framework_mode(framework_mode)
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="'--framework-mode'") from None
     cfg = _load(config, overrides, repo_root)
     from sbmig.core.workspace import Workspace
     from sbmig.loop import Orchestrator
@@ -377,7 +390,11 @@ def run(
             report = refuse_intake(orch, ws.intake_refusal, flow=flow)
         else:
             # flow=는 기본 흐름이 아닐 때만 넘긴다. 사내 래퍼가 이 인자를 모를 수 있다
-            report = orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
+            # framework_mode=도 줄 때만 넘긴다. 주지 않으면 framework.mode를 쓴다
+            extra: dict = {"flow": flow} if flow != "full" else {}
+            if framework_mode is not None:
+                extra["framework_mode"] = framework_mode
+            report = orch.run(stop_after=phase, dry_run=dry_run, **extra)
     except Exception:
         log.exception("run aborted by an unexpected error (see %s)", log_path)
         line = result_line(ws.run_id, 1, False, attention=["crash"])

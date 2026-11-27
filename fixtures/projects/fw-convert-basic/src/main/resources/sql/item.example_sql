@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<queryMap desc="items" xmlns="http://example.invalid/query">
+  <query id="item.getList"><![CDATA[ SELECT ITEM_ID, ITEM_NAME FROM TB_ITEM ]]></query>
+  <query id="item.findByName" isNamed="true"><![CDATA[ SELECT ITEM_ID, ITEM_NAME FROM TB_ITEM WHERE ITEM_NAME LIKE :name ]]></query>
+</queryMap>

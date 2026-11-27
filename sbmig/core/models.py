@@ -2122,6 +2122,32 @@ FLOW_FULL = "full"
 FLOW_REMEDIATION = "remediation"
 RUN_FLOWS = (FLOW_FULL, FLOW_REMEDIATION)
 
+# 사내 프레임워크 프로젝트를 처리하는 방법. reduced는 프레임워크를 그대로 두고 JDK와 jakarta만 올린다.
+# convert는 사내 규정의 Spring Boot 프로젝트로 전환한 뒤 일반 이관을 이어 간다. 프레임워크 프로젝트가 아니면 쓰지 않는다
+# CLI `--framework-mode`, 웹 `POST /api/runs?framework_mode=`, 화면의 처리 방법 선택이 이 값이다
+FRAMEWORK_MODE_REDUCED = "reduced"
+FRAMEWORK_MODE_CONVERT = "convert"
+FRAMEWORK_MODES = (FRAMEWORK_MODE_REDUCED, FRAMEWORK_MODE_CONVERT)
+
+
+class ConversionInfo(BaseModel):
+    """사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환한 결과 요약을 담는 데이터 클래스.
+    전환을 실행한 실행의 report.json에만 있다. 원본 소스의 내용은 넣지 않는다."""
+    converted: bool = False                        # 전환할 파일이 없어서 건너뛰었으면 False
+    framework: str = ""                            # 프레임워크 이름
+    project: str = ""                              # 생성한 프로젝트 이름
+    package: str = ""                              # 생성한 기본 패키지
+    modules: list[str] = Field(default_factory=list)       # 생성한 모듈 디렉터리
+    commit: str = ""                               # 전환 결과를 담은 커밋
+    counts: dict[str, int] = Field(default_factory=dict)   # 종류별 개수(서비스, mapper, 클래스, 화면 파일 등)
+    datasource: str = ""                           # configured:<벤더>, not_found, jndi, unknown_vendor 가운데 하나
+    # 사람이 확인할 항목. 항목마다 component, reason, source_path만 둔다
+    queue: list[dict[str, str]] = Field(default_factory=list)
+    queue_total: int = 0                           # 목록을 줄였을 때의 전체 개수
+    unexposed: list[str] = Field(default_factory=list)     # 프론트엔드가 호출하지 않아 노출하지 않은 REST 주소
+    skipped: list[str] = Field(default_factory=list)       # 읽지 않은 파일과 그 이유
+    errors: list[str] = Field(default_factory=list)        # 전환 중 남은 오류 문장
+
 
 class RunReport(BaseModel):
     """실행 한 번의 최종 보고서(report.json, report.md의 원본)를 담는 데이터 클래스.
@@ -2130,6 +2156,9 @@ class RunReport(BaseModel):
     pom_synthesis: Optional["PomSynthesis"] = None   # 접수에서 Ant 프로젝트의 pom.xml을 만들었을 때만 채운다
     # 이 실행의 방식(RUN_FLOWS). full은 이관, remediation은 이관 없이 취약점 조치만 한다
     flow: str = "full"
+    # 사내 프레임워크 프로젝트의 처리 방법(FRAMEWORK_MODES). 고르지 않은 실행은 빈 문자열이다
+    framework_mode: str = ""
+    conversion: Optional[ConversionInfo] = None    # 전환을 실행했을 때만 채운다
     run_id: str
     project_name: str
     case_type: CaseType

@@ -545,6 +545,10 @@ def _loop_followup_lines() -> list[str]:
          "understates its sizes"),
         ("ZIP refused while unpacking: the entry app/big.bin expanded more than 200:1 (intake.max_compression_ratio) — the "
          "ZIP's directory understates its sizes"),
+        # the conversion into a generated Spring Boot project refused or failed at intake (Orchestrator._intake_convert)
+        *_convert_abort_lines(),
+        # the conversion step's hand-over lines: nothing to convert, duplicate request mappings (sbmig/loop/convert.py)
+        *_convert_followup_lines(),
         # v2.1z-ax: libraries whose repository has the jar but no pom (sbmig.build.pomless.handover_line)
         handover_line(["com.example:pomless:1.0", "com.example:other:2.0"]),
         # v2.1z-ay: poms whose bytes did not match their declaration (sbmig.restructure.pom_charset), the error-list
@@ -573,6 +577,16 @@ def _boot_split_lines(tmp_path, cfg) -> list[str]:
     out = [x for x in res.manual_followups if x.startswith("boot split: ")]
     assert len(out) == 3, res.manual_followups
     return out
+
+
+def _convert_abort_lines() -> list[str]:
+    from tests.report.test_convert_abort_reasons_ko import CASES
+    return [reason for reason, _ in CASES]
+
+
+def _convert_followup_lines() -> list[str]:
+    from tests.report.test_convert_followups_ko import lines
+    return lines()
 
 
 def _pom_charset_lines() -> list[str]:

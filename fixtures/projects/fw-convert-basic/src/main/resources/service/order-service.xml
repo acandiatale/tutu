@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A service with a router: only the activities a transition points at become methods; URL /api/order/{transition}. -->
+<service name="order-service">
+  <activity name="list" class="com.example.fw.activity.ExampleMyBatisSearch">
+    <property name="sql-key" value="order.getList"/>
+    <property name="result-key" value="rows"/>
+  </activity>
+  <activity name="store" class="com.example.fw.activity.ExampleMyBatisUpdate">
+    <property name="sql-key" value="order.save"/>
+  </activity>
+  <activity name="drop" class="com.example.fw.activity.ExampleMyBatisUpdate">
+    <property name="sql-key" value="order.remove"/>
+  </activity>
+  <activity name="router" class="com.example.fw.activity.ExampleDefaultRouter">
+    <transition name="find" value="list"/>
+    <transition name="save" value="store"/>
+    <transition name="remove" value="drop"/>
+  </activity>
+</service>

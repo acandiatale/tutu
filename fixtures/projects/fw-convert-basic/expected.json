@@ -1,0 +1,569 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "requires_libs": [
+    "com.example.fw:example-fw-core:1.0.0"
+  ],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "framework-converted"
+    ],
+    "forbidden_flags": [
+      "regex:aborted.*",
+      "framework-project",
+      "restructure-failed",
+      "hollow-reactor"
+    ],
+    "journal_events": [
+      {
+        "event": "framework_mode",
+        "framework_mode": "convert"
+      },
+      {
+        "event": "framework_converted",
+        "framework": "Example",
+        "project": "shopApp",
+        "package": "com.example.shop.shopApp",
+        "modules": [
+          "shopApp-boot",
+          "shopApp-domain",
+          "shopApp-service",
+          "shopApp-store"
+        ],
+        "errors": 0,
+        "datasource": "configured:h2",
+        "queue": 3,
+        "counts.services": 2,
+        "counts.mappers": 3,
+        "counts.resources": 3,
+        "counts.pages": 3,
+        "counts.js_rewritten": 2
+      },
+      {
+        "event": "framework_check",
+        "found": false
+      },
+      {
+        "event": "plan",
+        "scope": "full",
+        "steps": [
+          "transform.rewrite",
+          "restructure.boot_pom",
+          "restructure.review",
+          "verify.build"
+        ]
+      },
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true
+      },
+      {
+        "event": "restructure",
+        "step": "restructure.boot_pom",
+        "mode": "boot_pom",
+        "ok": true
+      },
+      {
+        "event": "build",
+        "goal": "clean package",
+        "label": "verify",
+        "ok": true
+      }
+    ],
+    "journal_events_absent": [
+      {
+        "event": "framework_project"
+      },
+      {
+        "event": "framework_convert_skipped"
+      },
+      {
+        "event": "framework_convert_failed"
+      },
+      {
+        "event": "framework_convert_unavailable"
+      },
+      {
+        "event": "verify_loop_start"
+      }
+    ],
+    "journal_sequence": [
+      {
+        "event": "framework_converted"
+      },
+      {
+        "event": "build_tool",
+        "ok": true
+      },
+      {
+        "event": "effective_pom",
+        "ok": true
+      },
+      {
+        "event": "plan"
+      },
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite"
+      },
+      {
+        "event": "restructure",
+        "mode": "boot_pom"
+      },
+      {
+        "event": "structure_review"
+      },
+      {
+        "event": "build",
+        "label": "verify"
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-fw-convert-basic",
+      "may_be_empty": true
+    },
+    "post_checks": [
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "shopApp-domain",
+            "shopApp-store",
+            "shopApp-service",
+            "shopApp-boot"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<artifactId>shopApp</artifactId>",
+          "not_contains": "example-fw"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shopApp-domain/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-domain/pom.xml",
+          "not_contains": "<groupId>org.springframework</groupId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-domain/pom.xml",
+          "not_contains": "<groupId>org.springframework</groupId>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shopApp-domain/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator",
+            "com.example.fw:example-fw-core"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shopApp-store/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-store/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-store/pom.xml",
+          "contains": "<groupId>com.example.shop</groupId>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shopApp-store/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator",
+            "com.example.fw:example-fw-core"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shopApp-service/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-service/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-service/pom.xml",
+          "contains": "<groupId>com.example.shop</groupId>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shopApp-service/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator",
+            "com.example.fw:example-fw-core"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shopApp-boot/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/pom.xml",
+          "contains": "<groupId>com.example.shop</groupId>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shopApp-boot/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator",
+            "com.example.fw:example-fw-core"
+          ]
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shopApp-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "shopApp-boot/pom.xml",
+          "artifacts": [
+            "com.example.shop:shopApp-service",
+            "com.example.shop:shopApp-store",
+            "com.example.shop:shopApp-domain",
+            "org.apache.tomcat.embed:tomcat-embed-jasper",
+            "com.h2database:h2"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/pom.xml",
+          "contains": "<artifactId>spring-boot-maven-plugin</artifactId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/pom.xml",
+          "contains": "<finalName>shopApp</finalName>"
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "shopApp-store/pom.xml",
+          "artifacts": [
+            "org.mybatis.spring.boot:mybatis-spring-boot-starter"
+          ]
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "shopApp-boot/pom.xml",
+          "artifacts": [
+            "org.mybatis.spring.boot:mybatis-spring-boot-starter"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-domain/pom.xml",
+          "not_contains": "<groupId>org.springframework</groupId>"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/java/com/example/shop/shopApp/ShopAppApplication.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/java/com/example/shop/shopApp/config/WebMvcConfig.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/resources/mybatis/mapper/order-mapper.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/resources/mybatis/mapper/item-mapper.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/resources/mybatis/mapper/notice-mapper.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-domain/src/main/java/com/example/shop/shopApp/domain/spec/OrderService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-domain/src/main/java/com/example/shop/shopApp/domain/logic/ItemLogic.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-store/src/main/java/com/example/shop/shopApp/store/OrderMybatisStore.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/logic/ItemSpringLogic.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/rest/OrderController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/rest/NoticeController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/rest/OrderDetailPageController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/webapp/WEB-INF/static/shopApp/shop/order-list.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/src/main/webapp/WEB-INF/static/shopApp/css/shop.css"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "src"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "WebContent"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shopApp-back"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shopApp-front"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "**/*.example_sql"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "**/*-service.xml"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "**/web.xml"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/src/main/resources/application.yml",
+          "contains": "jdbc:h2:mem:shop;MODE=Oracle"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/src/main/resources/application.yml",
+          "contains": "${SPRING_DATASOURCE_PASSWORD:}",
+          "not_contains": "example-only"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/src/main/webapp/WEB-INF/static/shopApp/js/order.js",
+          "contains": "\"/api/order/\" + tran",
+          "not_contains": "commonAjax.json"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/src/main/webapp/WEB-INF/static/shopApp/shop/order-list.jsp",
+          "contains": "/WEB-INF/static/shopApp/common/header.jsp",
+          "not_contains": "commonAjax.json"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/rest/OrderController.java",
+          "contains": "@RequestMapping(\"/api/order\")"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-service/src/main/java/com/example/shop/shopApp/rest/OrderDetailPageController.java",
+          "contains": "\"/SH1/SH1A10/orderDetail.mvc\""
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shopApp-boot/src/main/resources/mybatis/mapper/item-mapper.xml",
+          "contains": "#{name}"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shopApp-boot/target/shopApp.war"
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "shopApp-boot/target/shopApp.war",
+          "present": [
+            "WEB-INF/classes/com/example/shop/shopApp/ShopAppApplication\\.class",
+            "WEB-INF/classes/application\\.yml",
+            "WEB-INF/classes/mybatis/mapper/order-mapper\\.xml",
+            "WEB-INF/classes/mybatis/mapper/notice-mapper\\.xml",
+            "WEB-INF/static/shopApp/shop/order-list\\.jsp",
+            "WEB-INF/static/shopApp/shop/orderDetail\\.jsp",
+            "WEB-INF/static/shopApp/common/header\\.jsp",
+            "WEB-INF/static/shopApp/js/order\\.js",
+            "WEB-INF/lib/shopApp-domain-1\\.0\\.0\\.jar",
+            "WEB-INF/lib/shopApp-service-1\\.0\\.0\\.jar",
+            "WEB-INF/lib/shopApp-store-1\\.0\\.0\\.jar",
+            "WEB-INF/lib/mybatis-spring-boot-starter-.*\\.jar",
+            "WEB-INF/lib/tomcat-embed-jasper-.*\\.jar",
+            "WEB-INF/lib/h2-.*\\.jar"
+          ],
+          "absent": [
+            "WEB-INF/lib/example-fw-.*\\.jar",
+            "WEB-INF/lib/javax\\.servlet-api-.*\\.jar"
+          ]
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "shopApp-store/target/shopApp-store-1.0.0.jar",
+          "present": [
+            "com/example/shop/shopApp/store/OrderMybatisStore\\.class",
+            "com/example/shop/shopApp/store/ItemMybatisStore\\.class"
+          ],
+          "absent": [
+            ".*Controller\\.class"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -2,9 +2,9 @@
 ``report.language``가 ``ko``면 요청 담당자용 한국어 안내서(``guide_ko.py``)를 대신 반환한다.
 
 `write_report` in writer.py calls `render_markdown` at the report stage. Section order: head table (with the
-`SBMIG-RESULT` line) -> in-house framework -> Handover -> Error list -> Fixes by case -> Structure review ->
-Bundled jars -> vulnerability remediation -> Blocked -> javax API jars -> Manual follow-ups -> Flags -> What
-we changed -> LLM usage and cost -> Notes -> Outputs. The Handover comes early because the owning team reads
+`SBMIG-RESULT` line) -> framework conversion -> in-house framework -> Handover -> Error list -> Fixes by case ->
+Structure review -> Bundled jars -> vulnerability remediation -> Blocked -> javax API jars -> Manual follow-ups ->
+Flags -> What we changed -> LLM usage and cost -> Notes -> Outputs. The Handover comes early because the owning team reads
 only that section.
 
 Every sentence goes through `tr` / `tr_line`: the English source text is the key of the table in i18n.py, so
@@ -157,6 +157,8 @@ FLAG_HELP = {
     # 사내 프레임워크 아티팩트를 찾은 실행. 범위(JDK와 jakarta만 또는 전체 이관)는 보고서 맨 위 절에 있다
     "framework-project": "the project uses an in-house framework artifact (framework.artifacts) — see the framework "
                          "block at the top of the report for where it was found and what this run did",
+    "framework-converted": "the in-house framework project was converted at intake into a generated Spring Boot "
+                           "project — see \"Framework conversion\" at the top of the report",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -374,6 +376,9 @@ def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
     use = getattr(getattr(r, "profile", None), "framework", None)
     if use is None or not list(getattr(use, "evidence", None) or []):
         return []
+    # 사내 규정으로 전환한 실행은 전환 절이 프레임워크 이야기를 한다
+    if getattr(getattr(r, "conversion", None), "converted", False):
+        return []
     reduced = run_scope(r) is not None
     name = str(getattr(use, "name", "") or "").strip()
     # tr의 원문은 리터럴로 쓴다. tests/report/test_report_i18n.py가 번역 표와 대조하기 때문이다
@@ -422,6 +427,164 @@ def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
     if unchecked:
         L += ["", tr(lang, "Not checked: {where}", where=_cell("; ".join(unchecked), 600))]
     L.append("")
+    return L
+
+
+CONVERSION_TITLE = "Framework conversion"
+CONVERSION_GROUP_MAX = 20                     # 이유 꼬리표마다 보여 줄 최대 확인 항목 수
+CONVERSION_LIST_MAX = 20                      # 노출하지 않은 주소, 읽지 않은 파일, 남은 오류의 최대 줄 수
+CONVERSION_NO_ADDRESS_MAX = 30                # 주소가 없는 서비스 메서드의 최대 줄 수
+NO_ADDRESS_PREFIX = "no address: "            # 주소를 받지 못한 서비스 메서드 줄의 머리(resources.unexposed_endpoints)
+_CONVERSION_TAG_RE = re.compile(r"^(\[[^\]\s]+\]|risk_score>=\S+|[A-Z][A-Z_]+\b)")
+_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]<>|#~!])")
+_MD_BLOCK_START_RE = re.compile(r"^[-+=>]")
+_MD_ORDERED_RE = re.compile(r"^(\d+)([.)])")
+# 전환 뒤 단계: (키, 영어 이름). 계획 단계 id의 앞부분으로 무엇을 실행했는지 판단한다
+CONVERSION_STAGES = (("rewrite", "OpenRewrite"), ("restructure", "company restructure (parent pom, mandatory artifacts)"),
+                     ("review", "structure review"), ("build", "build and fix loop"))
+
+
+def md_span(text: object, limit: int = 300) -> str:
+    """프로젝트에서 온 값을 깨지지 않는 코드 구간으로 만든다. 백틱은 지우고 줄바꿈과 공백은 한 칸으로 줄인다."""
+    s = " ".join(str(text if text is not None else "").replace("`", "").split())
+    if len(s) > limit:
+        s = s[: limit - 1] + "…"
+    return f"`{s}`" if s else "`-`"
+
+
+def md_text(text: object, limit: int = 400) -> str:
+    """프로젝트에서 온 문장을 본문에 그대로 보이게 만든다. Markdown과 HTML 기호를 이스케이프하고 한 줄로 줄인다.
+    줄 첫머리에서 목록, 인용, 제목이 되는 글자도 이스케이프한다."""
+    s = " ".join(str(text if text is not None else "").split())
+    if len(s) > limit:
+        s = s[: limit - 1] + "…"
+    s = _MD_SPECIAL_RE.sub(r"\\\1", s)
+    s = _MD_ORDERED_RE.sub(r"\1\\\2", s, count=1)          # 1. 이나 1) 로 시작하면 번호 목록이 된다
+    return ("\\" + s) if _MD_BLOCK_START_RE.match(s) else (s or "-")
+
+
+def _aborted_run(r: RunReport) -> bool:
+    flags = list(r.flags or [])
+    return "aborted" in flags or any(f.startswith("aborted:") for f in flags) \
+        or any(str(m).startswith(ABORT_PREFIX) for m in r.manual_followups or [])
+
+
+def conversion_stages(r: RunReport) -> tuple[list[str], bool]:
+    """전환 뒤에 실행한 단계의 키 목록과, 실행이 최종 빌드까지 갔는지를 반환한다.
+    최종 빌드 결과가 있고 중단되지 않았으면 끝까지 간 것이다. 그렇지 않으면 실행한 계획 단계로 판단한다.
+
+    Stage of a step id (an MSA `@svc` suffix ignored): `transform.rewrite` -> rewrite, `restructure.review` ->
+    review, other `restructure.*` -> restructure, `verify.*` -> build; a final build result counts as build."""
+    ran: set[str] = set()
+    for pr in r.phases or []:
+        for sid in pr.step_ids or []:
+            base = str(sid).split("@", 1)[0]
+            if base == "transform.rewrite":
+                ran.add("rewrite")
+            elif base == "restructure.review":
+                ran.add("review")
+            elif base.startswith("restructure."):
+                ran.add("restructure")
+            elif base.startswith("verify."):
+                ran.add("build")
+    if r.final_build is not None:
+        ran.add("build")
+    complete = r.final_build is not None and not _aborted_run(r)
+    return [k for k, _ in CONVERSION_STAGES if k in ran], complete
+
+
+def _conversion_tag(reason: str) -> str:
+    m = _CONVERSION_TAG_RE.match(str(reason or "").strip())
+    return m.group(1) if m else "(other)"
+
+
+def _capped(rows: list[str], limit: int, render: Any = md_text) -> list[str]:
+    out = [f"- {render(x)}" for x in rows[:limit]]
+    if len(rows) > limit:
+        out.append(f"- (+{len(rows) - limit} more)")
+    return out
+
+
+def _then_line(r: RunReport) -> str:
+    ran, complete = conversion_stages(r)
+    names = dict(CONVERSION_STAGES)
+    if complete:
+        done = ", ".join(names[k] for k in ran)
+        if r.final_build is not None and not r.final_build.ok:
+            # 최종 빌드가 실패했다. 한 단계만 쓰고 결과는 머리 표에 맡긴다
+            return f"- Then: {done} ran (the outcome is in Result at the top)"
+        return f"- Then: {done}, as for any multi-module Spring Boot project"
+    if not ran:
+        return "- Then: the run ended before any later stage ran (see Result at the top)"
+    left = [names[k] for k, _ in CONVERSION_STAGES if k not in ran]
+    tail = f"; the run ended before {', '.join(left)}" if left else "; the run ended early"
+    return f"- Then: {', '.join(names[k] for k in ran)} ran{tail} (see Result at the top)"
+
+
+def framework_conversion_lines(r: RunReport) -> list[str]:
+    """사내 규정으로 전환한 실행의 영어 절을 만든다. 전환하지 않은 실행이면 빈 목록을 반환한다.
+    머리 표 바로 아래에 둔다. 한국어 안내서의 전환 절과 같은 사실을 짧게 쓴다.
+
+    English only (no `tr`): the Korean guide renders its own block (`guide_ko.framework_conversion_lines`). Data:
+    `RunReport.conversion` (`sbmig/loop/convert.py conversion_info`). Hand-over items are grouped by the reason's
+    leading tag, at most CONVERSION_GROUP_MAX each; the full list with excerpts is `convert/queue.json`. Every value
+    from the project goes through `md_span` (identifiers, paths, endpoint lines) or `md_text` (sentences), so no
+    project text can end a code span or start a block."""
+    c = getattr(r, "conversion", None)
+    if c is None or not c.converted:
+        return []
+    fw = f"the {md_text(c.framework, 80)} framework" if c.framework else "the in-house framework"
+    L = [f"## {CONVERSION_TITLE}", ""]
+    L.append(f"The project on {fw} was converted at intake into a generated Spring Boot project; the rest of this "
+             "report is about the generated project. Services, stores and controllers were generated from the service "
+             "XML and the SQL files; the project's own Java classes (utilities, entities) were not carried over; the "
+             "screen files were copied with their ajax addresses and JSP paths rewritten.")
+    L.append("")
+    if c.project:
+        L.append(f"- Project: {md_span(c.project, 200)}" + (f", package {md_span(c.package, 200)}" if c.package else ""))
+    if c.modules:
+        L.append(f"- Modules: {', '.join(md_span(m, 200) for m in c.modules)}")
+    if c.commit:
+        L.append(f"- Commit: {md_span(c.commit[:12])} (base of the code changes)")
+    if c.counts:
+        L.append("- Counts: " + ", ".join(f"{md_text(k, 40)} {int(v)}" for k, v in c.counts.items()))
+    ds = str(c.datasource or "")
+    if ds.startswith("configured:"):
+        L.append(f"- Datasource: {md_text(ds.split(':', 1)[1] or 'unknown vendor', 40)}; the password is not carried "
+                 "over (`application.yml` reads `${SPRING_DATASOURCE_PASSWORD:}`)")
+    elif ds:
+        L.append(f"- Datasource: not configured ({md_text(ds, 40)}); `application.yml` has no `spring.datasource` "
+                 "keys and the application does not start without them")
+    L.append(_then_line(r))
+    L.append("")
+    queue = [q for q in (c.queue or []) if isinstance(q, dict)]
+    total = max(int(c.queue_total or 0), len(queue))
+    if queue:
+        shown = "" if total == len(queue) else f", {len(queue)} in this report"
+        L += [f"### Conversion hand-over items ({total}{shown})", "",
+              "Full list with source excerpts: `convert/queue.json` in the run directory.", ""]
+        groups: dict[str, list[dict]] = {}
+        for q in queue:
+            groups.setdefault(_conversion_tag(q.get("reason", "")), []).append(q)
+        for tag in sorted(groups, key=lambda t: (t == "(other)", t)):
+            items = groups[tag]
+            L.append(f"- {md_span(tag, 80)} ({len(items)})")
+            for q in items[:CONVERSION_GROUP_MAX]:
+                src = str(q.get("source_path", "") or "")
+                L.append(f"  - {md_span(q.get('component', ''), 200)}" + (f" ({md_span(src)})" if src.strip() else "")
+                         + f": {md_text(q.get('reason', ''), 300)}")
+            if len(items) > CONVERSION_GROUP_MAX:
+                L.append(f"  - (+{len(items) - CONVERSION_GROUP_MAX} more)")
+        L.append("")
+    unexposed = [u for u in (c.unexposed or []) if not str(u).strip().startswith(NO_ADDRESS_PREFIX)]
+    no_address = [u for u in (c.unexposed or []) if str(u).strip().startswith(NO_ADDRESS_PREFIX)]
+    for title, rows, limit, render in (
+            ("Endpoints not exposed (no screen calls them)", unexposed, CONVERSION_LIST_MAX, md_span),
+            ("Service methods without an address", no_address, CONVERSION_NO_ADDRESS_MAX, md_span),
+            ("Files not read", list(c.skipped or []), CONVERSION_LIST_MAX, md_text),
+            ("Conversion errors", list(c.errors or []), CONVERSION_LIST_MAX, md_text)):
+        if rows:
+            L += [f"### {title} ({len(rows)})", ""] + _capped(rows, limit, render) + [""]
     return L
 
 
@@ -1530,7 +1693,12 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| **Error list** | {n} error(s): {counts} (see \"Error list\") |", n=len(entries),
                     counts=counts_text(status_counts(entries))))
     L.append(tr(lang, "| Case | `{case}` |", case=r.case_type.value))
-    if r.profile is not None:
+    if r.profile is not None and getattr(getattr(r, "conversion", None), "converted", False):
+        # 전환한 실행의 분석 결과는 생성한 프로젝트의 것이다. 올린 트리의 분석은 없다
+        p = r.profile
+        L.append(f"| Generated project | java {p.java_version or '?'}, spring boot {p.spring_boot_version or '-'}, "
+                 f"spring {p.spring_version or '-'}, {len(p.poms)} pom(s) (analysed after the conversion) |")
+    elif r.profile is not None:
         p = r.profile
         L.append(tr(lang, "| As-is | java {java}, spring boot {boot}, spring {spring}, {poms} pom(s) |",
                     java=p.java_version or '?', boot=p.spring_boot_version or '-', spring=p.spring_version or '-',
@@ -1561,7 +1729,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| Structure review | {summary} |", summary=_cell(review_summary(r.structure_review, lang),
                                                                           300)))
     L.append("")
-    # 사내 프레임워크 절은 머리 표 바로 뒤에 둔다. 무엇을 하고 무엇을 하지 않았는지 알아야 결과를 읽을 수 있다
+    # 사내 규정 전환 절과 사내 프레임워크 절은 머리 표 바로 뒤에 둔다. 무엇을 했는지 알아야 결과를 읽을 수 있다
+    L += framework_conversion_lines(r)
     L += framework_lines(r, lang)
 
     # ---- 인수인계. 담당 팀은 보고서에서 이 섹션만 읽는다. 그래서 앞에 둔다

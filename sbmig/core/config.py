@@ -887,6 +887,9 @@ class FrameworkConfig(BaseModel):
     # false면 변환 뒤 빌드를 한 번만 하고 남은 오류를 알린다. 사전 시도, 저장된 스크립트, LLM은 실행하지 않는다
     # true면 다른 프로젝트처럼 빌드 오류를 고친다(부모 pom과 프레임워크 버전은 건드리지 않는다)
     fix_loop: bool = False
+    # 올릴 때 처리 방법을 고르지 않은 실행에 쓰는 방법. reduced는 JDK와 jakarta만 올린다
+    # convert는 사내 규정의 Spring Boot 프로젝트로 전환한다(convert 절의 값이 있어야 한다)
+    mode: Literal["reduced", "convert"] = "reduced"
 
     @field_validator("recipe_sets")
     @classmethod
@@ -1075,6 +1078,63 @@ class RemediationConfig(BaseModel):
     policy: RemediationPolicyConfig = Field(default_factory=RemediationPolicyConfig)
 
 
+def _default_convert_versions() -> dict[str, str]:
+    return {"org.mybatis.spring.boot:mybatis-spring-boot-starter": ""}
+
+
+def _default_jdbc_drivers() -> dict[str, str]:
+    return {
+        "oracle": "com.oracle.database.jdbc:ojdbc11",
+        "mysql": "com.mysql:mysql-connector-j",
+        "mariadb": "org.mariadb.jdbc:mariadb-java-client",
+        "postgresql": "org.postgresql:postgresql",
+        "sqlserver": "com.microsoft.sqlserver:mssql-jdbc",
+        "h2": "com.h2database:h2",
+    }
+
+
+class ConvertConfig(BaseModel):
+    """사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환할 때 쓰는 값을 담는 설정 클래스.
+    패키지와 프로젝트 이름은 올라온 프로젝트의 루트 pom(groupId, artifactId)에서 가져온다."""
+    enabled: bool = True
+    # 루트 pom이 없거나 groupId를 읽지 못한 프로젝트에만 쓰는 패키지 앞부분. 그런 프로젝트를 받지 않으면 비워 둔다
+    package_root: str = ""
+    # 쓸 수 있는 도메인 코드와, 목록에 없을 때 쓰는 코드. 비우면 패키지에 도메인을 넣지 않는다
+    domains: list[str] = Field(default_factory=list)
+    default_domain: str = ""
+    # 프로젝트 이름에서 떼어 낼 접두사를 더한다(기본 목록은 규칙 파일에 있다)
+    name_prefixes: list[str] = Field(default_factory=list)
+    # 생성하는 pom의 groupId와 version. groupId를 비우면 package_root에 도메인을 붙인 값이다
+    group_id: str = ""
+    version: str = "1.0.0"
+    # 부모 pom이 버전을 관리하지 않아서 pom에 버전을 써야 하는 의존성. 값을 비우면 저장소의 최신 릴리스를 찾는다
+    versions: dict[str, str] = Field(default_factory=_default_convert_versions)
+    # 벤더별 JDBC 드라이버 좌표("g:a" 또는 "g:a:v"). 없는 벤더는 의존성을 넣지 않고 확인 항목으로 남긴다
+    jdbc_drivers: dict[str, str] = Field(default_factory=_default_jdbc_drivers)
+    # 규칙 파일(knowledge/fwconvert/rules.yml)에 덧씌울 값. 회사 activity 클래스, 외부 호출 낱말 등을 여기에 둔다
+    rules: dict[str, Any] = Field(default_factory=dict)
+
+    def available(self) -> bool:
+        """전환을 쓸 수 있으면 True를 반환한다. ``enabled``만 본다."""
+        return bool(self.enabled)
+
+    def overlay(self) -> dict[str, Any]:
+        """규칙 파일에 덧씌울 값을 반환한다. ``rules``에 이름 관련 값을 더한 것이다."""
+        naming: dict[str, Any] = {}
+        if self.package_root.strip():
+            naming["package_root"] = self.package_root.strip()
+        if self.domains:
+            naming["domains"] = list(self.domains)
+        if self.default_domain.strip():
+            naming["default_domain"] = self.default_domain.strip()
+        if self.name_prefixes:
+            naming["name_prefixes"] = list(self.name_prefixes)
+        out = dict(self.rules or {})
+        if naming:
+            out["naming"] = {**(out.get("naming") or {}), **naming}
+        return out
+
+
 class Config(BaseModel):
     """전체 설정을 담는 클래스. load_config가 default.yml, --config yml, SBMIG_* 환경 변수, overrides를 차례로 합친 결과다.
     회사 고유 값은 yml에 있다."""
@@ -1083,6 +1143,7 @@ class Config(BaseModel):
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     intake: IntakeConfig = Field(default_factory=IntakeConfig)
     framework: FrameworkConfig = Field(default_factory=FrameworkConfig)   # 사내 프레임워크 프로젝트 판별
+    convert: ConvertConfig = Field(default_factory=ConvertConfig)         # 프레임워크 프로젝트의 전환에 쓰는 값
     openrewrite: OpenRewriteConfig = Field(default_factory=OpenRewriteConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)

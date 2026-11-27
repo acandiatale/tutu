@@ -149,6 +149,22 @@ class MapperIndex:
                 return m
         return None
 
+    def candidates(self, sql_key: str) -> list[tuple[MapperFile, Statement]]:
+        """키에 맞는 SQL 문을 모두 반환한다. ``find``가 None을 반환했을 때 둘 이상이 맞았는지 알아보는 데 쓴다.
+        찾는 순서는 ``find``와 같고, 처음으로 하나라도 맞은 단계의 결과만 반환한다."""
+        key = str(sql_key or "").strip()
+        if not key:
+            return []
+        prefix, _, ident = key.rpartition(".")
+        hits = [(m, s) for m in self.mappers for s in m.statements if "." in key and s.original_id == key]
+        if not hits and prefix:
+            low = prefix.lower()
+            hits = [(m, s) for m in self.mappers if low in {k.lower() for k in m.keys}
+                    for s in m.statements if s.id == ident]
+        if not hits:
+            hits = [(m, s) for m in self.mappers for s in m.statements if s.id == ident]
+        return hits
+
     def find(self, sql_key: str) -> Optional[tuple[MapperFile, Statement]]:
         """``a.b`` 꼴의 키로 SQL 문을 찾는다. 찾지 못했거나 둘 이상이 맞으면 None이다.
         원본 id가 키와 같은 문을 먼저 찾는다.
@@ -294,3 +310,49 @@ class GeneratedFile:
     """생성한 텍스트 파일 하나. 경로는 출력 루트 기준이다."""
     path: str
     text: str
+
+
+# ---- 전환 실행(파이프라인) -------------------------------------------------------
+
+
+@dataclass
+class ConvertOptions:
+    """전환 한 번에 필요한 값. 설정과 실행 정보에서 호출자가 채운다."""
+    source_name: str                # 프로젝트 이름을 만들 이름(입력한 프로젝트 이름이나 올린 파일 이름)
+    domain: str = ""                # 도메인 코드. 비어 있으면 이름의 접두사와 규칙의 기본값으로 정한다
+    override: str = ""              # 프로젝트 이름을 그대로 지정할 때만 쓴다
+    java_version: str = "21"        # 목표 Java 버전
+    boot_version: str = ""          # 목표 Spring Boot 버전. 생성하는 루트 pom의 부모 버전이다
+    group_id: str = ""              # 생성하는 pom의 groupId. 비어 있으면 패키지에서 만든다
+    version: str = "1.0.0"          # 생성하는 pom의 version
+    # pom에 버전을 써야 하는 의존성과 그 버전("g:a": "버전"). 버전은 호출자가 채운다. 빈 값은 허용하지 않는다
+    versions: dict[str, str] = field(default_factory=dict)
+    # 벤더 이름과 JDBC 드라이버 좌표("g:a" 또는 "g:a:v")
+    jdbc_drivers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class DatasourceInfo:
+    """원본 설정에서 읽은 DB 연결 정보. 비밀번호 값은 담지 않는다."""
+    configured: bool = False
+    vendor: str = ""                # oracle, mysql, mariadb, postgresql, sqlserver, tibero, h2
+    url: str = ""
+    driver_class: str = ""
+    username: str = ""
+    has_password: bool = False      # 원본에 비밀번호가 있었는지. 값은 어디에도 옮기지 않는다
+    # 찾지 못한 이유: not_found, jndi, unknown_vendor, unresolved(주소에 풀리지 않은 ${…}가 남음). 찾았으면 빈 문자열
+    reason: str = ""
+    source: str = ""                # 읽은 파일. 원본 루트 기준
+
+
+@dataclass
+class ConvertResult:
+    """전환 한 번의 결과. 생성한 파일은 출력 폴더에 있고 여기에는 요약만 둔다."""
+    converted: bool = False         # 전환할 파일(서비스 XML, SQL 파일)이 하나도 없으면 False다. 출력 폴더는 비어 있다
+    identity: Optional[ProjectIdentity] = None
+    counts: dict[str, int] = field(default_factory=dict)
+    datasource: Optional[DatasourceInfo] = None
+    queue: list[QueueItem] = field(default_factory=list)
+    unexposed: list[str] = field(default_factory=list)      # 노출하지 않은 REST 주소
+    skipped: list[str] = field(default_factory=list)        # 읽지 않은 파일과 이유
+    errors: list[str] = field(default_factory=list)

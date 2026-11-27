@@ -11,7 +11,8 @@ temporary index, limited to the paths the last commit has: a file neither commit
 the final build, e.g. a shade plugin's `dependency-reduced-pom.xml`, `node/`, `node_modules/`, a jar copied beside
 the sources, never a change of the migration, which commits every stage; uncommitted changes to committed files
 stay, journal `code_diff.untracked_left_out` counts what was left out) is compared AT ITS FINAL PATH with its
-origin, the as-is file (first commit) it came from:
+origin, the as-is file (first commit; `Workspace.base_commit`, which is the conversion commit of a run converted
+from the in-house framework) it came from:
 1. the as-is file at the same path;
 2. same name + identical bytes, its own path gone from the final tree (longest shared trailing path, then the
    smallest path);
@@ -368,7 +369,9 @@ def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optio
 
 def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: float) -> Optional[dict[str, Any]]:
     context = int(getattr(cfg.report, "code_diff_context", 10))
-    base_commit = ws.first_commit()
+    # 사내 규정으로 전환한 실행은 전환 커밋과 비교한다. 생성한 파일 전체가 추가로 보이지 않게 한다
+    base = getattr(ws, "base_commit", None)
+    base_commit = base() if callable(base) else ws.first_commit()
     snapshot = ws.snapshot_tree()
     asis = _keep(ws, ws.tree_entries(base_commit))
     # 마지막 커밋에 없는 파일은 마지막 빌드가 남긴 것(dependency-reduced-pom.xml, node_modules/ 등)이라 넣지 않는다.

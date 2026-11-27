@@ -33,8 +33,9 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | [12-remediation-report.md](12-remediation-report.md) | 조치 보고서의 절과 절마다 할 일, 사내 라이브러리 안내(담당자 몫으로 빠지는 항목), 제안의 적용 범위, 용어표, 영어 문장을 한국어로 보여 주는 규칙 | 조치 보고서를 읽거나 바꿀 때 |
 | [13-framework-projects.md](13-framework-projects.md) | 사내 프레임워크 아티팩트를 쓰는 프로젝트: 찾는 곳과 순서, JDK 21과 jakarta 변환 뒤 빌드 1회만 하고 오류는 고치지 않는 실행(범위 `jdk-jakarta`), 켜는 법, 프레임워크 이름, 결과 줄·보고서·화면, 진단할 줄, 수정 루프를 켰을 때와 조치에서 달라지는 것 | 프레임워크 프로젝트를 볼 때 |
 | [14-boot-single-module-split.md](14-boot-single-module-split.md) | 모듈이 하나인 Spring Boot 앱을 boot / back / front 로 나누는 규칙: 적용 조건, 모듈마다 가는 것, 테스트, 인수인계 세 줄, 알려진 한계, `wrap` | Boot 프로젝트의 결과 구조를 볼 때 |
+| [15-framework-conversion.md](15-framework-conversion.md) | 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 새로 만드는 처리 방법 `convert`: 누가 고르는지(화면, `--framework-mode`, `framework.mode`), 접수에서 하는 일, 이름의 출처(루트 pom), `convert` 설정 키, 커밋·플래그·저널·`convert/queue.json`·보고서 절, 멈추는 경우와 할 일, 옮기지 않는 것, 증상표, 고칠 자리 | 전환한 실행을 볼 때 |
 
-새 주제는 다음 번호(14, 15 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
+새 주제는 다음 번호(16, 17 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
 
 ## 일 종류별로 넣을 파일
 
@@ -50,6 +51,7 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | 취약점 조치 작업 진단·규칙 변경 | 00, 11 (+ 실행 폴더의 `state.json`, `journal.jsonl`, 검사 파일 발췌), 배포는 + 09 |
 | 조치 보고서 읽기, 사내 라이브러리 안내·보고서 문장 변경 | 00, 11, 12 (+ 실행 폴더의 `remediation/report.md`) |
 | 사내 프레임워크 프로젝트의 실행 진단·규칙 변경 | 00, 13, 03 (+ 저널의 `framework_project` / `framework_check` 줄), 조치 쪽은 + 12 |
+| 사내 규정으로 전환한 실행의 진단·전환 규칙 변경 | 00, 15, 13, 03 (+ 실행 폴더의 `convert/queue.json`, 저널의 `framework_converted` 줄), 규칙은 + `docs/FW-CONVERT.md` |
 
 Haiku 급 모델은 한 번에 세 파일 안팎이 안전하고, Sonnet / GPT 급은 묶음 전체를 넣어도 된다.
 

@@ -25,7 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses); v2.1z-ch (the admin page's log ZIP of one run carries `logs/`, the reports, the error list and the state files); v2.1z-ck (`conversion_complete` in the run status, the page's 완료, the admin result word `converted`) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key); v2.1z-cg (the image's JDK: Amazon Corretto 21 at a pinned version, checksum checked) |
-| framework conversion (not wired into a run yet) | v2.1z-cl (the converters of `sbmig/fwconvert/`; rules, records and module table in `docs/FW-CONVERT.md`) |
+| framework conversion | v2.1z-cl (the converters of `sbmig/fwconvert/`; rules, records and module table in `docs/FW-CONVERT.md`); v2.1z-cm (mode `convert`: the per-upload value `framework_mode`, the intake step, the config section `convert`, the report section, the page's choice) |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for); v2.1z-cf (a refusal that lasts names the programs that have the file open; a test that fails when this process holds a path it renames) |
 
 ## Base contracts (in force; written before v2)
@@ -8749,3 +8749,86 @@ projects is unchanged.
 the guide is written into a generated pom: the target line, the parent chain and the repository decide. Generators
 return records and write nothing (the front-end copy and the ajax rewrite work on files). Project files are
 untrusted input: a bad file is an error entry or a hand-over item, never an exception.
+
+## v2.1z-cm — a framework project is converted during intake and then migrated like any Spring Boot project
+
+**Decided by the user.** A project on the in-house framework is handled in one of two ways, chosen by the requester
+on the upload page: `reduced` (v2.1z-ak / v2.1z-aw, unchanged: the framework stays, JDK 21 and jakarta only) or
+`convert` (the user's 「사내 규정」): the project becomes the generated Spring Boot project of `docs/FW-CONVERT.md`,
+is structured by the company rule sbmig already applies to a multi-module Spring Boot project (root pom → company
+parent and mandatory artifacts, the boot module → the boot role parent, the other modules → the comp role parent)
+and goes on into the build and the fix loop. The names come from the uploaded project's own root pom; a company
+lists no class names (a project's own activity classes are judged from the project).
+
+**The run value.** `framework_mode` ∈ `FRAMEWORK_MODES` (`sbmig/core/models.py`: `reduced`, `convert`), a twin of
+`flow`: `POST /api/runs?framework_mode=` (checked before the body is read; unknown value or `convert` on a server
+that cannot convert → HTTP 400 with `message_ko`; ignored in flow `remediation`), `Run`, `RequestRecord`
+(`control/request.json`; absent in an old record = not chosen), Job env `SBMIG_FRAMEWORK_MODE` (set by Main per
+Job, in `contract.RUN_ENV`, compared by the Worker with `request.json`; not in the 81 template), the Worker's
+`sbmig run --framework-mode`, CLI `--framework-mode`, `sbmig.api.migrate(framework_mode=)`,
+`Orchestrator.run(framework_mode=)` / `stream_graph(framework_mode=)`. Not chosen = the server default
+`framework.mode` (`reduced`). `RunReport.framework_mode`, journal `framework_mode`. `GET /api/configs` →
+`framework.convert_available` (`convert.enabled` and a framework name) and `framework.mode`;
+`GET /api/runs/{id}` → `framework_mode` and, for a converted run, `conversion`
+(`project`, `package`, `modules`, `counts`, `queue_total`, `datasource`, `framework`).
+
+**Config.** `framework.mode`; section `convert` (`ConvertConfig`): `enabled`, `package_root` / `domains` /
+`default_domain` / `name_prefixes` (only for a project without a readable root pom), `group_id`, `version`,
+`versions` (dependencies the Boot parent does not manage; an empty value = the newest release of the repository
+set), `jdbc_drivers` (vendor → `g:a[:v]`), `rules` (the overlay of `knowledge/fwconvert/rules.yml`).
+
+**The intake step** (`Orchestrator._intake_convert`, `sbmig/loop/convert.py`; flow `full` and mode `convert` only):
+after the as-is snapshot commit and the preflight, before the build-tool check, so a framework project without a
+pom is accepted in this mode.
+1. The mode: `convert` when chosen, or when it is the server default and conversion is available; a default of
+   `convert` on a server that cannot convert behaves as `reduced`. An explicit `convert` while conversion is
+   switched off or the framework has no name is refused.
+2. `load_rules(framework name, cfg.convert.overlay())`, then **`pipeline.convertible_summary(ws.root, rules)`**
+   decides by content whether there is anything to convert (a framework SQL file whose root is the query-map
+   element with a query; a service file with an unprefixed `service` and an `activity` that has a `class`), BEFORE
+   any other check. Nothing: the tree stays, journal `framework_convert_skipped` (`reason`, `candidates`), one
+   hand-over line (no framework file / N files look like framework files by name but none could be read), the run
+   goes on whatever the configuration lacks. A project that is not on the framework is never stopped or changed.
+3. Names: the as-is root pom's groupId (own or inherited) and artifactId → package root, project name
+   (`naming.camel(artifactId)`), pom groupId. Without usable ones: `convert.package_root` and the run's project name.
+   Empty `convert.versions` values are resolved through the repository lookup of the fix loop's version pre-try.
+4. `convert_project(ws.root, <run dir>/convert/out, rules, options)`. It reports `converted = false` (and writes
+   nothing) when no service of the activity dialect was parsed and no statement was converted: handled like step 2.
+5. Converted: the tree swap. Nothing is deleted before the commit exists: every top-level entry of the working tree
+   (ignored files included; not `.git`, not sbmig's own folder) is renamed into `<run dir>/convert/asis/`, the
+   generated files are moved in, commit **`convert: generated Spring Boot project`** (the second commit), then the
+   folder is removed. A marker `<run dir>/convert/swap.json` (`state: moving`, the entries) exists while the swap
+   runs. On any failure, an interrupt included, the generated entries are removed and everything is moved back; the
+   abort reason says "put back as uploaded" only after the folder was seen empty, otherwise it names the folder and
+   what is in it (marker `state: incomplete`). After a successful swap: flag `framework-converted`
+   (not an attention code), journal `framework_converted` (flat: `framework`, `project`, `package`, `modules`,
+   `counts`, `queue` and `errors` as numbers, `datasource`, `commit`, `removed`), `report.conversion`
+   (`ConversionInfo`; queue items with `component`, `reason`, `source_path` only, capped at 200 with `queue_total`),
+   `<run dir>/convert/queue.json` (every item, with `excerpt` and `last_error` scrubbed by `convert.scrub_excerpt`:
+   the two existing scrub layers plus a blunt mask of lines that name a secret; the only place a source excerpt is
+   written) and `convert/summary.json`. A hand-over `reason` never holds text copied from a project file. A duplicate request mapping in the result is the first
+   hand-over line. The code-change view and `changes.patch` take the conversion commit as their base
+   (`Workspace.base_commit()`).
+6. Refusals, exit 3, reason in English and Korean: `aborted:convert-unavailable` (an explicit `convert` while
+   conversion is switched off or there is no framework name; for a project that HAS framework files: no usable
+   root pom names and no `convert.package_root`, a version that cannot be found; unreadable rules);
+   `aborted:convert-failed` (the converter raised, no pom was written, an unsafe path, no root pom in the result);
+   the tree is put back to the as-is commit.
+After the step the one analysis sees a multi-module Spring Boot project: plan `transform.rewrite` (jdk21 +
+spring_boot_4), `restructure.boot_pom`, `restructure.review`, `verify.build` with the fix loop; scope full; no
+`framework-project` flag; the chained remediation as for any run. A dry run checks availability and names, writes
+nothing and journals `framework_convert_skipped` with reason `dry_run`.
+
+**Reports and page.** Both renderers have the section (Korean guide: 「<이름> 프레임워크 프로젝트를 사내 규정으로
+전환했습니다」 directly under the head table: what was made, the counts, the datasource line, 「직접 확인해 주세요」
+grouped by reason, 「노출하지 않은 주소」, 「주소가 없는 서비스 기능」, 「읽지 않은 파일」, 「전환 중 남은 오류」; English:
+`## Framework conversion`). The upload card shows the choice 「<이름> 프레임워크 프로젝트 처리 방법」 (「JDK 21,
+Jakarta만 적용」 / 「사내 규정으로 전환」) when `framework.configured` and `convert_available`; the cards of a converted
+run carry the conversion sentence and do not mark 재구성 / 구조 검토 as 하지 않음. Operators:
+`agent-doc/15-framework-conversion.md`.
+
+**Verified.** Fixture `fixtures/projects/fw-convert-basic` (real Maven, role parents): exit 0, BUILD SUCCESS, the
+boot module's WAR built; `tests/fwconvert/test_pipeline_maven.py`; `tests/loop/test_intake_convert_real.py` (the
+real converter through the orchestrator, no Maven). **Not verified:** a real framework project, the company
+cluster and Job mode with this value, Windows.
+

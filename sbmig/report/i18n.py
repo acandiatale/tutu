@@ -532,6 +532,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "the report for where it was found and what this run did":
         "사내 프레임워크 아티팩트(framework.artifacts)를 쓰는 프로젝트입니다. 어디에서 찾았는지와 이번 실행에서 한 일은 "
         "보고서 맨 위의 프레임워크 프로젝트 안내에 있습니다.",
+    "the in-house framework project was converted at intake into a generated Spring Boot project — see "
+    "\"Framework conversion\" at the top of the report":
+        "사내 프레임워크 프로젝트를 접수 단계에서 사내 규정의 Spring Boot 프로젝트로 새로 만들었습니다. 자세한 내용은 보고서 "
+        "맨 위의 전환 안내에 있습니다.",
     " — renamed by sbmig in JSP / tag files (page imports, useBean, scriptlets); OpenRewrite does not parse JSPs":
         " — sbmig가 JSP / 태그 파일(page import, useBean, 스크립틀릿)의 이름을 바꿨습니다. OpenRewrite는 JSP를 읽지 "
         "않습니다.",
@@ -783,6 +787,33 @@ def _pom_charset_item_ko(item: str) -> str:
     return f"{m.group('pom')}({_pom_charset_ko(inner)})" if inner else item
 
 
+_DUP_CLAIMED = re.compile(r"^(?P<addr>.+?): claimed by (?P<who>.+)$")
+_DUP_CASE = re.compile(r"^(?P<addrs>.+?) differ only in case: (?P<who>.+)$")
+_DUP_MORE = re.compile(r"^\(\+(?P<n>\d+) more\)$")
+
+
+def _duplicates_ko(tail: str) -> str:
+    """주소 중복 목록(``duplicate_followup``의 뒷부분)을 한국어 목록 문장으로 바꾼다. 모르는 모양은 그대로 둔다."""
+    out: list[str] = []
+    for part in [p.strip() for p in str(tail).split("; ") if p.strip()]:
+        m = _DUP_MORE.match(part)
+        if m:
+            out.append(f"외 {m.group('n')}건")
+            continue
+        m = _DUP_CLAIMED.match(part)
+        if m:
+            who = ", ".join(f"`{w.strip()}`" for w in m.group("who").split(" and "))
+            out.append(f"`{m.group('addr')}`({who})")
+            continue
+        m = _DUP_CASE.match(part)
+        if m:
+            addrs = ", ".join(f"`{a.strip()}`" for a in m.group("addrs").split(" and "))
+            out.append(f"대소문자만 다른 {addrs}({m.group('who')})")
+            continue
+        out.append(part)
+    return "겹치는 주소: " + "; ".join(out) + "."
+
+
 _W = r"(?:still takes `(?P<t>[^`]+)`|exposes an API this code no longer matches)"
 _OWNER = r"(?: \(class `(?P<o>[^`]+)`\))?"
 
@@ -917,6 +948,65 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     (r"^Maven cannot resolve the parent (?:pom )?(?P<p>.+?)[;.] .*\bframework project keeps its (?:own )?parent\b.*$",
      r"부모 pom을 저장소에서 받지 못했습니다(\g<p>). 프레임워크 프로젝트는 부모 pom을 바꾸지 않으므로 저장소에서 받을 수 "
      r"있어야 합니다."),
+    # 사내 규정 전환을 쓸 수 없거나 전환이 실패해서 멈춘 경우(sbmig/loop/orchestrator.py _intake_convert)
+    (r"^framework conversion is not available: convert\.enabled is false — .*$",
+     r"사내 규정 전환이 꺼져 있습니다(convert.enabled). 다른 처리 방법으로 다시 신청하거나 설정을 켜 주세요."),
+    (r"^framework conversion is not available: the framework has no name \(.*$",
+     r"사내 규정 전환에 쓸 프레임워크 이름이 없습니다. framework.name이나 framework.artifacts를 설정해 주세요."),
+    (r"^framework conversion is not available: the project has no root pom to take the package from and "
+     r"convert\.package_root is not set — .*$",
+     r"패키지 이름을 가져올 루트 pom.xml이 프로젝트에 없고 convert.package_root도 설정되어 있지 않습니다. "
+     r"convert.package_root를 설정해 주세요."),
+    (r"^framework conversion is not available: no version for (?P<k>\S+) \(.*$",
+     r"\g<k>의 버전을 저장소에서 찾지 못했습니다. convert.versions에 버전을 지정해 주세요."),
+    (r"^framework conversion is not available: the conversion rules could not be loaded \((?P<e>.+)\) — .*$",
+     r"사내 규정 전환 규칙을 읽지 못했습니다(\g<e>). knowledge/fwconvert/rules.yml과 convert.rules를 확인해 주세요."),
+    # 사내 규정 전환의 인수인계 줄 두 개(sbmig/loop/convert.py SKIPPED_LINE, duplicate_followup)
+    (r"^framework conversion found nothing to convert \(no service XML and no SQL file of the framework\): the project "
+     r"was left as uploaded and migrated as with the way 'reduced'$",
+     r"사내 규정 전환은 하지 않았습니다. 이 프로젝트에는 사내 프레임워크의 서비스 XML도 SQL 파일도 없어서, 올린 그대로 두고 "
+     r"JDK 21, Jakarta만 적용하는 방법과 같이 처리했습니다."),
+    (r"^framework conversion: duplicate request mappings in the generated controllers \((?P<n>\d+)\): two handlers "
+     r"answer the same address and the application does not start until the owners keep one of them — (?P<tail>.+)$",
+     lambda m: ("사내 규정 전환으로 만든 컨트롤러에 여러 메서드가 함께 받는 주소가 " + m.group("n") + "건 있습니다. "
+                "메서드를 하나만 남기기 전에는 애플리케이션이 시작하지 않으니, 담당 팀에서 남길 메서드를 정해 주세요. "
+                + _duplicates_ko(m.group("tail")))),
+    (r"^framework conversion failed: (?P<e>.+) — the project was left as uploaded$",
+     r"사내 규정 전환 중 오류가 나서 멈췄습니다(\g<e>). 프로젝트는 올린 그대로입니다."),
+    (r"^framework conversion failed: (?P<e>.+) — the project was put back as uploaded$",
+     r"사내 규정 전환 중 오류가 나서 멈췄습니다(\g<e>). 바꾸던 프로젝트는 올린 상태로 모두 되돌렸습니다."),
+    (r"^framework conversion failed: (?P<e>.+) — the as-is files could not all be put back; what is missing is in "
+     r"(?P<d>.+?) \((?P<n>[^()]*)\)$",
+     r"사내 규정 전환 중 오류가 나서 멈췄습니다(\g<e>). 올린 파일을 모두 되돌리지 못했습니다. 빠진 파일(\g<n>)은 "
+     r"\g<d>에 있습니다."),
+    (r"^framework conversion failed: (?P<e>.+) — the as-is files were put back, but not everything was cleaned up "
+     r"\((?P<d>.*)\)$",
+     r"사내 규정 전환 중 오류가 나서 멈췄습니다(\g<e>). 올린 파일은 모두 되돌렸지만 정리하지 못한 것이 있습니다: "
+     r"\g<d>"),
+    # 이름은 프레임워크 파일 같은데 하나도 읽지 못해 전환하지 않은 경우(sbmig/loop/convert.py unreadable_line)
+    (r"^framework conversion found (?P<n>\d+) files that look like framework files by name, but none could be read as "
+     r"one: the project was handled without the conversion, as with the way 'reduced'$",
+     r"이름으로는 프레임워크 파일로 보이는 파일이 \g<n>개 있었지만 하나도 프레임워크 파일로 읽지 못했습니다. 그래서 "
+     r"사내 규정 전환 없이 JDK 21, Jakarta만 적용했습니다."),
+    (r"^framework conversion is not available: the root pom cannot be read \((?P<e>[^)]*)\) and convert\.package_root "
+     r"is not set — .*$",
+     r"루트 pom.xml을 읽지 못했고(\g<e>) convert.package_root도 설정되어 있지 않습니다. pom을 고치거나 "
+     r"convert.package_root를 설정해 주세요."),
+    (r"^framework conversion is not available: the root pom has no groupId and convert\.package_root is not set — .*$",
+     r"루트 pom.xml에 groupId가 없고 convert.package_root도 설정되어 있지 않습니다. groupId를 넣거나 "
+     r"convert.package_root를 설정해 주세요."),
+    (r"^framework conversion is not available: the root pom's groupId '(?P<g>.*)' cannot be used as a package and "
+     r"convert\.package_root is not set — .*$",
+     r"루트 pom.xml의 groupId(\g<g>)는 자바 패키지 이름으로 쓸 수 없고 convert.package_root도 설정되어 있지 않습니다. "
+     r"convert.package_root를 설정해 주세요."),
+    (r"^framework conversion is not available: the root pom has no artifactId and convert\.package_root is not set — "
+     r".*$",
+     r"루트 pom.xml에 artifactId가 없고 convert.package_root도 설정되어 있지 않습니다. artifactId를 넣거나 "
+     r"convert.package_root를 설정해 주세요."),
+    (r"^framework conversion is not available: the root pom's artifactId '(?P<a>.*)' cannot be used as a project name "
+     r"and convert\.package_root is not set — .*$",
+     r"루트 pom.xml의 artifactId(\g<a>)는 프로젝트 이름으로 쓸 수 없고 convert.package_root도 설정되어 있지 않습니다. "
+     r"convert.package_root를 설정해 주세요."),
     (r"^internal error: (?P<e>.+)$", r"내부 오류로 멈췄습니다: \g<e>"),
     (r"^missing component: (?P<e>.+)$", r"필요한 구성 요소가 없어 멈췄습니다: \g<e>"),
     (r"^pom\.xml is an EAR \((?P<a>[^,]+), packaging ear\) that packages modules which are not in this directory: "

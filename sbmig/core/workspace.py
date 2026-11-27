@@ -472,6 +472,8 @@ class Workspace:
         self.ignored_dirs: set[str] = set()
         # 올린 zip이 풀기 한도를 넘어 접수에서 거절한 사유. None이면 정상 접수다
         self.intake_refusal: Optional[str] = None
+        # 코드 변경 화면과 changes.patch가 비교할 기준 커밋. None이면 as-is 첫 커밋이다(사내 규정 전환은 전환 커밋)
+        self.change_base_commit: Optional[str] = None
         try:                                           # `dump-threads` 파일이 생기면 스레드 덤프를 남긴다
             from sbmig.core.diag import watch_dump_trigger
             watch_dump_trigger(self.run_dir)
@@ -993,6 +995,11 @@ class Workspace:
         """원래 상태를 저장한 첫 커밋의 sha를 반환한다."""
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
 
+    def base_commit(self) -> str:
+        """코드 변경 화면과 changes.patch가 비교할 기준 커밋의 sha를 반환한다.
+        사내 규정으로 전환한 실행은 전환 커밋이고, 그 밖에는 첫 커밋이다."""
+        return self.change_base_commit or self.first_commit()
+
     # ------------------------------------------------------------------ tree 객체(코드 변경 화면용)
     def _git_dir(self) -> Path:
         d = self.root / ".git"
@@ -1132,9 +1139,9 @@ class Workspace:
 
     # ------------------------------------------------------------------ 결과물
     def write_patch(self, name: str = "changes.patch") -> Path:
-        """원래 상태부터 지금까지의 전체 변경을 changes.patch로 저장한다."""
+        """기준 커밋(``base_commit``)부터 지금까지의 전체 변경을 changes.patch로 저장한다."""
         p = self.run_dir / name
-        p.write_bytes(self.diff_bytes(self.first_commit()))
+        p.write_bytes(self.diff_bytes(self.base_commit()))
         return p
 
     def zip_result(self, name: str = "result.zip") -> Path:

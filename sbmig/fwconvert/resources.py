@@ -16,12 +16,17 @@ Choices where the specification is silent (sbmig):
 - word lists (``rest.*_words``, ``activities.mutate_words``) match whole words of the kebab split of the name's last
   part, never substrings (``selectAccountList`` has no ``count``). The "kind ``other`` returns int" rule reads only
   the FIRST word of the ``sql-key``'s last part (``updateStatus`` mutates, ``selectLastUpdateDate`` does not);
+- returns of a service method: the kind table (``activities.kind_returns``) first; for any other kind (a project's
+  own class) the resolved statement decides like a mapper statement (insert / update / delete: int, select: list or
+  int by the count words), and only when nothing resolves the first-word rule on the ``sql-key`` applies;
 - the ``rest.lov_prefix`` rule applies to selects only, as in the endpoint table;
 - an endpoint that still collides after the ``/{kebab(id)}`` fallback gets ``-2``, ``-3``, ... appended;
 - ``rest_base``: a resource with a router keeps its resource name as written (its controller is served there) and
   reserves it exactly; every other resource gets ``kebab(resource)``, unique ignoring case among those and never
   exactly equal to a reserved router name (a clash gets ``-2``, ``-3``, ... in ``x_name`` order); the exposure filter
   compares the kebab form of a call's first path part after the api prefix with it;
+- ``unreachable_methods`` names every method no address reaches (no endpoint and nothing unexposed in a resource
+  without a router; no transition in a resource with one: the mapper statements appended there), with the reason;
 - an endpoint the exposure filter removes stays on its method as ``Method.unexposed``; ``unexposed_endpoints`` lists
   them for the report;
 - exposure filter: unmatched endpoints are removed only when at least one call MATCHES an endpoint of this
@@ -169,10 +174,20 @@ def _called(ep: Endpoint, calls: list[tuple[str, list[str]]]) -> bool:
 # ---- 메서드 ----------------------------------------------------------------------
 
 
-def _returns_for_activity(act: Activity, sql_key: str, rules: ConvertRules) -> str:
+def _statement_returns(st: Statement, name: str, rules: ConvertRules) -> str:
+    if _verb(st.verb) in ("insert", "update", "delete"):
+        return "int"
+    return "int" if _has(name, _words(rules, "rest.count_words")) else "list"
+
+
+def _returns_for_activity(act: Activity, sql_key: str, found: tuple[MapperFile, Statement] | None, name: str,
+                          rules: ConvertRules) -> str:
     table = rules.get("activities.kind_returns", {}) or {}
     if act.kind in table:
         return str(table[act.kind])
+    # 프로젝트 클래스가 호출하는 SQL 문을 찾았으면 그 문의 종류로 정한다
+    if found:
+        return _statement_returns(found[1], name, rules)
     # 변경 문인지는 id의 첫 단어로만 본다. selectLastUpdateDate는 조회다
     first = _name_words(sql_key)[:1]
     return "int" if first and first[0] in _words(rules, "activities.mutate_words") else "list"
@@ -188,7 +203,7 @@ def _service_method(act: Activity, verdict: DbVerdict, mappers: MapperIndex,
         name = naming.method_name(sql_key)
     else:
         name = naming.method_name(act.name)
-    returns = _returns_for_activity(act, sql_key, rules)
+    returns = _returns_for_activity(act, sql_key, found, name, rules)
     m = Method(name=name, origin="service", kind=act.kind, returns=returns, db_backed=verdict.db_backed,
                activity=act.name, pass_hit=verdict.pass_hit, evidence=verdict.evidence)
     if found:
@@ -200,10 +215,7 @@ def _service_method(act: Activity, verdict: DbVerdict, mappers: MapperIndex,
 
 
 def _mapper_method(mapper: MapperFile, st: Statement, name: str, rules: ConvertRules) -> Method:
-    if _verb(st.verb) in ("insert", "update", "delete"):
-        returns = "int"
-    else:
-        returns = "int" if _has(name, _words(rules, "rest.count_words")) else "list"
+    returns = _statement_returns(st, name, rules)
     call = session_call(returns, st.verb, name, rules)
     return Method(name=name, origin="mapper", kind="statement", returns=returns, db_backed=True,
                   read_only=call.startswith("select"), namespace=mapper.namespace, statement_id=st.id,
@@ -399,6 +411,40 @@ def unexposed_endpoints(resources: list[Resource], rules: ConvertRules) -> list[
     prefix = rules.text("frontend.api_prefix", "/api").rstrip("/")
     lines = [f"{m.unexposed.verb} {prefix}/{r.rest_base}{m.unexposed.path}  ({r.x_name}Service.{m.name})"
              for r in resources for m in r.methods if m.unexposed is not None]
+    return sorted(lines)
+
+
+def _unreachable_why(res: Resource, m: Method, rules: ConvertRules) -> str:
+    if not m.db_backed:
+        return f"not database-backed: {m.pass_hit or '-'}"
+    if not m.statement_id:
+        return "no statement"
+    own = any(mf.namespace == m.namespace and any(st.id == m.statement_id for st in mf.statements)
+              for mf in res.mappers)
+    if not own:
+        return f"statement in another mapper: {m.namespace}.{m.statement_id}"
+    lov = rules.text("rest.lov_prefix", "lov").lower()
+    if lov and m.statement_id.lower().startswith(lov):
+        return "list-of-values statement"
+    return "no endpoint"
+
+
+def unreachable_methods(resources: list[Resource], rules: ConvertRules) -> list[str]:
+    """어떤 주소로도 호출할 수 없는 메서드를 보고서용 한 줄씩 정렬해서 반환한다.
+    router가 없는 리소스는 REST 주소가 없는 메서드를, router가 있는 리소스는 전이가 가리키지 않는 메서드를 쓴다.
+    노출에서 뺀 주소가 있는 메서드는 ``unexposed_endpoints``에 나오므로 여기에는 쓰지 않는다.
+
+    Line: ``<X>Service.<method>  (<why>)``; why = ``statement in another mapper: <namespace>.<id>``, ``no statement``,
+    ``list-of-values statement``, ``not database-backed: <pass_hit>``, ``no transition`` (a router resource's mapper
+    statement that no transition calls), ``no endpoint`` (a fallback no current rule produces). Read-only."""
+    lines: list[str] = []
+    for r in resources:
+        if r.has_router:
+            targets = set(r.transitions.values())
+            lines += [f"{r.x_name}Service.{m.name}  (no transition)" for m in r.methods if m.name not in targets]
+            continue
+        lines += [f"{r.x_name}Service.{m.name}  ({_unreachable_why(r, m, rules)})"
+                  for m in r.methods if m.endpoint is None and m.unexposed is None]
     return sorted(lines)
 
 

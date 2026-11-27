@@ -5,9 +5,9 @@ Rendered when `report.language: ko`; `en` stays in markdown.py byte for byte (`t
 Never raises on missing optional data. Contract: INTERFACES "v2.1z-as".
 
 Lines stored in English (hand-over steps, follow-ups, flag help) and the special sections' sentences go
-through ``i18n``. Section order: title, Ant notice, head table, in-house framework, guide sentence, 전환 내용,
-확인해 주세요, 코드 수정 내역, 해결하지 못한 오류, 진행하지 않은 항목, special sections, 참고. An empty
-section is left out. A new section must be added to the English report (markdown.py) too."""
+through ``i18n``. Section order: title, Ant notice, head table, framework conversion, in-house framework, guide
+sentence, 전환 내용, 확인해 주세요, 코드 수정 내역, 해결하지 못한 오류, 진행하지 않은 항목, special sections, 참고.
+An empty section is left out. A new section must be added to the English report (markdown.py) too."""
 from __future__ import annotations
 
 import re
@@ -51,6 +51,9 @@ from .markdown import (
     flag_help,
     framework_lines,
     intake_notice_lines,
+    conversion_stages,
+    md_span,
+    md_text,
     no_fix_loop,
     javax_api_lines,
     operator_check_lines,
@@ -320,6 +323,343 @@ def _where_first(r: RunReport) -> str:
     return f"아래 {'와 '.join(where)}{obj} 먼저 봐 주세요."
 
 
+# ------------------------------------------------------------------------------------------------- 사내 규정 전환
+CONVERT_CHECK_TITLE = "직접 확인해 주세요"     # 전환 절 안의 확인 항목 소제목
+CONVERT_GROUP_MAX = 20                        # 확인 항목 묶음마다 보여 줄 최대 항목 수
+CONVERT_LIST_MAX = 20                         # 노출하지 않은 주소, 읽지 않은 파일, 남은 오류의 최대 줄 수
+CONVERT_QUEUE_FILE = "convert/queue.json"     # 실행 폴더 안의 전체 확인 항목 파일
+
+# 전환 결과의 개수 키와 표에 쓸 이름. 이 순서대로 보여 준다
+CONVERT_COUNTS_KO = (("services", "서비스"), ("mappers", "SQL 묶음(mapper)"), ("statements", "SQL 문"),
+                     ("java_files", "생성한 Java 파일"), ("jsp", "화면(JSP)"), ("static", "정적 파일"),
+                     ("js_rewritten", "주소를 바꾼 스크립트"), ("pages", "화면 컨트롤러"))
+DB_VENDOR_KO = {"oracle": "Oracle", "mysql": "MySQL", "mariadb": "MariaDB", "postgresql": "PostgreSQL",
+                "sqlserver": "SQL Server", "tibero": "Tibero", "h2": "H2"}
+# DB 연결 정보를 찾지 못한 이유(DatasourceInfo.reason)를 문장으로 바꾼다
+DB_MISSING_KO = {
+    "not_found": "원본 설정 파일에서 DB 연결 정보를 찾지 못했습니다.",
+    "jndi": "원본은 서버에 등록한 JNDI 이름으로 DB에 연결합니다. 그 이름은 `application.yml`로 옮길 수 없습니다.",
+    "unknown_vendor": "DB 주소와 드라이버 이름으로는 어떤 DB인지 알 수 없었습니다.",
+    "unresolved": "DB 주소에 프로젝트의 properties 파일에 없는 값(`${…}`)이 남아 있습니다.",
+}
+# 확인 항목 묶음. (키, 제목, 무슨 뜻이고 무엇을 하면 되는지 한 문장). 이 순서대로 보여 준다
+CONVERT_GROUPS = (
+    ("DATASOURCE", "DB 연결 설정",
+     "원본 설정에서 DB 연결 정보를 읽지 못해 `application.yml`에 DB 연결 설정을 넣지 않았으니, 애플리케이션을 시작하기 "
+     "전에 `spring.datasource` 값을 직접 넣어 주세요."),
+    ("DATASOURCE_PASSWORD", "DB 비밀번호",
+     "원본 설정 파일에 적혀 있던 DB 비밀번호는 결과에 옮기지 않았으니, 실행 환경에서 `SPRING_DATASOURCE_PASSWORD` 환경 "
+     "변수로 넣어 주세요."),
+    ("DATASOURCE_DRIVER", "JDBC 드라이버",
+     "이 DB의 JDBC 드라이버 좌표가 전환 설정(`convert.jdbc_drivers`)에 없어 드라이버 의존성을 넣지 않았으니, boot 모듈의 "
+     "pom.xml에 드라이버를 추가해 주세요."),
+    ("STUB_SPRING_LOGIC", "빈 구현으로 남긴 서비스",
+     "router는 있지만 SQL 문으로 이어지는 기능이 하나도 없어 모든 메서드를 빈 구현(호출하면 오류가 납니다)으로 만들었으니, "
+     "원본 서비스의 동작을 보고 직접 구현해 주세요."),
+    ("java_only", "Java 코드로만 동작하는 기능",
+     "DB를 쓰지 않고 Java 코드로만 동작하는 activity라 옮기지 못하고 빈 구현으로 남겼으니, 원본 클래스의 코드를 보고 직접 "
+     "옮겨 주세요."),
+    ("2b", "SQL 문을 알 수 없는 DB 기능",
+     "원본 클래스가 DB를 쓰지만 어떤 SQL 문을 실행하는지 알 수 없어 빈 구현으로 남겼으니, 원본 클래스를 보고 실행할 SQL 문을 "
+     "직접 연결해 주세요."),
+    ("3", "원본 클래스를 확인하지 못한 기능",
+     "activity의 클래스 소스를 프로젝트에서 찾지 못했거나 여러 SQL 묶음을 써서 하나로 정할 수 없어 빈 구현으로 남겼으니, "
+     "원본 클래스를 확인하고 직접 구현해 주세요."),
+    ("AMBIGUOUS_SQL_KEY", "어느 SQL 문인지 정할 수 없는 기능",
+     "이 기능의 SQL 키(sql-key)를 SQL 파일 둘 이상이 정의하고 있어 SQL 문을 연결하지 않았으니(호출하면 오류가 납니다), "
+     "어느 SQL 문을 쓸지 정해 직접 연결해 주세요."),
+    ("NO_SQL_KEY", "SQL 키가 없는 DB 기능",
+     "프레임워크의 DB activity인데 실행할 SQL 문을 적어 두지 않아 SQL 문을 연결하지 않았으니(호출하면 오류가 납니다), 원본 "
+     "서비스 정의를 보고 SQL 문을 직접 연결해 주세요."),
+    ("UNKNOWN_SQL_KEY", "SQL 문을 찾지 못한 기능",
+     "이 기능의 SQL 키(sql-key)에 해당하는 SQL 문이 어느 SQL 파일과 mapper에도 없어 SQL 문을 연결하지 않았으니(호출하면 "
+     "오류가 납니다), SQL 키가 맞는지 확인하고 SQL 문을 직접 연결해 주세요."),
+    ("external", "외부 시스템 호출",
+     "외부 시스템을 호출하는 activity라 옮기지 않고 빈 구현으로 남겼으니, 호출 방식을 정해 직접 구현해 주세요."),
+    ("CUSTOM_ACTIVITY", "프로젝트에서 만든 activity 클래스",
+     "프로젝트가 직접 만든 activity 클래스를 SQL 문 호출 하나로 바꿨으니, 원래 클래스에 있던 파라미터 처리, 반복, 검증이 "
+     "빠지지 않았는지 확인해 주세요."),
+    ("BEAN_DIALECT", "전환하지 않은 서비스 XML",
+     "bean 형식으로 쓴 서비스 XML은 자동으로 전환하지 않았으니, 이 서비스의 기능을 직접 옮겨 주세요."),
+    ("ENDPOINT_DUPLICATE", "주소가 겹쳐 만들지 않은 기능",
+     "같은 컨트롤러에 같은 주소와 HTTP 메서드가 이미 있어 이 기능에는 주소를 만들지 않았으니, 화면에서 이 기능을 쓰는지 "
+     "확인하고 필요하면 주소를 직접 추가해 주세요."),
+    ("ENDPOINT_VERB", "지원하지 않는 HTTP 메서드",
+     "GET, POST, PUT, PATCH, DELETE가 아닌 HTTP 메서드라 주소를 만들지 않았으니, 원본에서 어떻게 호출했는지 확인하고 주소를 "
+     "직접 추가해 주세요."),
+    ("AJAX_NO_CONTROLLER", "받는 컨트롤러가 없는 화면 호출",
+     "화면의 ajax 호출 주소는 바꿨지만 그 주소를 받는 컨트롤러가 없으니(서비스를 전환하지 않았거나, router가 없거나, "
+     "대소문자가 다릅니다), 호출하는 서비스 이름을 확인해 주세요."),
+    ("AJAX_UNMATCHED", "주소를 바꾸지 못한 스크립트",
+     "화면 스크립트의 ajax 호출을 새 주소로 바꾸지 못해 파일을 원래대로 두었으니, 이 파일의 호출 주소를 `/api/<서비스>/<기능>` "
+     "형식으로 직접 바꿔 주세요."),
+    ("JSP_PATH", "경로를 고치지 못한 JSP",
+     "JSP가 가리키는 파일 가운데 복사하지 않은 파일이 있어 그 경로는 바꾸지 못했으니, 그 파일이 필요한지 확인하고 경로를 "
+     "고쳐 주세요."),
+    ("FRONTEND_MISSING", "복사되지 않은 화면 파일",
+     "원본에 있던 화면 파일(JSP, JS, CSS)이 결과 프로젝트에 없으니, 복사되지 않은 이유를 확인하고 필요하면 직접 넣어 주세요."),
+    ("risk", "직접 검토가 필요한 클래스",
+     "리플렉션, 스레드, 배치 처리처럼 자동 전환이 다루지 않는 코드를 쓰는 클래스이니, 이 기능을 결과 프로젝트에서 어떻게 "
+     "옮길지 정해 주세요."),
+    ("MAVEN_BUILD", "생성한 프로젝트의 빌드 오류",
+     "생성한 프로젝트를 빌드하다 오류가 났으니, 빌드 로그에서 원인을 확인해 주세요."),
+    ("other", "그 밖의 확인 항목",
+     "위 종류에 들지 않는 항목이니, 항목마다 적힌 내용을 보고 확인해 주세요."),
+)
+_KNOWN_TAGS = {k for k, _, _ in CONVERT_GROUPS} - {"external", "risk", "other"}
+_TAG_RE = re.compile(r"^\[(?P<tag>[^\]\s]+)\]")
+_DUPLICATE_ERROR_RE = re.compile(r": claimed by | differ only in case: ")
+_UNEXPOSED_RE = re.compile(r"^(?P<addr>.+?)\s+\((?P<who>[^()]+)\)$")
+
+
+def conversion_group(reason: str) -> tuple[str, str]:
+    """확인 항목의 이유 문장으로 묶음 키를 정해 (키, 외부 호출 분류 이름)을 반환한다.
+    대괄호 꼬리표가 알려진 것이 아니면 외부 호출로 본다. 어느 모양에도 맞지 않으면 ``other``다."""
+    text = str(reason or "").strip()
+    m = _TAG_RE.match(text)
+    if m:
+        tag = m.group("tag")
+        return (tag, "") if tag in _KNOWN_TAGS else ("external", tag)
+    if text.startswith("risk_score>="):
+        return "risk", ""
+    for key in ("FRONTEND_MISSING", "MAVEN_BUILD"):
+        if text.startswith(key):
+            return key, ""
+    return "other", ""
+
+
+def converted(r: RunReport) -> bool:
+    """이 실행이 사내 프레임워크 프로젝트를 사내 규정으로 전환했으면 True를 반환한다."""
+    c = getattr(r, "conversion", None)
+    return c is not None and bool(getattr(c, "converted", False))
+
+
+def _conv_title(r: RunReport) -> str:
+    name = md_text(r.conversion.framework, 80) if str(r.conversion.framework or "").strip() else ""
+    who = f"{name} 프레임워크 프로젝트" if name else "사내 프레임워크 프로젝트"
+    return f"{who}를 사내 규정으로 전환했습니다"
+
+
+def _more(n: int) -> str:
+    return f"- 외 {n}건"
+
+
+def _db_lines(ds: str) -> list[str]:
+    """DB 연결 정보를 찾았는지와 할 일을 한 문단으로 만든다."""
+    ds = str(ds or "").strip()
+    if not ds:
+        return []
+    if ds.startswith("configured:"):
+        vendor = ds.split(":", 1)[1]
+        name = DB_VENDOR_KO.get(vendor.lower()) or md_text(vendor or "DB", 40)
+        return [f"**DB 연결**: 원본 설정에서 {name} 연결 정보를 찾아 `application.yml`에 넣었습니다. 비밀번호는 옮기지 "
+                "않았으니 실행 환경에서 `SPRING_DATASOURCE_PASSWORD` 환경 변수로 넣어 주세요.", ""]
+    why = DB_MISSING_KO.get(ds, f"DB 연결 정보를 쓸 수 없었습니다({md_span(ds, 60)}).")
+    return [f"**DB 연결**: {why} 그래서 `application.yml`에 DB 연결 설정을 넣지 않았습니다. 애플리케이션은 DB 연결 설정이 "
+            "있어야 시작하므로 `spring.datasource` 값을 직접 넣어 주세요.", ""]
+
+
+def _queue_item(q: dict) -> str:
+    comp = str(q.get("component", "") or "").strip()
+    src = str(q.get("source_path", "") or "").strip()
+    head = md_span(comp, 200) if comp else "(이름 없음)"
+    return f"- {head}" + (f" — {md_span(src, 300)}" if src and src != comp else "")
+
+
+def conversion_check_lines(r: RunReport) -> list[str]:
+    """전환 절의 「직접 확인해 주세요」를 만든다. 확인 항목이 없으면 빈 목록을 반환한다.
+    항목은 이유의 종류별로 묶고, 묶음마다 뜻과 할 일을 한 문장으로 쓴 뒤 항목을 최대 20개까지 보여 준다."""
+    c = r.conversion
+    queue = [q for q in (c.queue or []) if isinstance(q, dict)]
+    if not queue:
+        return []
+    total = max(int(c.queue_total or 0), len(queue))
+    L = [f"### {CONVERT_CHECK_TITLE}", ""]
+    lead = (f"전환하면서 사람이 확인해야 할 곳이 {total}건 있습니다. 종류별로 묶었고, 항목마다 이름과 원본 파일을 적었습니다."
+            f" 전체 목록과 원본 발췌는 실행 폴더의 {_code(CONVERT_QUEUE_FILE)}에 있습니다(운영 담당자에게 요청해 주세요).")
+    if total > len(queue):
+        lead += f" 보고서에는 앞의 {len(queue)}건만 담았습니다."
+    L += [lead, ""]
+    groups: dict[str, list[dict]] = {}
+    for q in queue:
+        key, tag = conversion_group(q.get("reason", ""))
+        groups.setdefault(f"external:{tag}" if key == "external" else key, []).append(q)
+    for key, title, sentence in CONVERT_GROUPS:
+        names = [k for k in groups if k == key or (key == "external" and k.startswith("external:"))]
+        for k in sorted(names):
+            items = groups[k]
+            head = f"{title}: {md_span(k.split(':', 1)[1], 80)}" if key == "external" else title
+            L += [f"**{head} ({len(items)}건)**", "", sentence, ""]
+            for q in items[:CONVERT_GROUP_MAX]:
+                line = _queue_item(q)
+                if key == "other":
+                    line += f": {md_text(q.get('reason', ''), 300)}"
+                L.append(line)
+            if len(items) > CONVERT_GROUP_MAX:
+                L.append(_more(len(items) - CONVERT_GROUP_MAX))
+            L.append("")
+    return L
+
+
+def _unexposed_line(text: str) -> str:
+    m = _UNEXPOSED_RE.match(" ".join(str(text).split()))
+    if m:
+        return f"- {md_span(m.group('addr'), 200)} ({md_span(m.group('who'), 200)})"
+    return f"- {md_span(text, 300)}"
+
+
+NO_ADDRESS_PREFIX = "no address: "          # 주소를 받지 못한 서비스 메서드 줄의 머리(resources.unexposed_endpoints)
+NO_ADDRESS_MAX = 30                           # 주소가 없는 서비스 기능의 최대 줄 수
+_NO_ADDRESS_RE = re.compile(r"^no address: (?P<who>\S+)\s+\((?P<why>.+)\)$")
+# 주소가 없는 이유를 문장으로 바꾼다. 맞는 것이 없으면 원문을 그대로 쓴다
+_NO_ADDRESS_WHY = (
+    (re.compile(r"^statement in another mapper: (?P<s>.+)$"),
+     lambda m: f"다른 SQL 묶음의 SQL 문을 씁니다({md_span(m.group('s'), 200)})"),
+    (re.compile(r"^no statement$"), lambda m: "연결된 SQL 문이 없습니다"),
+    (re.compile(r"^list-of-values statement$"), lambda m: "코드 목록(LOV)용 SQL 문입니다"),
+    (re.compile(r"^not database-backed(?::.*)?$"), lambda m: "DB를 쓰지 않는 기능입니다"),
+    (re.compile(r"^no transition$"), lambda m: "router의 어떤 주소도 이 기능을 가리키지 않습니다"),
+)
+
+
+def no_address(text: object) -> bool:
+    """노출하지 않은 주소 줄이 주소를 받지 못한 서비스 메서드 줄이면 True를 반환한다."""
+    return str(text or "").strip().startswith(NO_ADDRESS_PREFIX)
+
+
+def _no_address_line(text: str) -> str:
+    m = _NO_ADDRESS_RE.match(" ".join(str(text).split()))
+    if not m:
+        return f"- {md_span(text, 300)}"
+    why = m.group("why").strip()
+    for rx, fn in _NO_ADDRESS_WHY:
+        hit = rx.match(why)
+        if hit:
+            why = fn(hit)
+            break
+    else:
+        why = md_text(why, 300)
+    return f"- {md_span(m.group('who'), 200)}: {why}"
+
+
+def _plain_list(title: str, sentence: str, rows: list[str], render: Any = None,
+                limit: int = CONVERT_LIST_MAX) -> list[str]:
+    if not rows:
+        return []
+    L = [f"### {title}", "", sentence, ""]
+    for x in rows[:limit]:
+        L.append(render(x) if render else f"- {md_text(x, 400)}")
+    if len(rows) > limit:
+        L.append(_more(len(rows) - limit))
+    return L + [""]
+
+
+# 전환 뒤 단계의 이름(markdown.CONVERSION_STAGES의 키 순서)
+STAGES_KO = {"rewrite": "자동 변환(OpenRewrite)", "restructure": "구조 정리(사내 부모 pom과 필수 아티팩트 적용)",
+             "review": "구조 검토", "build": "빌드와 빌드 오류 수정"}
+
+
+def _after_sentence(r: RunReport) -> str:
+    """전환 뒤에 실제로 실행한 단계를 한두 문장으로 만든다.
+    최종 빌드까지 갔으면 모든 단계를, 중간에 끝났으면 실행한 단계와 하지 않은 단계를, 아무것도 안 했으면 그렇다고 쓴다."""
+    ran, complete = conversion_stages(r)
+    if complete:
+        done = ", ".join(STAGES_KO[k] for k in STAGES_KO if k in ran)
+        if r.final_build is not None and not r.final_build.ok:
+            # 최종 빌드가 실패했다. 한 단계만 쓰고 결과는 머리 표에 맡긴다
+            return f"만든 프로젝트는 이어서 {done}{_object(done)} 진행했습니다. 그 결과는 맨 위 표의 결과 칸을 봐 주세요."
+        return f"만든 프로젝트는 이어서 다른 Spring Boot 프로젝트와 같은 순서로 처리했습니다. 순서는 {done}입니다."
+    why = "끝난 이유는 맨 위 표의 결과 칸을 봐 주세요."
+    if not ran:
+        return (f"만든 프로젝트는 그 뒤 단계({', '.join(STAGES_KO.values())})를 하나도 진행하지 못하고 실행이 "
+                f"끝났습니다. {why}")
+    done = ", ".join(STAGES_KO[k] for k in STAGES_KO if k in ran)
+    left = [STAGES_KO[k] for k in STAGES_KO if k not in ran]
+    if not left:
+        return f"만든 프로젝트는 이어서 {done}까지 진행했지만 실행이 중간에 끝났습니다. {why}"
+    rest = ", ".join(left)
+    return f"만든 프로젝트는 이어서 {done}까지 진행했고, {rest}{_topic(rest)} 하지 않은 채 실행이 끝났습니다. {why}"
+
+
+def _object(word: str) -> str:
+    """앞말의 받침에 맞는 목적격 조사(을 / 를)를 반환한다."""
+    return "을" if _topic(word) == "은" else "를"
+
+
+def _topic(word: str) -> str:
+    """앞말의 받침에 맞는 보조사(은 / 는)를 반환한다."""
+    ch = word.rstrip()[-1:] or "가"
+    if "가" <= ch <= "힣":
+        return "은" if (ord(ch) - 0xAC00) % 28 else "는"
+    return "는"
+
+
+def framework_conversion_lines(r: RunReport) -> list[str]:
+    """사내 규정으로 전환한 실행의 절을 만든다. 전환하지 않은 실행이면 빈 목록을 반환한다.
+    머리 표 바로 아래에 둔다. 만든 프로젝트, 개수 표, 그 뒤에 한 일, DB 연결, 확인 항목을 담는다.
+
+    Data: `RunReport.conversion` (`sbmig/loop/convert.py conversion_info`). The English twin is
+    `markdown.framework_conversion_lines`. `converted=False` gives no section (the hand-over line says so)."""
+    if not converted(r):
+        return []
+    c = r.conversion
+    name = md_text(c.framework, 80) if str(c.framework or "").strip() else ""
+    fw = f"{name} 프레임워크" if name else "사내 프레임워크"
+    L = [f"## {_conv_title(r)}", ""]
+    L += [f"{fw}로 만든 프로젝트를 사내 규정의 Spring Boot 프로젝트로 새로 만들었습니다. 결과 프로젝트에는 {fw}가 남아 "
+          "있지 않습니다. 서비스, 저장소, 컨트롤러 클래스는 서비스 XML과 SQL 파일에서 새로 만들었고, 원본의 Java 클래스(유틸, "
+          "엔티티 등)는 옮기지 않았습니다. 화면 파일(JSP, JS, CSS, 이미지)은 복사하고, 그 안의 ajax 호출 주소와 JSP 경로를 새 "
+          "구조에 맞게 고쳤습니다.", ""]
+    facts = []
+    if c.project:
+        facts.append(f"- 프로젝트 이름: {md_span(c.project, 200)}")
+    if c.package:
+        facts.append(f"- 기본 패키지: {md_span(c.package, 200)}")
+    if c.modules:
+        facts.append(f"- 모듈: {', '.join(md_span(m, 200) for m in c.modules)}")
+    if facts:
+        L += facts + [""]
+    counts = dict(c.counts or {})
+    rows = [(label, counts[k]) for k, label in CONVERT_COUNTS_KO if k in counts]
+    if rows:
+        L += ["| 전환한 것 | 개수 |", "|---|---|"] + [f"| {label} | {n} |" for label, n in rows] + [""]
+    after = _after_sentence(r) + " 이 문서의 나머지 내용은 모두 만든 프로젝트에 대한 것입니다."
+    if r.code_changes:
+        after += " 「코드 수정 내역」에는 전환으로 만든 파일이 아니라 그 뒤에 바뀐 내용만 있습니다."
+    L += [after, ""]
+    L += _db_lines(c.datasource)
+    L += conversion_check_lines(r)
+    L += _plain_list("노출하지 않은 주소",
+                     "화면에서 부르지 않는 기능이라 주소를 만들지 않은 것들입니다. 화면에서 404 오류가 나면 이 목록을 먼저 봐 "
+                     "주세요.", [u for u in (c.unexposed or []) if not no_address(u)], _unexposed_line)
+    L += _plain_list("주소가 없는 서비스 기능",
+                     "생성한 서비스 클래스에는 있지만 화면에서 부를 주소가 없는 기능입니다. 화면에서 이 기능이 필요하면 그 "
+                     "서비스의 컨트롤러에 주소를 직접 추가해 주세요.", [u for u in (c.unexposed or []) if no_address(u)],
+                     _no_address_line, NO_ADDRESS_MAX)
+    L += _plain_list("읽지 않은 파일", "전환하면서 읽지 않았거나 결과에 넣지 않은 파일입니다. 이유는 원문 그대로 적었습니다.",
+                     list(c.skipped or []))
+    # 주소 중복은 「확인해 주세요」에 한국어 항목으로 이미 있다
+    errors = [e for e in (c.errors or []) if not _DUPLICATE_ERROR_RE.search(str(e))]
+    L += _plain_list("전환 중 남은 오류", "전환하면서 처리하지 못한 오류입니다. 원문 그대로 적었습니다.", errors)
+    return L
+
+
+def _before_word(r: RunReport) -> str:
+    """버전 표의 변경 전 칸 제목을 반환한다. 전환한 실행이면 생성한 프로젝트의 값이라고 쓴다."""
+    return "생성한 프로젝트" if converted(r) else "변경 전"
+
+
+def conversion_pointer(r: RunReport) -> Optional[str]:
+    """전환 절에 확인 항목이 있으면 「확인해 주세요」 첫 항목으로 쓸 안내를 반환한다. 없으면 None을 반환한다."""
+    if not converted(r):
+        return None
+    total = max(int(r.conversion.queue_total or 0), len(r.conversion.queue or []))
+    if not total:
+        return None
+    return (f"**사내 규정 전환에서 확인할 곳 {total}건** — 위 「{_conv_title(r)}」 절의 「{CONVERT_CHECK_TITLE}」를 먼저 "
+            "봐 주세요.")
+
+
 # ------------------------------------------------------------------------------------------------------ 전환 내용
 def _reason_ko(reason: str) -> str:
     """버전 변경 줄의 이유 코드를 비고 문장으로 바꾼다. 모르는 코드는 기존 번역을 쓴다."""
@@ -394,11 +734,12 @@ def conversion_lines(r: RunReport) -> list[str]:
         return []
     L = ["## 전환 내용", ""]
     if tops:
-        L += ["| 항목 | 변경 전 | 변경 후 |", "|---|---|---|"]
+        # 전환한 실행의 변경 전 값은 생성한 프로젝트의 값이다
+        L += [f"| 항목 | {_before_word(r)} | 변경 후 |", "|---|---|---|"]
         L += [f"| {label} | {b} | {a} |" for label, b, a in tops]
         L.append("")
     if changes:
-        L += ["### 의존성 버전", "", "| 항목 | 변경 전 | 변경 후 | 비고 |", "|---|---|---|---|"]
+        L += ["### 의존성 버전", "", f"| 항목 | {_before_word(r)} | 변경 후 | 비고 |", "|---|---|---|---|"]
         for c in changes:
             warn = "⚠ " if c.carried_over or c.boot_bom_pin else ""
             L.append(f"| {warn}{KIND_KO.get(c.kind, c.kind)} {_code(_cell(c.key, 120))} | {_cell(_before_cell(c), 120)} | "
@@ -606,7 +947,9 @@ _LEADS = ((re.compile(r"^test sources (were neither compiled nor run|do not comp
           (re.compile("^" + re.escape(HTTP_BLOCKED_PREFIX)), "Maven 저장소 접근 차단"),
           (re.compile(r"^the LLM was unavailable during this run"), "LLM 호출 실패"),
           (re.compile("^" + re.escape(REWRITE_FAILED_PREFIX)), "자동 변환 실패"),
-          (re.compile("^" + re.escape(POM_CHARSET_PREFIX)), "pom 글자 인코딩"))
+          (re.compile("^" + re.escape(POM_CHARSET_PREFIX)), "pom 글자 인코딩"),
+          (re.compile(r"^framework conversion found nothing to convert "), "사내 규정 전환"),
+          (re.compile(r"^framework conversion: duplicate request mappings "), "겹치는 주소"))
 
 
 def _review_item(line: str, r: RunReport) -> Optional[str]:
@@ -725,6 +1068,13 @@ def check_items(r: RunReport) -> list[str]:
     # 자동 변환 실패는 결과 전체에 걸린다. 그래서 언제나 첫 항목으로 둔다
     failed = [x for x in items if x.startswith("**자동 변환 실패**")]
     items = failed + [x for x in items if x not in failed]
+    # 사내 규정 전환의 확인 항목은 결과 프로젝트 전체에 걸린다. 그래서 자동 변환 실패 바로 뒤, 맨 앞에 둔다
+    # 생성한 컨트롤러의 주소 중복은 애플리케이션이 시작하지 않는 문제라 그 바로 뒤에 둔다
+    conv = conversion_pointer(r)
+    dups = [x for x in items if x.startswith("**겹치는 주소**")]
+    if conv or dups:
+        rest = [x for x in items[len(failed):] if x not in dups]
+        items = failed + ([conv] if conv else []) + dups + rest
     return [x for x in dict.fromkeys(items) if x]
 
 
@@ -989,7 +1339,7 @@ def reference_lines(r: RunReport) -> list[str]:
         if p.spring_version:
             parts.append(f"Spring {p.spring_version}")
         parts.append(f"pom {len(p.poms)}개")
-        info.append("- 전환 전: " + ", ".join(parts))
+        info.append(("- 생성한 프로젝트(전환 뒤 분석): " if converted(r) else "- 전환 전: ") + ", ".join(parts))
     if run_scope(r) is not None:
         info.append("- 범위: JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트)")
     executed = [sid for pr in r.phases or [] for sid in pr.step_ids]
@@ -1053,6 +1403,7 @@ def render_guide_ko(report: RunReport, cfg: Any = None) -> str:
     L = [f"# 마이그레이션 보고서 — {r.project_name}", ""]
     L += intake_notice_lines(r, LANG)
     L += head_lines(r)
+    L += framework_conversion_lines(r)
     L += framework_lines(r, LANG)
     L += purpose_lines(r)
     L += conversion_lines(r)

@@ -4,9 +4,10 @@ Turns a project written on the in-house framework into a generated Spring Boot p
 (boot / domain / service / store). The framework is gone from the result. This is the second of the two ways a
 framework project is handled; the first (the framework stays, JDK 21 and jakarta only) is `agent-doc/13`.
 
-**State of the code.** `sbmig/fwconvert/` holds the converters of sections 3 to 5 as functions with tests. Nothing
-calls them from a run yet: the skeleton (poms, application class, configuration), the datasource step, the gate, the
-pipeline and the choice between the two ways on the page are the next increment (section 9, "Not built yet").
+**State of the code.** `sbmig/fwconvert/` holds the converters and `pipeline.convert_project`, which runs them in
+order and writes the generated project. A run uses it in mode `convert` (`docs/INTERFACES.md` "v2.1z-cm"): intake
+replaces the uploaded tree by the generated project, and the run goes on as an ordinary migration of a multi-module
+Spring Boot project. What is still missing is in section 9.
 
 **Where the rules come from.** The company's guide to an earlier in-house tool that does this conversion (Java 17,
 Spring Boot 3.5.13). The guide is the specification; that tool's source is not available here. Rules marked
@@ -23,9 +24,10 @@ The framework's name is a company name. Every rule that needs it uses a token:
 
 So `@{Fw}Service` is the framework's service annotation and `*.{fw}_sql` its SQL file. The vocabulary lives in
 `knowledge/fwconvert/rules.yml`; `sbmig.fwconvert.rules.load_rules(name, overlay)` expands the tokens. Company values
-that are not derived from the name (package root, domain codes, company activity classes, external-call words) are
-empty or placeholders in that file and come in through the overlay (later: the `convert:` section of the company
-config). Tests and fixtures use `Example`, `com.example`.
+that are not derived from the name come in through the overlay (`ConvertConfig.overlay()`: the `convert` section of
+the config). **A company has to set none of them**: the package and the project name come from the uploaded project's
+root pom, and a project's own activity classes are handled from evidence inside the project (2.2). The overlay keys
+stay as refinements. Tests and fixtures use `Example`, `com.example`.
 
 ## 2. Input
 
@@ -68,12 +70,21 @@ Activity kind, by class-name suffix, case ignored:
 |---|---|---|---|
 | `{Fw}MyBatisSearch`, `{Fw}JdbcSearch` | `search` | list | select |
 | `{Fw}MyBatisUpdate`, `{Fw}JdbcUpdate` | `update` | int | mutate |
-| company classes (overlay `activities.kinds`) | `upsert` / `delete` / `sortsearch` / `pagesearch` | int / int / list / list | mutate / mutate / select / select |
+| classes a company lists (overlay `activities.kinds`; none by default) | `upsert` / `delete` / `sortsearch` / `pagesearch` | int / int / list / list | mutate / mutate / select / select |
 | class name contains `router` | `router` | no method | defines the transitions |
 | company classes (overlay `activities.user_suffixes`) | `user` | no method | session handling |
 | anything else | `other` | int when the `sql-key` contains `insert` / `update` / `delete` / `upsert` / `save`, else list | user code |
 
 "list" is `List<Map<String,Object>>`.
+
+*sbmig*, the user's point: every project has its own activity classes, so a table of class names cannot cover them
+(the four non-framework classes of the guide's table were its sample project's own). A class that is not in the
+table is judged from the project: (1) what it extends: its `extends` chain is followed through the project's
+sources, at most five levels, and the first ancestor the table knows gives the kind; (2) its return type and call
+come from the SQL statement its `sql-key` reaches (select → list, insert / update / delete → int); (3) the source
+steps of 2.3. Such a class becomes a plain statement call, and each one gets ONE hand-over item `[CUSTOM_ACTIVITY]`
+(its own parameter handling, loops and validation were not carried over). The special bodies of `upsert`, `delete`,
+`sortsearch`, `pagesearch` are generated only for a class a company lists.
 
 ### 2.3 Whether an activity uses the database (first match wins)
 
@@ -197,9 +208,9 @@ of code that was carried over. JSP / JS / CSS / images are copied, never given t
 
 | what | rule |
 |---|---|
-| project name `{p}` | the uploaded file's name without extension; one prefix of `naming.name_prefixes` and one suffix of `naming.name_suffixes` removed (`sample-`, `{fw}-`, `demo-`, `test-`, company prefixes / `-clean -final -v2 -v1 -poc -prod -dev -bak -backup`); kebab → camelCase; `Project` appended. A name the user gives is used as it is, without `Project` |
-| domain | one of `naming.domains`, else `naming.default_domain` |
-| package `{pkg}` | `{naming.package_root}.{domain}.{p}` (no domain segment when the domain is empty) |
+| project name `{p}` | *sbmig*, the user's rule: the root pom's artifactId in camelCase (`shop-app` → `shopApp`). Only a project without a readable root pom falls back to the guide's rule: the name without extension; one prefix of `naming.name_prefixes` and one suffix of `naming.name_suffixes` removed; kebab → camelCase; `Project` appended |
+| domain | not used when the names come from the pom. Fallback: one of `naming.domains`, else `naming.default_domain` |
+| package `{pkg}` | the root pom's groupId + `.{p}`. Fallback: `{naming.package_root}.{domain}.{p}` (`convert.package_root`; empty = such a project is refused) |
 | interfaces | `{X}Service` in `{pkg}.domain.spec`, `{X}Store` in `{pkg}.domain.store` |
 | implementations | `{X}Logic` (plain class, `{pkg}.domain.logic`), `{X}SpringLogic` (`{pkg}.logic`, service module), `{X}MybatisStore` (`{pkg}.store`, store module) |
 | controllers | `{X}Controller` (REST), `{X}PageController` (`.mvc`), both in `{pkg}.rest` |
@@ -328,7 +339,33 @@ counts as insert.
   (`/WEB-INF/static/{p}/common/header.jsp`); a path whose file was not copied is a hand-over item `[JSP_PATH]`.
   Relative paths and dynamic values are left alone. The earlier tool left these pages broken.
 
-### 3.7 Skeleton, datasource, gate, build (next increment; the earlier tool's rules)
+### 3.7 Skeleton, datasource, gate, build
+
+**What sbmig generates** (`skeleton.py`, `datasource.py`): a root pom (packaging pom, parent
+`spring-boot-starter-parent` at the target Boot version, the four modules; the restructure replaces this parent by
+the company parent afterwards), the module poms (domain: Jakarta annotation API only; store: domain, the MyBatis
+starter, Spring context; service: domain, Spring Web MVC, Spring TX, slf4j; boot, a war: the three modules,
+`spring-boot-starter-webmvc`, the JDBC starter, the MyBatis starter, embedded Jasper and JSTL without a second
+servlet API jar, the vendor's JDBC driver when the datasource was found, `spring-boot-maven-plugin`), the application
+class, one Web MVC configuration class (view prefix and suffix, one resource handler per top folder of the copied
+static files, never serving a `.jsp` as text) and `application.yml` (`spring.servlet.encoding`, the MyBatis mapper
+location, and the datasource URL / driver / user name when found). A version is written only for what the Boot
+parent does not manage (the MyBatis starter: `convert.versions`, an empty value = the newest release the repository
+has). The password is NEVER carried over: `application.yml` holds `${SPRING_DATASOURCE_PASSWORD:}` and a hand-over
+item `[DATASOURCE_PASSWORD]` names the file it was in. The rule for everything else of the datasource is "write only
+what cannot hold a secret": credentials inside the JDBC URL are stripped (`user/pw@`, `//user:pw@host`, password
+parameters, for every vendor and wrapper prefix), then a wall judges a normalised copy of the URL (percent-decoded,
+NFKC, case-folded) and withholds the whole URL when it still shows a password-like word, a token / key word, an
+`@` other than the first one of an Oracle scheme, a `user` key with a value that is not a plain name, whitespace,
+or a parameter name that was encoded (`datasource.may_carry_credentials`); a user name is written only when it is a
+plain name, a driver class only when it looks like one. A withheld URL appears nowhere. No datasource found, or the
+URL withheld = no datasource keys and `[DATASOURCE]`;
+a vendor without a driver coordinate (`convert.jdbc_drivers`) = `[DATASOURCE_DRIVER]`. Not generated: the Gson
+converter, OpenAPI, the method filter, the interceptors, the exception handler, any H2 demo configuration. The
+guide's gate is not ported as such: the screen check is part of the pipeline (`FRONTEND_MISSING`), the build and
+the LLM check are sbmig's own build gate, fix loop and structure review on the generated project.
+
+**The earlier tool's rules, for reference:**
 
 - `config/`: exception handler, method filter (allowed HTTP methods), Gson message converter, OpenAPI, persistence
   (`@EnableTransactionManagement`), Web MVC (view prefix `/WEB-INF/static/{p}/`, suffix `.jsp`; resource handlers
@@ -371,19 +408,24 @@ not fit `JdbcTemplate`.
 ## 4. Hand-over items
 
 One record per thing a person must look at: `component`, `reason`, `source_path`, `last_error`, `excerpt` (at most
-2,000 characters of the source).
+2,000 characters of the source). A `reason` is written in the converter's own words (a line number, never the line):
+reports show it. `last_error` and `excerpt` may hold project text; they are scrubbed and written only to the run's
+`convert/queue.json`. A method that will fail when called is never silent: it has an item or a `no address:` line.
 
 | reason | component | written by |
 |---|---|---|
 | `risk_score>=0.7` | the class | component classification |
 | `[<tag>]`, `[2b]`, `[3]`, `[java_only]` + the evidence | `{service}::{activity}` | service decomposition |
 | `[BEAN_DIALECT]` | the file | service decomposition |
+| `[CUSTOM_ACTIVITY]` | the project's own activity class (one item per class) | service decomposition |
+| `[AMBIGUOUS_SQL_KEY]`, `[UNKNOWN_SQL_KEY]`, `[NO_SQL_KEY]` | `{service}::{activity}`: the key is defined by two SQL files / by none / the DB activity names no key; the method has nothing to call and fails when called | service decomposition |
 | `[STUB_SPRING_LOGIC]` | `{service}::SpringLogic` | controller generation |
 | `[ENDPOINT_DUPLICATE]`, `[ENDPOINT_VERB]` | the resource's controller | controller generation |
 | `[AJAX_UNMATCHED]` | `js_ajax::{file}` (JS and JSP files) | ajax transformer |
 | `[AJAX_NO_CONTROLLER]` | `js_ajax::{file}` | the check of rewritten calls against the router controllers (`resources.ajax_targets_without_controller`): the service named was not converted, has no router, or is spelt in another case |
 | `[JSP_PATH]` | `jsp_path::{file}` | front-end copy |
-| `FRONTEND_MISSING`, `MAVEN_BUILD`, a failed LLM check | — | gate (next increment) |
+| `[DATASOURCE]`, `[DATASOURCE_PASSWORD]`, `[DATASOURCE_DRIVER]` | `datasource` | datasource step |
+| `FRONTEND_MISSING` | `frontend::{file}` | the pipeline's screen check |
 
 ## 5. Not ported from the earlier tool
 
@@ -440,7 +482,10 @@ mapper `resultType` correction at build time (generation and build stay apart).
 | A14 | all of it with real Maven | the four-module reactor builds, `{p}-boot/target/{p}.war` exists |
 | A15 | one gate part fails | gate fails, hand-over items and the check report exist |
 
-A1 to A10, A12 and A13 are unit tests of `tests/fwconvert/`; A11, A14 and A15 belong to the next increment.
+A1 to A13 are unit tests of `tests/fwconvert/` (A13 holds for a project without a root pom; with one the names
+come from the pom). A14: `tests/fwconvert/test_pipeline_maven.py` (integration) and the fixture
+`fixtures/projects/fw-convert-basic`, a whole run with real Maven. A15 as the guide states it does not apply: there
+is no three-part gate, a failed build is the run's own failure.
 
 ## 8. Modules (`sbmig/fwconvert/`)
 
@@ -453,9 +498,11 @@ A1 to A10, A12 and A13 are unit tests of `tests/fwconvert/`; A11, A14 and A15 be
 | `inventory.py` | file kinds, component kind / risk / order | `scan_tree`, `classify_component`, `conversion_order`, `risk_queue` |
 | `sqlmap.py` | SQL file → mapper, mapper copy | `convert_sql_text`, `read_mapper`, `convert_mappers` |
 | `servicexml.py` | service XML, activity kinds, DB classifier | `parse_services`, `parse_service_xml`, `classify_activity`, `decompose_services` |
-| `resources.py` | services + mappers → resources with methods and endpoints | `build_resources`, `ajax_targets_without_controller`, `unexposed_endpoints` |
+| `resources.py` | services + mappers → resources with methods and endpoints | `build_resources`, `ajax_targets_without_controller`, `unexposed_endpoints`, `unreachable_methods` |
 | `javagen.py` | every generated Java class | `generate_resource`, `generate_page_controllers`, `duplicate_mappings`, `write_generated` |
 | `frontcopy.py`, `apimap.py`, `ajax.py` | front-end copy and JSP path fix-up, page routes and REST calls, ajax rewrite | `copy_frontend`, `fix_jsp_paths`, `extract_api_map`, `scan_skipped`, `transform_ajax` |
+| `datasource.py`, `skeleton.py` | the datasource of the source project, the poms and the three skeleton files | `read_datasource`, `scan_datasource`, `generate_skeleton` |
+| `pipeline.py` | the steps in order, the border checks, the screen check; whether there is anything to convert | `convert_project`, `has_convertible`, `convertible_summary` |
 
 Generators return `GeneratedFile` records (path under the output root + text) and write nothing themselves, except
 the front-end copy, the JSP path fix-up and the ajax rewrite, which work on files. Project files are untrusted
@@ -468,6 +515,7 @@ file lists from it.
 
 ## 9. Not built yet
 
-The skeleton and poms, the datasource step, carried-over classes with the annotation mapping, the gate, the pipeline
-that runs the steps in order, the run scope and the page's choice between the two ways, the report section, the
-fixture project and the real-Maven run (A11, A14, A15).
+Carried-over classes with the annotation mapping (3.8): the project's own Java classes (utilities, entities) are not
+in the generated project, and both reports say so. The other way of handling a framework project (the framework
+upgraded in place) waits for its document. `convert/queue.json` (every hand-over item with its source excerpt) is
+in the run folder only, not in a download. Not run: a real framework project, the company cluster.

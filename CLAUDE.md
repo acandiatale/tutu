@@ -772,7 +772,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   engine into every way of not being done; reports built by hand in a test only show the rule agreeing with itself.
   Contract: `docs/INTERFACES.md` "v2.1z-ck".
 - **Framework projects get a second way: conversion into a generated Spring Boot project (started 2026-11-27,
-  v2.1z-cl; the converters exist, NOTHING is wired into a run yet).** The user showed the company's guide to an
+  v2.1z-cl: the converters; wired into a run by v2.1z-cm, next bullet).** The user showed the company's guide to an
   earlier in-house tool that generates a new project from a framework project (service XML, SQL files, JSPs) and
   said that framework projects will be handled in two ways from now on: "프레임워크만 업그레이드 하는 방법이랑 사내
   프레임워크로 적용하는 방법 … 디렉토리는 명시되어있는대로 쪼개주면 될거 같구". My reading: way one = the framework
@@ -803,6 +803,35 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   (every step charged by the distance it examines) instead of one more shape fix; (c) a border between two
   implementers' modules needs its own check that the pipeline calls (`ajax_targets_without_controller`,
   `duplicate_mappings`), because each side was right by its own tests.
+- **The conversion is part of a run (2026-11-27, v2.1z-cm; the bullet above describes the converters).** The user's
+  answers the same evening: the generated project is structured by the company rule sbmig already has ("우리 parent랑
+  mandatory인 boot-jar, comp-jar로 구조화 하는 로직이라 이 규정으로 가면 돼"), "구조화 후 수정 루프로 넘기면 되구",
+  "화면에서 선택 가능하게"; the package and project name come from the uploaded project's root pom ("루트 pom 보면
+  프로젝트 이름이 있잖아?! 그걸로 쓰면"); and a table of class names in the company config cannot work because every
+  project has its own activity classes ("프로젝트가 한두가지가 아닐텐데 이게 문제네?"). So: per-upload value
+  `framework_mode` (`reduced` | `convert`, a twin of `flow`; server default `framework.mode`; config section
+  `convert`); in mode `convert` INTAKE runs `sbmig.fwconvert.pipeline.convert_project`, replaces the working tree by
+  the generated project and commits `convert: generated Spring Boot project`; the one analysis then sees a
+  multi-module Spring Boot project and the ordinary flow follows (`restructure.boot_pom`: company parent, mandatory
+  artifacts, role parents; review; build + fix loop; remediation). A company sets NOTHING for it: names from the root
+  pom, a project's own activity class judged from what it extends and from the SQL statement its key reaches, one
+  hand-over item `[CUSTOM_ACTIVITY]` per such class. Contract `docs/INTERFACES.md` "v2.1z-cm", operators
+  `agent-doc/15-framework-conversion.md`, fixture `fixtures/projects/fw-convert-basic` (a whole real-Maven run:
+  exit 0, WAR built). Rules that are easy to break: (1) `pipeline.has_convertible` decides by CONTENT whether there
+  is anything to convert, before any refusal and before the tree is touched: a plain Spring project with a
+  `context-service.xml` was once converted into an empty project and lost its code; nothing to convert = the run
+  goes on untouched. (2) No credential of the source project is written anywhere: the password is a placeholder
+  (`${SPRING_DATASOURCE_PASSWORD:}`), credentials inside the JDBC URL are stripped and a final wall withholds any URL
+  that could still hold one (`datasource.may_carry_credentials`); two review rounds found a new URL form that leaked
+  until the rule became "write only what cannot hold a secret". (3) The tree swap deletes nothing before the
+  conversion commit exists: the as-is entries are moved to `<run dir>/convert/asis/` and moved back on any failure,
+  and the abort reason says "put back" only after the folder is seen empty. (4) Excerpts of source files exist only
+  in `<run dir>/convert/queue.json` and are scrubbed before they are written. (5) A method that will fail when
+  called is never silent: `[AMBIGUOUS_SQL_KEY]`, `[UNKNOWN_SQL_KEY]`, `[NO_SQL_KEY]`, `no address:` lines. (6) The
+  reports' sentence about what happened after the conversion lists only the stages that ran. Not built: carried-over
+  classes (the project's own utilities and entities are not in the result), the upgrade way (waits for its
+  document). Not checked: a real framework project, the company's parents (the generated poms rely on the role
+  parents managing what `spring-boot-starter-parent` manages), Job mode with the new value.
 - **First real cluster projects, 2026-11-19 (v2.1z-ax / ay / az)** — three things the fixtures never had.
   (1) **A library uploaded without its pom** (an in-house jar in the releases repository): Maven asks every repository
   for the pom; "not found" everywhere is a warning, but ONE repository answering with an error (the Central proxy of a

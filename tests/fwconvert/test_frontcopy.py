@@ -301,3 +301,13 @@ def test_fix_jsp_paths_and_transform_ajax_skip_named_pipes(tmp_path):
     assert fixed[0].errors == [f"{STATIC}/a.jsp: not a regular file, not read"]
     assert sorted(ajax[0].errors) == [f"{STATIC}/a.jsp: not a regular file, not rewritten",
                                       f"{STATIC}/b.js: not a regular file, not rewritten"]
+
+
+
+def test_jsp_path_reasons_hold_paths_only(tmp_path):
+    long = "/WEB-INF/" + "x" * 400 + ".jsp"
+    text = (f'<jsp:include page="/WEB-INF/jsp/gone.jsp"/>\n<jsp:include page="{long}"/>\n'
+            '<c:import url="/WEB-INF/a.jsp\n secret=Zq9JsVal7"/>\n').encode()
+    out, res = _copy(tmp_path, {"WebContent/WEB-INF/jsp/p.jsp": text})
+    [item] = fix_jsp_paths(out, _layout(), RULES, res.copied).queue
+    assert item.reason == "[JSP_PATH] /WEB-INF/jsp/gone.jsp"

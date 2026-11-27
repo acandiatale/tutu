@@ -50,11 +50,13 @@ def migrate(
     repo_root: Optional[Union[str, Path]] = None,
     components: Optional[Mapping[str, Any]] = None,
     flow: str = "full",
+    framework_mode: Optional[str] = None,
 ) -> "RunReport":
     """프로젝트 하나(디렉토리나 zip)를 `sbmig run`과 같은 파이프라인으로 이관하고 RunReport를 반환한다.
     - ``flow="remediation"``이면 이관 없이 취약점 조치만 한다
     - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를 줄 수 있다. ``fixer``에는 사내 수정기(propose_script)를 줄 수 있다
-    - ``stop_after``나 ``flow`` 값이 잘못되었으면 ValueError를 던진다
+    - ``framework_mode``는 사내 프레임워크 프로젝트의 처리 방법(reduced, convert)이다. None이면 ``framework.mode``를 쓴다
+    - ``stop_after``, ``flow``, ``framework_mode`` 값이 잘못되었으면 ValueError를 던진다
     - CLI 종료 코드는 ``exit_code(report)``로 얻는다
 
     llm        an LLMClientLike (message-based) or an LLMAdapterLike (`complete(request)`, wrapped in
@@ -66,13 +68,19 @@ def migrate(
     stop_after intake|analyze|plan|transform|restructure.
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
     flow       "full" (default: the migration) | "remediation" (no migration: the vulnerability remediation of the
-               project as uploaded; not with stop_after / dry_run — ValueError)."""
+               project as uploaded; not with stop_after / dry_run — ValueError).
+    framework_mode "reduced" | "convert" | None (= `framework.mode`); ignored by the remediation flow."""
     from sbmig.core.config import load_config
     from sbmig.core.workspace import Workspace
     from sbmig.loop import NullKnowledgeBase, Orchestrator, check_flow, parse_stop_after
 
     phase = parse_stop_after(stop_after)        # 잘못된 값이면 허용 값을 담은 ValueError를 던진다
     flow = check_flow(flow, phase, dry_run)     # 모르는 flow, stop_after나 dry_run과 함께 준 remediation은 ValueError
+    if framework_mode is not None and not str(framework_mode).strip():
+        framework_mode = None                   # 빈 값은 주지 않은 것과 같다(framework.mode를 쓴다)
+    if framework_mode is not None:
+        from sbmig.loop.convert import parse_framework_mode
+        framework_mode = parse_framework_mode(framework_mode)     # 모르는 값은 ValueError
     ov: dict = dict(overrides or {})
     if kb is False:
         ov = _merge(ov, {"kb": NO_KB_OVERRIDES})
@@ -98,7 +106,10 @@ def migrate(
     extra = dict(components or {})
     extra.setdefault("source", input)
     orch = Orchestrator(cfg, ws, llm=client, fixer=fixer, kb=kb_obj, **extra)
-    return orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
+    run_kw: dict = {"flow": flow} if flow != "full" else {}
+    if framework_mode is not None:
+        run_kw["framework_mode"] = framework_mode
+    return orch.run(stop_after=phase, dry_run=dry_run, **run_kw)
 
 
 def exit_code(report: "RunReport") -> int:

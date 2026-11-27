@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<queryMap desc="orders" xmlns="http://example.invalid/query">
+  <query id="order.getList" isNamed="true"><![CDATA[ SELECT ORDER_ID, AMOUNT FROM TB_ORDER WHERE CUST = :cust ]]></query>
+  <query id="order.save" isNamed="false"><![CDATA[ INSERT INTO TB_ORDER (CUST, AMOUNT) VALUES (?, ?) ]]></query>
+  <query id="order.remove" isNamed="false"><![CDATA[ DELETE FROM TB_ORDER WHERE ORDER_ID = ? ]]></query>
+  <query id="order.countAll"><![CDATA[ SELECT COUNT(*) FROM TB_ORDER ]]></query>
+</queryMap>

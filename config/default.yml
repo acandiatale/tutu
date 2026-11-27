@@ -137,11 +137,51 @@ framework:
   #   true: 다른 프로젝트처럼 빌드가 통과할 때까지 고친다(프레임워크 버전과 부모 pom은 건드리지 않는다).
   # 어느 쪽이든 빌드가 끝내 실패해도 취약점 조치는 이어서 한다(remediation.after_failed_build).
   fix_loop: false
+  # 올릴 때 처리 방법을 고르지 않은 프레임워크 프로젝트에 쓰는 방법.
+  #   reduced: 프레임워크를 그대로 두고 JDK와 jakarta만 올린다.
+  #   convert: 사내 규정의 Spring Boot 프로젝트로 전환한 뒤 다른 프로젝트처럼 이관을 이어 간다(아래 convert 절).
+  mode: reduced
   # jdk-jakarta 범위에서 실행할 레시피 세트. 아래 openrewrite.recipes의 세트 이름을 쓴다.
   # 기본은 JDK 21(jdk21)과 javax -> jakarta(jakarta) 두 가지다.
   # jakarta 세트는 서블릿 API를 Jakarta EE 9 기준(서블릿 5.0)으로 올린다. Servlet 6에서 없어진 API까지
   # 정리하려면 servlet_jakarta_10을 추가한다(Tomcat 10.1 이상에 올릴 프로젝트).
   recipe_sets: [jdk21, jakarta]
+
+# 사내 프레임워크 프로젝트를 사내 규정의 Spring Boot 프로젝트로 전환할 때 쓰는 값.
+# 화면에서 처리 방법을 "전환"으로 고른 실행에만 쓴다. 규칙 설명은 docs/FW-CONVERT.md에 있다.
+convert:
+  # false면 전환을 쓰지 않는다. 화면에도 선택이 나오지 않는다.
+  enabled: true
+  # 패키지와 프로젝트 이름은 올라온 프로젝트의 루트 pom에서 가져온다(패키지 = groupId + 프로젝트 이름,
+  # 프로젝트 이름 = artifactId). 아래 세 값은 루트 pom이 없거나 groupId를 읽지 못한 프로젝트에만 쓴다.
+  # 생성할 패키지의 앞부분(예: com.example). 비워 두면 그런 프로젝트는 전환하지 않고 멈춘다.
+  package_root: ""
+  # 쓸 수 있는 도메인 코드. 프로젝트 이름이 "<코드>-"로 시작하면 그 코드를 쓴다.
+  domains: []
+  # 위에 해당하지 않을 때 쓰는 도메인 코드. 비워 두면 패키지에 도메인을 넣지 않는다.
+  default_domain: ""
+  # 프로젝트 이름에서 떼어 낼 접두사를 더한다(sample-, demo-, test- 등은 이미 들어 있다).
+  name_prefixes: []
+  # 생성하는 pom의 groupId. 비워 두면 package_root에 도메인을 붙인 값을 쓴다.
+  group_id: ""
+  # 생성하는 pom의 version.
+  version: "1.0.0"
+  # 부모 pom이 버전을 관리하지 않아 pom에 버전을 써야 하는 의존성.
+  # 값을 비워 두면 저장소에서 최신 릴리스를 찾아 쓴다. 찾지 못하면 전환하지 않고 멈춘다.
+  versions:
+    "org.mybatis.spring.boot:mybatis-spring-boot-starter": ""
+  # DB 종류별 JDBC 드라이버 좌표("g:a" 또는 "g:a:v"). 버전이 없으면 부모 pom이 관리하는 버전을 쓴다.
+  # 여기에 없는 DB는 의존성을 넣지 않고 보고서의 확인 항목으로 남긴다.
+  jdbc_drivers:
+    oracle: "com.oracle.database.jdbc:ojdbc11"
+    mysql: "com.mysql:mysql-connector-j"
+    mariadb: "org.mariadb.jdbc:mariadb-java-client"
+    postgresql: "org.postgresql:postgresql"
+    sqlserver: "com.microsoft.sqlserver:mssql-jdbc"
+    h2: "com.h2database:h2"
+  # 변환 규칙 파일(knowledge/fwconvert/rules.yml)에 덧씌울 값.
+  # 프레임워크 이름이 붙지 않은 회사 클래스와 낱말을 여기에 지정한다(docs/FW-CONVERT.md 1절).
+  rules: {}
 
 # --------------------------------------------------------------------------------------
 # layout: 재구성 (변환 다음 단계: 회사 모듈 구조로 바꾸기)

@@ -32,6 +32,7 @@ import logging
 import os
 import posixpath
 import re
+import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -40,8 +41,9 @@ from typing import Any, Callable, Iterator, Optional
 from sbmig.analyze.framework import NO_FIX_LOOP_NOTE, no_fix_loop_followup
 from sbmig.build.log_parser import BUILD_EXTENSION_RE
 from sbmig.core.config import Config
-from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, GAV, RUN_FLOWS, BlockedItem, BuildError, BuildResult,
-                               CaseType, DecisionKind, ErrorKind, IterationRecord, LLMUsage, MigrationPlan, Phase,
+from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, FRAMEWORK_MODE_CONVERT, FRAMEWORK_MODE_REDUCED, GAV,
+                               RUN_FLOWS, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
+                               IterationRecord, LLMUsage, MigrationPlan, Phase,
                                PhaseResult, PlanStep, ProjectProfile, RunReport, StepKind, asked_model_name,
                                merge_model_names, real_model_name, served_beside, utcnow)
 from sbmig.core.stage import stage
@@ -52,6 +54,7 @@ from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
 from .callee import takes_keyword
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
+from .convert import parse_framework_mode
 from .entries import REVIEW_L2, CaseScripts, RunErrors
 from .fixloop import NOTES_LOGGED, BuildFixLoop, _restore_build_byproducts, _status_paths, refine_build
 from .notes import (answer_notes, fallback_guide, log_major_upgrades, note_line, operator_changes, pom_changed,
@@ -332,6 +335,7 @@ class Orchestrator:
         self._verify_done: list[str] = []      # 최종 빌드 결과가 나온 verify 단계 id
         self._parse_problem_files: set[str] = set()   # 변환되지 않은 파일로 이미 알린 소스 파일
         self._flow = FLOW_FULL                 # 현재 실행 방식(full 또는 remediation). _run_guard가 정한다
+        self._framework_mode = ""              # 사내 프레임워크 처리 방법(reduced, convert). _run_guard가 정한다
         self._source = source                  # remediation 실행의 입력 ZIP이나 폴더. None이면 저널의 intake 줄에서 읽는다
         self._remediation_components = remediation_components
 
@@ -438,17 +442,21 @@ class Orchestrator:
         return self._fixer
 
     # ------------------------------------------------------------------ 실행
-    def run(self, stop_after: Phase | None = None, dry_run: bool = False, flow: str = FLOW_FULL) -> RunReport:
+    def run(self, stop_after: Phase | None = None, dry_run: bool = False, flow: str = FLOW_FULL,
+            framework_mode: str | None = None) -> RunReport:
         """이관을 한 번 실행하고 보고서를 반환한다. 엔진은 ``loop.engine``의 ``graph``(기본)나 ``inline``이다.
         ``flow="remediation"``이면 접수 -> 취약점 조치 -> 보고서 순서로 실행한다.
         ``stop_after``나 ``dry_run``과 함께 쓰면 ValueError를 던진다.
+        ``framework_mode``는 사내 프레임워크 프로젝트의 처리 방법이다. None이면 ``framework.mode``를 쓰고,
+        모르는 값이면 ValueError를 던진다.
 
         Both engines call the same `step_*` methods inside the same `_run_guard` (abort / missing-component /
         internal-error handling + `_finalize`), so reports, journals and exit codes are identical apart from
         the graph's additive ``graph_node`` journal events. Graph = `sbmig.graph.run_graph`, inline =
         `_run`."""
         flow = check_flow(flow, stop_after, dry_run)
-        with self._run_guard(dry_run, flow=flow) as report:
+        self.check_framework_mode(framework_mode)          # 모르는 값은 실행 전에 ValueError
+        with self._run_guard(dry_run, flow=flow, framework_mode=framework_mode) as report:
             if self.refused_at_intake(report):
                 pass                                # 접수에서 거절한 작업 공간은 아무 단계도 실행하지 않는다
             elif self.engine == "graph":
@@ -466,6 +474,18 @@ class Orchestrator:
         return self._flow
 
     @property
+    def framework_mode(self) -> str:
+        """현재 또는 마지막 실행의 사내 프레임워크 처리 방법(``reduced``, ``convert``)을 반환한다.
+        remediation 실행은 이 값을 쓰지 않아서 빈 문자열이다."""
+        return self._framework_mode
+
+    def check_framework_mode(self, value: Any = None) -> str:
+        """처리 방법 값을 검사하고 정리한 값을 반환한다. None이나 빈 값이면 ``framework.mode``를 쓴다.
+        모르는 값이면 ValueError를 던진다."""
+        default = getattr(getattr(self.cfg, "framework", None), "mode", None)
+        return parse_framework_mode(value, default)
+
+    @property
     def engine(self) -> str:
         """``loop.engine`` 값(graph, inline)을 반환한다. 비어 있으면 inline이다."""
         return getattr(getattr(self.cfg, "loop", None), "engine", "inline") or "inline"
@@ -476,19 +496,32 @@ class Orchestrator:
         return self._running
 
     @contextmanager
-    def _run_guard(self, dry_run: bool = False, flow: str = FLOW_FULL) -> Iterator[RunReport]:
+    def _run_guard(self, dry_run: bool = False, flow: str = FLOW_FULL,
+                   framework_mode: str | None = None) -> Iterator[RunReport]:
         """새 RunReport로 실행을 시작하고, 무슨 일이 있어도 보고서를 남기고 끝낸다.
         - ``_RunAborted``는 조용히 끝낸다
         - 필요한 패키지가 없거나 다른 예외가 나면 중단으로 기록하고 최종 빌드를 시도한다
         - 어떤 경우에도 ``_finalize``(보고서, KB 기록, 산출물)를 실행한다
 
         Used by `run()` for both engines and by `sbmig.graph.run_graph` / `stream_graph` when called directly.
-        A second guard while one is open raises RuntimeError."""
+        A second guard while one is open raises RuntimeError. `framework_mode` None or blank = not chosen:
+        `framework.mode`, except that a `convert` default while the conversion is not available
+        (`convert_available`) runs as `reduced` (journal `framework_mode` with `fallback`); a chosen value stands.
+        An unknown value raises ValueError before the guard opens. Flow `remediation` ignores it (`""`)."""
         if self._running:
             raise RuntimeError("Orchestrator run already in progress")
+        mode = self.check_framework_mode(framework_mode)
+        chosen = framework_mode is not None and bool(str(framework_mode).strip())
+        fallback = ""
+        if not chosen and mode == FRAMEWORK_MODE_CONVERT and not self.convert_available():
+            # 서버 기본값이 convert인데 전환을 쓸 수 없으면, 고르지 않은 실행은 reduced로 실행한다
+            mode = FRAMEWORK_MODE_REDUCED
+            fallback = ("framework.mode is convert but the conversion is not available (convert.enabled or the "
+                        "framework name): this run, which chose no way, runs as reduced")
         self._running = True
         self._dry_run = dry_run
         self._flow = parse_flow(flow)
+        self._framework_mode = mode if self._flow == FLOW_FULL else ""
         self.abort_reason = None
         # 같은 객체로 두 번 실행해도 앞 실행의 결과가 보이지 않도록 실행별 상태를 비운다
         self._verify_results = []
@@ -519,6 +552,13 @@ class Orchestrator:
             self.ws.journal({"event": "flow", "flow": self._flow})
             # 분석 단계가 없으면 이름이 작업 폴더 이름으로 남는다. 웹에서 입력한 프로젝트명을 보고서 제목에 쓴다
             report.project_name = self._web_project_name() or report.project_name
+        else:
+            report.framework_mode = self._framework_mode
+            ev: dict[str, Any] = {"event": "framework_mode", "framework_mode": self._framework_mode, "chosen": chosen}
+            if fallback:
+                ev["fallback"] = fallback
+                log.info("접수: 처리 방법 기본값 convert를 쓸 수 없어 reduced로 실행 (convert.enabled 또는 프레임워크 이름)")
+            self.ws.journal(ev)
         try:
             yield report
         except _RunAborted:
@@ -813,6 +853,10 @@ class Orchestrator:
         if "jdk-not-21" in report.flags:
             self._abort(report, self._jdk_problem)
             return False
+        # 사내 규정 전환은 as-is 스냅샷 뒤, 빌드 도구 확인 앞에서 작업 트리를 생성한 프로젝트로 바꾼다
+        if edits and not self._intake_convert(report):
+            self._timed("intake", t)
+            return False
         if not self._check_build_tool(report, edits=edits):
             self._timed("intake", t)
             return False
@@ -967,6 +1011,405 @@ class Orchestrator:
         self._abort(report, why)
         self.ws.journal({"event": "build_tool", "tool": "ant", "ok": False, "reason": why})
         return False
+
+    # ------------------------------------------------------------------ 사내 규정 전환(접수)
+    def _intake_convert(self, report: RunReport) -> bool:
+        """처리 방법이 ``convert``면 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환한다.
+        전환할 것이 없는 프로젝트는 설정이 무엇이든 멈추지 않고 그대로 둔다.
+        전환하면 작업 트리를 생성한 프로젝트로 바꾸고 커밋한다.
+        쓸 수 없는 설정이거나 전환이 실패하면 실행을 중단하고 False를 반환한다.
+
+        Only flow `full` with mode `convert` (other runs: True at once). Order:
+        1. `convert.enabled` and a framework name, else refuse (an unchosen server default never gets here: the run
+           guard turns it into `reduced`);
+        2. the rules (`load_rules(name, convert.overlay())`), else refuse;
+        3. `pipeline.has_convertible(ws.root, rules)`: False -> `_convert_skipped`, no refusal whatever else the
+           configuration lacks;
+        4. the names: the as-is root pom's groupId / artifactId, else `convert.package_root` + the entered project
+           name, else refuse with what the root pom lacks;
+        5. dry run stops here (journal `framework_convert_skipped` reason `dry_run`, the tree is never written);
+        6. versions (empty values of `convert.versions` from the repository set), else refuse;
+        7. `convert_project(ws.root, <run dir>/convert/out, rules, options)`, then `_swap_and_commit`.
+        Refusals: flag `aborted:convert-unavailable`, reason `framework conversion is not available: …`. A raise of
+        the converter, a result without poms or a failed swap: flag `aborted:convert-failed`, the as-is tree back.
+        Converted: commit `convert: generated Spring Boot project` (the second commit), flag `framework-converted`,
+        journal `framework_converted`, `report.conversion`, `convert/queue.json` (excerpts scrubbed) +
+        `convert/summary.json`, `ws.change_base_commit` = that commit (codediff / changes.patch base).
+        ROUND2.md section E, its amendment and the review follow-up."""
+        if self._flow != FLOW_FULL or self._framework_mode != FRAMEWORK_MODE_CONVERT:
+            return True
+        from sbmig.loop import convert as cv
+        ccfg = getattr(self.cfg, "convert", None)
+        if ccfg is None or not ccfg.available():
+            return self._convert_unavailable(report, "convert.enabled is false",
+                                             "choose the way 'reduced' or switch convert.enabled on")
+        fw_name = self._framework_name()
+        if not fw_name:
+            return self._convert_unavailable(report, "the framework has no name (framework.name and "
+                                                     "framework.artifacts are empty)",
+                                             "set framework.name or framework.artifacts")
+        try:
+            load_rules = importlib.import_module("sbmig.fwconvert.rules").load_rules
+            rules = load_rules(fw_name, dict(ccfg.overlay()))
+        except Exception as e:  # noqa: BLE001 - 규칙 파일 문제는 설정 문제로 보고 멈춘다
+            return self._convert_unavailable(report, f"the conversion rules could not be loaded ({type(e).__name__}: "
+                                                     f"{e})", "check knowledge/fwconvert/rules.yml and convert.rules")
+        # 테스트가 sys.modules에 가짜 모듈을 넣을 수 있도록 호출할 때마다 importlib로 찾는다
+        try:
+            pipeline = importlib.import_module("sbmig.fwconvert.pipeline")
+            convertible, candidates = self._has_convertible(pipeline, rules)
+        except Exception as e:  # noqa: BLE001 - 판단하지 못하면 전환 실패로 멈춘다. 트리는 그대로다
+            log.exception("framework conversion: the convertible check failed")
+            return self._convert_failed(report, e, "kept")
+        if not convertible:
+            return self._convert_skipped(report, None, fw_name, candidates=candidates)
+        overlay = dict(ccfg.overlay())
+        names, problem = cv.read_root_pom(self.ws.root)
+        if names is not None:
+            # 루트 pom의 groupId가 패키지 앞부분이다. 도메인은 groupId에 이미 들어 있다
+            from sbmig.fwconvert.naming import camel
+            overlay["naming"] = {**(overlay.get("naming") or {}), "package_root": names.group_id, "domains": [],
+                                 "default_domain": ""}
+            source, domain, override, group_id = names.artifact_id, "", camel(names.artifact_id), names.group_id
+            how = "root pom"
+            try:
+                rules = load_rules(fw_name, overlay)
+            except Exception as e:  # noqa: BLE001
+                return self._convert_unavailable(report, f"the conversion rules could not be loaded "
+                                                         f"({type(e).__name__}: {e})",
+                                                 "check knowledge/fwconvert/rules.yml and convert.rules")
+        elif not ccfg.package_root.strip():
+            return self._convert_unavailable(report, f"{problem} and convert.package_root is not set",
+                                             "set convert.package_root")
+        else:
+            log.info("접수: 사내 규정 전환 - 루트 pom의 이름을 쓰지 못해 convert.package_root를 씀 (%s)", problem)
+            source = self._entered_project_name()
+            domain = cv.project_domain(source, ccfg.domains)
+            override, group_id, how = "", ccfg.group_id.strip(), "convert.package_root"
+        if self._dry_run:
+            self.ws.journal({"event": "framework_convert_skipped", "reason": "dry_run", "source_name": source,
+                             "names_from": how})
+            log.info("접수: 사내 규정 전환 - dry run이라 작업 트리를 바꾸지 않음")
+            return True
+        versions: dict[str, str] = {}
+        lookup: Any = None
+        for key, value in dict(ccfg.versions or {}).items():
+            v = str(value or "").strip()
+            if not v:
+                if lookup is None:
+                    lookup = self._convert_version_lookup()
+                v = cv.newest_release(lookup, key)
+                if not v:
+                    return self._convert_unavailable(
+                        report, f"no version for {key} (convert.versions has no value for it and the repository set "
+                                f"has no release of it)", f'set convert.versions["{key}"]')
+                log.info("접수: 사내 규정 전환 - %s 버전은 저장소의 최신 릴리스 %s", key, v)
+            versions[str(key)] = v
+        model = importlib.import_module("sbmig.fwconvert.model")
+        target = getattr(self.cfg, "target", None)
+        options = model.ConvertOptions(
+            source_name=source, domain=domain, override=override,
+            java_version=str(getattr(target, "java_version", "21") or "21"),
+            boot_version=str(getattr(target, "spring_boot_version", "") or ""), group_id=group_id,
+            version=str(ccfg.version or "1.0.0"), versions=versions, jdbc_drivers=dict(ccfg.jdbc_drivers or {}))
+        conv_dir = self.ws.run_dir / cv.CONVERT_DIR
+        out_root = conv_dir / "out"
+        try:
+            if out_root.is_symlink():
+                out_root.unlink()
+            elif out_root.exists():
+                shutil.rmtree(out_root)              # 같은 실행 폴더에 앞선 시도가 남긴 출력이다
+            out_root.mkdir(parents=True)
+            log.info("접수: 사내 규정 전환 시작 (%s 프레임워크, 이름: %s, 출처: %s)", fw_name, source, how)
+            result = pipeline.convert_project(self.ws.root, out_root, rules, options)
+        except Exception as e:  # noqa: BLE001 - 전환기의 버그도 보고서를 남기고 깨끗하게 멈춘다
+            log.exception("framework conversion failed")
+            return self._convert_failed(report, e, "kept")
+        # 출력 폴더를 거부했거나 pom을 쓰지 못한 결과는 전환 실패다. 트리는 as-is 그대로 둔다
+        broken = cv.result_problem(result)
+        if broken:
+            log.error("framework conversion: %s", broken)
+            return self._convert_failed(report, broken, "kept")
+        if not getattr(result, "converted", False):
+            return self._convert_skipped(report, result, fw_name)
+        return self._swap_and_commit(report, result, fw_name, out_root)
+
+    def _framework_name(self) -> str:
+        """화면과 보고서에 쓰는 사내 프레임워크 이름을 반환한다. 설정하지 않았으면 빈 문자열이다."""
+        fcfg = getattr(self.cfg, "framework", None)
+        try:
+            return str(fcfg.display_name() or "") if fcfg is not None else ""
+        except Exception:  # noqa: BLE001 - 이름을 만들지 못하면 이름이 없는 것으로 본다
+            return ""
+
+    def convert_available(self) -> bool:
+        """사내 규정 전환을 쓸 수 있으면 True를 반환한다. ``convert.enabled``와 프레임워크 이름이 있어야 한다."""
+        ccfg = getattr(self.cfg, "convert", None)
+        return bool(ccfg is not None and ccfg.available() and self._framework_name())
+
+    def _has_convertible(self, pipeline: Any, rules: Any) -> tuple[bool, int]:
+        """프로젝트에 전환할 것이 있는지 파이프라인에 확인한다. 읽기만 한다.
+        (전환할 것이 있는지, 이름으로 보아 후보인 파일 수)를 반환한다.
+        ``convertible_summary``가 먼저이고, 없으면 ``has_convertible``, 그것도 없으면 파일 목록으로 본다.
+        후보 수를 알 수 없으면 0으로 본다."""
+        fn = getattr(pipeline, "convertible_summary", None)
+        if callable(fn):
+            ok, n = fn(self.ws.root, rules)
+            return bool(ok), int(n or 0)
+        fn = getattr(pipeline, "has_convertible", None)
+        if callable(fn):
+            return bool(fn(self.ws.root, rules)), 0
+        inv = importlib.import_module("sbmig.fwconvert.inventory").scan_tree(self.ws.root, rules)
+        return bool(inv.service_xml or inv.sql), 0
+
+    def _swap_and_commit(self, report: RunReport, result: Any, fw_name: str, out_root: Path) -> bool:
+        """작업 트리를 생성한 프로젝트로 바꾸고 전환 커밋을 만든다. 커밋 전에는 as-is 파일을 지우지 않는다.
+        중간에 실패하면 as-is 항목을 모두 제자리로 되돌리고 중단한다. Ctrl-C 같은 중단도 되돌린 뒤 다시 던진다.
+
+        `cv.TreeSwap`: every top-level entry except `.git` / `.sbmig` is renamed into `<run dir>/convert/asis/`,
+        the generated files are moved in, the ignore lines go to `.git/info/exclude`, the commit is made, and
+        only then the aside folder is removed. On a failure (any BaseException): generated entries removed,
+        entries renamed back, `.git/info/exclude` restored, the index reset to the as-is commit (`git reset -q
+        <as-is>`, working tree untouched), the abort recorded; a non-Exception (KeyboardInterrupt, SystemExit) is
+        raised again after that. Marker `<run dir>/convert/swap.json` (written before the first rename): `state`
+        `moving` | `incomplete`, `project_dir`, `asis_dir`, `entries` (the top-level names being moved), `started`
+        and, when incomplete, `left` (what is still in the aside folder) and `problems`; removed right after the
+        commit or after a complete roll back. A killed process leaves it at `moving`."""
+        from sbmig.loop import convert as cv
+        asis = self.ws.head()
+        conv_dir = self.ws.run_dir / cv.CONVERT_DIR
+        aside = conv_dir / "asis"
+        marker = conv_dir / cv.SWAP_MARKER
+        swap = cv.TreeSwap(self.ws.root, aside)
+        exclude = self.ws.root / ".git" / "info" / "exclude"
+        exclude_before: bytes | None = exclude.read_bytes() if exclude.is_file() else None
+        removed: dict[str, Any] = {}
+        mark: dict[str, Any] = {}
+        try:
+            files, links = cv.generated_paths(out_root)
+            if "pom.xml" not in files:
+                raise ValueError("the generated project has no root pom.xml")
+
+            def listed(*args: str) -> list[str]:
+                out = self.ws._git("ls-files", "-z", *args, check=False).stdout or ""
+                return [f for f in out.split("\0") if f]
+            ignored = listed("--others", "--ignored", "--exclude-standard")
+            removed = {"tracked": len(listed()), "untracked": len(listed("--others", "--exclude-standard")),
+                       "ignored": len(ignored), "ignored_sample": ignored[:10], "links_skipped": links[:20]}
+            # 첫 이름 바꾸기 전에 표시 파일을 쓴다. 프로세스가 죽어도 as-is 파일이 어디 있는지 알 수 있다
+            mark = {"state": "moving", "project_dir": str(self.ws.root), "asis_dir": str(aside),
+                    "entries": sorted(e.name for e in self.ws.root.iterdir() if e.name not in cv.KEEP_NAMES),
+                    "started": utcnow().isoformat()}
+            conv_dir.mkdir(parents=True, exist_ok=True)
+            cv.write_marker(marker, mark)
+            swap.move_aside()
+            removed["moved"] = swap.move_in(out_root, files)
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            text = exclude_before.decode("utf-8", errors="replace") if exclude_before is not None else ""
+            lines = [ln for ln in self.ws._gitignore_lines() if ln not in set(text.splitlines())]
+            if lines:
+                with exclude.open("a", encoding="utf-8") as fh:
+                    fh.write(("\n" if text and not text.endswith("\n") else "") + "\n".join(lines) + "\n")
+            sha = self.ws.commit(cv.CONVERT_COMMIT)
+            if sha == asis:
+                raise RuntimeError("the conversion commit was not made")
+        except BaseException as e:  # noqa: BLE001 - Ctrl-C도 되돌린 뒤 다시 던진다
+            self._swap_failed(report, e, swap, asis, aside, marker, mark, exclude, exclude_before)
+            if not isinstance(e, Exception):
+                raise
+            return False
+        try:
+            marker.unlink(missing_ok=True)       # 커밋이 생겼으니 작업 트리는 온전하다
+        except OSError as e:
+            log.warning("framework conversion: %s was not removed: %s", marker, e)
+        cv.remove_empty_dirs(out_root)
+        try:
+            swap.finish()
+        except OSError as e:
+            log.warning("framework conversion: the moved-aside as-is files were not removed from %s: %s", aside, e)
+        return self._convert_done(report, result, fw_name, sha, removed)
+
+    def _swap_failed(self, report: RunReport, err: BaseException, swap: Any, asis: str, aside: Path, marker: Path,
+                     mark: dict, exclude: Path, exclude_before: bytes | None) -> None:
+        """트리를 바꾸다 실패했을 때 as-is로 되돌리고 중단을 기록한다. 예외를 던지지 않는다.
+        사유는 되돌린 결과를 그대로 말한다. 옮겨 둔 폴더에 남은 것이 있으면 그 폴더와 항목을 쓴다."""
+        from sbmig.loop import convert as cv
+        try:
+            log.error("framework conversion: the working tree could not be replaced: %s: %s", type(err).__name__, err)
+        except Exception:  # noqa: BLE001
+            pass
+        problem, left = "", []
+        try:
+            problem, left = swap.rollback()
+        except BaseException as re:  # noqa: BLE001 - 되돌리기 자체의 버그도 사유에 남긴다
+            problem = f"roll back: {type(re).__name__}: {re}"
+            try:
+                left = sorted(p.name for p in aside.iterdir()) if aside.is_dir() else []
+            except OSError:
+                left = ["(the folder could not be listed)"]
+        try:
+            if exclude_before is None:
+                exclude.unlink(missing_ok=True)
+            else:
+                exclude.write_bytes(exclude_before)
+        except OSError as ge:
+            problem = (problem + "; " if problem else "") + f".git/info/exclude: {type(ge).__name__}: {ge}"
+        try:
+            if self.ws.head() != asis:
+                self.ws._git("reset", "-q", "--soft", asis)
+            self.ws._git("reset", "-q", asis, check=False)      # index만 as-is로 맞춘다. 작업 트리는 그대로다
+        except Exception as ge:  # noqa: BLE001 - git 정리 실패는 이유에 남긴다
+            problem = (problem + "; " if problem else "") + f"git: {type(ge).__name__}: {ge}"
+        try:
+            if not swap.started:
+                marker.unlink(missing_ok=True)
+                self._convert_failed(report, err, "kept")
+                return
+            if left or problem:
+                cv.write_marker(marker, {**mark, "state": "incomplete", "left": left, "problems": problem[:500]})
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError as me:
+            log.warning("framework conversion: the swap marker %s could not be updated: %s", marker, me)
+        if left:
+            log.error("framework conversion: the as-is tree could not be put back completely: %s (left in %s: %s)",
+                      problem, aside, ", ".join(left[:20]))
+            self._convert_failed(report, err, "lost", where=str(aside), detail=problem, left=left)
+        elif problem:
+            log.error("framework conversion: the as-is tree was put back, but not exactly: %s", problem)
+            self._convert_failed(report, err, "inexact", detail=problem)
+        else:
+            self._convert_failed(report, err, "restored")
+
+    def _entered_project_name(self) -> str:
+        """전환할 프로젝트 이름의 바탕이 될 이름을 반환한다. 웹에서 입력한 이름이 먼저다.
+        없으면 CLI에 준 폴더 이름(ZIP이면 확장자를 뗀 파일 이름)을 쓰고, 그것도 없으면 작업 폴더 이름을 쓴다."""
+        name = self._web_project_name()
+        if name:
+            return name
+        src = self._source
+        if src is None:
+            try:
+                with open(self.ws.journal_path, encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            ev = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(ev, dict) and ev.get("event") == "intake" and ev.get("source"):
+                            src = ev["source"]
+                            break
+            except (OSError, AttributeError, TypeError):
+                src = None
+        if src is not None:
+            p = Path(str(src))
+            try:
+                stem = p.name if p.is_dir() else p.stem
+            except OSError:
+                stem = p.stem
+            if stem:
+                return stem
+        return self.ws.root.name
+
+    def _convert_version_lookup(self) -> Any:
+        """전환에 쓸 저장소 조회기를 반환한다. 수정 루프의 버전 사전 시도와 같은 저장소 집합을 본다.
+        만들 수 없으면 None을 반환한다."""
+        try:
+            from sbmig.build.repo_versions import RepositoryLookup
+            try:
+                return RepositoryLookup(self.cfg, project_root=self.ws.root)
+            except TypeError:                           # 그 키워드를 받지 않는 조회기
+                return RepositoryLookup(self.cfg)
+        except Exception as e:  # noqa: BLE001 - 조회기가 없으면 버전을 찾지 못한 것으로 본다
+            log.warning("framework conversion: the repository lookup could not start (%s: %s)", type(e).__name__, e)
+            return None
+
+    def _convert_unavailable(self, report: RunReport, what: str, fix: str) -> bool:
+        """사내 규정 전환을 쓸 수 없어서 실행을 중단한다. 플래그 ``aborted:convert-unavailable``을 붙인다.
+        중단 사유는 빠진 설정을 이름으로 말한다. 항상 False를 반환한다."""
+        from sbmig.loop.convert import FLAG_UNAVAILABLE, UNAVAILABLE_PREFIX
+        self._flag(FLAG_UNAVAILABLE)
+        reason = f"{UNAVAILABLE_PREFIX}{what} — {fix}"
+        self._abort(report, reason)
+        self.ws.journal({"event": "framework_convert_unavailable", "reason": reason})
+        return False
+
+    def _convert_failed(self, report: RunReport, err: BaseException | str, tree: str, *, where: str = "",
+                        detail: str = "", left: Optional[list[str]] = None) -> bool:
+        """전환이 실패해서 실행을 중단한다. 플래그 ``aborted:convert-failed``를 붙이고 항상 False를 반환한다.
+        중단 사유는 프로젝트가 지금 어떤 상태인지 그대로 말한다.
+        - ``kept``: 작업 트리를 건드리기 전에 실패했다
+        - ``restored``: 바꾸던 트리를 as-is로 모두 되돌렸다
+        - ``inexact``: as-is 항목은 모두 되돌렸지만 정리하지 못한 것이 있다(``detail``)
+        - ``lost``: 다 되돌리지 못했다. 사유에 as-is 파일이 있는 곳(``where``)과 남은 항목(``left``)을 쓴다"""
+        from sbmig.loop.convert import FAILED_PREFIX, FLAG_FAILED
+        self._flag(FLAG_FAILED)
+        text = err if isinstance(err, str) else (f"{type(err).__name__}: {err}" if str(err) else type(err).__name__)
+        msg = " ".join(text.split())[:300]
+        names = ", ".join((left or [])[:10]) + (f", +{len(left) - 10} more" if left and len(left) > 10 else "")
+        tail = {"kept": "the project was left as uploaded",
+                "restored": "the project was put back as uploaded",
+                "inexact": f"the as-is files were put back, but not everything was cleaned up ({detail[:200]})"}.get(
+            tree, f"the as-is files could not all be put back; what is missing is in {where} ({names})")
+        reason = f"{FAILED_PREFIX}{msg} — {tail}"
+        self._abort(report, reason)
+        ev: dict[str, Any] = {"event": "framework_convert_failed", "reason": reason, "tree": tree}
+        if where:
+            ev.update(asis_dir=where, detail=detail)
+        self.ws.journal(ev)
+        return False
+
+    def _convert_skipped(self, report: RunReport, result: Any, fw_name: str, *, candidates: int = 0) -> bool:
+        """전환할 파일이 없어서 트리를 그대로 두고 계속한다. 저널 한 줄과 인수인계 한 줄을 남긴다.
+        이름은 프레임워크 파일 같은데 하나도 읽지 못했으면(``candidates``) 그 사실을 그대로 적는다."""
+        from sbmig.loop import convert as cv
+        if result is not None:
+            report.conversion = cv.conversion_info(result, fw_name)
+        cv.remove_empty_dirs(self.ws.run_dir / cv.CONVERT_DIR)
+        unreadable = candidates > 0
+        self.ws.journal({"event": "framework_convert_skipped",
+                         "reason": "nothing readable" if unreadable else "nothing to convert",
+                         "candidates": candidates,
+                         "counts": dict(getattr(result, "counts", None) or {}),
+                         "errors": [str(e) for e in getattr(result, "errors", None) or []][:50]})
+        if unreadable:
+            log.info("접수: 사내 규정 전환 - 프레임워크 파일로 보이는 파일 %d개를 하나도 읽지 못해 프로젝트를 그대로 둠",
+                     candidates)
+        else:
+            log.info("접수: 사내 규정 전환 - 전환할 서비스 XML과 SQL 파일이 없어 프로젝트를 그대로 둠")
+        line = cv.unreadable_line(candidates) if unreadable else cv.SKIPPED_LINE
+        if line not in report.manual_followups:
+            report.manual_followups.append(line)
+        return True
+
+    def _convert_done(self, report: RunReport, result: Any, fw_name: str, sha: str, removed: dict) -> bool:
+        """전환한 결과를 기록한다. 플래그, 저널, ``report.conversion``, convert/queue.json과 summary.json을 남긴다.
+        코드 변경 화면과 changes.patch의 기준 커밋을 전환 커밋으로 정한다."""
+        from sbmig.loop import convert as cv
+        info = cv.conversion_info(result, fw_name, sha)
+        report.conversion = info
+        self._flag(cv.FLAG_CONVERTED)
+        self.ws.change_base_commit = sha
+        conv_dir = self.ws.run_dir / cv.CONVERT_DIR
+        try:
+            conv_dir.mkdir(parents=True, exist_ok=True)
+            # 원본 발췌는 이 파일에만 남긴다. 비밀 값은 가린 뒤 쓴다
+            (conv_dir / "queue.json").write_text(json.dumps(cv.safe_queue(result, self.cfg), ensure_ascii=False,
+                                                            indent=2), encoding="utf-8")
+            (conv_dir / "summary.json").write_text(info.model_dump_json(indent=2), encoding="utf-8")
+        except OSError as e:
+            log.warning("framework conversion: convert/queue.json or summary.json not written: %s", e)
+        # 웹 화면이 report.json보다 먼저 읽는 줄이다. 모양은 웹과 맞춘 정해진 형태다(queue와 errors는 개수)
+        self.ws.journal({"event": "framework_converted", "framework": info.framework, "project": info.project,
+                         "package": info.package, "modules": list(info.modules), "counts": dict(info.counts),
+                         "queue": int(info.queue_total), "errors": len(info.errors), "datasource": info.datasource,
+                         "commit": sha, "removed": removed})
+        log.info("접수: 사내 규정 전환 완료 - %s (%s), 모듈 %s, 확인 항목 %d건, 오류 %d건", info.project, info.package,
+                 ", ".join(info.modules), info.queue_total, len(info.errors))
+        line = cv.duplicate_followup(info.errors)
+        if line and line not in report.manual_followups:
+            report.manual_followups.insert(0, line)
+        return True
 
     def _intake_layout(self, report: RunReport) -> bool:
         """접수 단계에서 pom 구성을 정리한다. 모두 effective-pom 캡처와 다른 Maven 호출보다 먼저 실행한다.

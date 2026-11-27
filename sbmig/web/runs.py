@@ -74,7 +74,7 @@ from pathlib import Path
 from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
-from sbmig.core.models import FLOW_FULL, FLOW_REMEDIATION, RUN_FLOWS
+from sbmig.core.models import FLOW_FULL, FLOW_REMEDIATION, FRAMEWORK_MODE_CONVERT, FRAMEWORK_MODES, RUN_FLOWS
 from sbmig.core.scrub import output_scrubbing, scrub, scrub_json
 from sbmig.core.workspace import STOP_REQUEST_FILE, STOP_REQUEST_REASON
 from sbmig.web import contract
@@ -224,6 +224,8 @@ class Run:
     action: str | None = None
     # full이면 이관 전체, remediation이면 이관 없이 취약점 조치만 한다. Job 실행에서는 request.json의 값과 같다
     flow: str = FLOW_FULL
+    # 사내 프레임워크 프로젝트의 처리 방법(FRAMEWORK_MODES). 빈 문자열이면 고르지 않아서 서버 기본값을 쓴다
+    framework_mode: str = ""
     # 사용자가 올린 파일 이름 그대로
     upload: str | None = None
     # 업로드할 때 입력한 프로젝트명. 화면은 실행을 이 이름으로 보여 준다. 이전 실행에는 없다
@@ -644,6 +646,91 @@ def check_flow(flow: str | None) -> str:
     return flow
 
 
+FRAMEWORK_MODE_UNKNOWN_KO = "알 수 없는 처리 방법입니다. 화면을 새로 고친 뒤 다시 골라 주세요."
+FRAMEWORK_MODE_UNAVAILABLE = ("framework_mode=convert: this server is not set up for the conversion "
+                              "(convert.enabled is off or no framework is configured)")
+FRAMEWORK_MODE_UNAVAILABLE_KO = ("이 서버는 사내 규정으로 전환하도록 설정되어 있지 않습니다. "
+                                 "JDK 21, Jakarta만 적용하는 방법을 골라 주세요.")
+
+
+class FrameworkModeError(ValueError):
+    """프레임워크 프로젝트의 처리 방법을 받을 수 없을 때 던지는 예외 클래스. 화면에 보일 문장은 ``message_ko``에 있다."""
+
+    def __init__(self, error: str, message_ko: str) -> None:
+        super().__init__(error)
+        self.message_ko = message_ko
+
+
+def check_framework_mode(value: str | None, flow: str = FLOW_FULL) -> str:
+    """프레임워크 프로젝트의 처리 방법 값을 검사해 반환한다. 없거나 비었으면 빈 문자열을 반환한다.
+    - ``FRAMEWORK_MODES`` 밖의 값이면 FrameworkModeError를 던진다
+    - 취약점 조치만 하는 실행(remediation)은 이 값을 쓰지 않는다. 빈 문자열을 반환한다
+
+    `""` = not chosen: nothing is stored, the engine and the CLI then use `cfg.framework.mode`. A bad value is
+    refused in every flow (bad input stays bad input); a good one is dropped for `remediation`."""
+    if value is None or value == "":
+        return ""
+    if value not in FRAMEWORK_MODES:
+        raise FrameworkModeError(f"unknown framework_mode {value!r} — use one of: {', '.join(FRAMEWORK_MODES)}",
+                                 FRAMEWORK_MODE_UNKNOWN_KO)
+    return "" if flow == FLOW_REMEDIATION else value
+
+
+def convert_available(cfg: Any) -> bool:
+    """이 설정으로 사내 규정 전환을 쓸 수 있으면 True를 반환한다.
+    ``convert.available()``이 참이고 프레임워크 이름을 알 수 있어야 한다. 설정 모양이 이상하면 False다."""
+    try:
+        return bool(cfg.convert.available() and cfg.framework.display_name())
+    except Exception:  # noqa: BLE001 - 읽지 못한 설정은 전환할 수 없는 것으로 본다
+        return False
+
+
+def _recorded_framework_mode(rd: Path, records: _RunRecords, chosen: str | None = None) -> str:
+    # 실행의 처리 방법을 찾는다. 메모리, request.json, web-status.json에서 고른 값을 먼저 보고,
+    # 없으면 엔진이 정해서 기록한 report.json 값을 쓴다. 어디에도 없으면 빈 문자열이다
+    if chosen in FRAMEWORK_MODES:
+        return chosen
+    rec = records.request
+    if rec is not None and rec.framework_mode in FRAMEWORK_MODES:
+        return rec.framework_mode
+    web = records.web
+    if isinstance(web, dict) and web.get("framework_mode") in FRAMEWORK_MODES:
+        return web["framework_mode"]
+    try:
+        data = records.report
+    except (OSError, ValueError):
+        return ""
+    if isinstance(data, dict) and data.get("framework_mode") in FRAMEWORK_MODES:
+        return data["framework_mode"]
+    return ""
+
+
+def _str_of(v: Any) -> str:
+    return v.strip() if isinstance(v, str) else ""
+
+
+def _conversion_entry(src: Any) -> dict[str, Any] | None:
+    """전환을 실행한 기록이면 화면에 보낼 전환 요약을 반환한다. 아니면 None이다.
+    report.json의 ``conversion``이나 저널의 ``framework_converted`` 이벤트를 받는다. 모양이 맞지 않는 값은 뺀다.
+
+    Keys: framework, project, package, modules, counts, queue_total, datasource. The report's object carries
+    `converted`; a journal event is written only for a converted tree, so a missing `converted` means converted.
+    `queue_total` falls back to the length (or the number) of `queue`."""
+    if not isinstance(src, dict) or src.get("converted", True) is not True:
+        return None
+    counts = src.get("counts")
+    queue = src.get("queue")
+    total = src.get("queue_total")
+    if not (type(total) is int and total >= 0):
+        total = len(queue) if isinstance(queue, list) else (queue if type(queue) is int and queue >= 0 else 0)
+    modules = src.get("modules")
+    return {"framework": _str_of(src.get("framework")), "project": _str_of(src.get("project")),
+            "package": _str_of(src.get("package")),
+            "modules": [m for m in modules if isinstance(m, str)][:20] if isinstance(modules, list) else [],
+            "counts": ({str(k): v for k, v in counts.items() if type(v) is int} if isinstance(counts, dict) else {}),
+            "queue_total": total, "datasource": _str_of(src.get("datasource"))}
+
+
 def run_llm_calls(run_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
     """실행 상태에 보일 LLM 호출 수를 반환한다. 이관 보고서의 수에 취약점 조치의 수정 루프가 호출한 수를 더한다.
     조치 사용량을 읽지 못하면 0으로 센다. 예외는 던지지 않는다.
@@ -760,6 +847,7 @@ class _JournalScan:
     # 실행 하나의 저널을 어디까지 읽었는지와 찾은 프레임워크 이벤트를 담는다
     offset: int = 0
     raw: dict[str, Any] | None = None
+    conversion: dict[str, Any] | None = None    # 접수에서 기록한 framework_converted 이벤트
     done: bool = False                 # plan 이벤트를 지나면 범위가 정해진다. 더 읽지 않는다
 
 
@@ -1012,7 +1100,8 @@ class RunManager:
         action = cs.action or None
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                   request=rec, control=cs, recover=mode, action=action, flow=rec.flow or FLOW_FULL,
-                  upload=rec.upload_name or rec.upload, project=rec.project or None)
+                  upload=rec.upload_name or rec.upload, project=rec.project or None,
+                  framework_mode=rec.framework_mode or "")
         if action:                             # 재개 시도의 Job 이름은 시도 번호로 처음부터 정해진다
             run.job_name = cs.job or resume_job_name(run.run_id, run.attempt)
         elif cs.state != RunState.QUEUED.value:
@@ -1079,7 +1168,8 @@ class RunManager:
         (`remediation.after_migration` on, `remediation.after_failed_build: framework`), whether or not the
         fix loop runs. Cached per (file, mtime) of the package default.yml + the default configs. Contract:
         v2.1z-aw."""
-        off: dict[str, Any] = {"configured": False, "name": "", "fix_loop": False, "remediation_always": False}
+        off: dict[str, Any] = {"configured": False, "name": "", "fix_loop": False, "remediation_always": False,
+                               "convert_available": False, "mode": "reduced"}
         try:
             from sbmig.core.config import DEFAULT_CONFIG_PATH
             d = self.repo_root / "config"
@@ -1098,13 +1188,18 @@ class RunManager:
             from sbmig.core.config import load_config
             cfg = load_config(*files[1:], repo_root=self.repo_root)
             fw = cfg.framework
+            # 업로드에서 처리 방법을 고르지 않았을 때 쓰는 값과 사내 규정 전환을 쓸 수 있는지를 알린다
+            # 전환할 수 없는 서버면 기본값이 convert여도 reduced로 알린다. 엔진도 같은 규칙으로 실행한다
+            out["convert_available"] = convert_available(cfg)
+            out["mode"] = (FRAMEWORK_MODE_CONVERT if out["convert_available"]
+                           and getattr(fw, "mode", "") == FRAMEWORK_MODE_CONVERT else "reduced")
             if fw.patterns() and fw.scope == FRAMEWORK_SCOPE:
                 rem = getattr(cfg, "remediation", None)
                 # 프레임워크 프로젝트는 빌드가 실패해도 취약점 조치를 이어서 한다. 수정 루프를 실행했는지와 상관없다
                 always = (bool(getattr(rem, "after_migration", False))
                           and str(getattr(rem, "after_failed_build", "never") or "never") == "framework")
-                out = {"configured": True, "name": fw.display_name(), "fix_loop": bool(fw.fix_loop),
-                       "remediation_always": always}
+                out.update({"configured": True, "name": fw.display_name(), "fix_loop": bool(fw.fix_loop),
+                            "remediation_always": always})
         except Exception:  # noqa: BLE001 - 읽지 못한 설정은 프레임워크 없음으로 알린다
             log.debug("framework info: default configs cannot be loaded", exc_info=True)
         with self._fw_lock:
@@ -1113,10 +1208,21 @@ class RunManager:
 
     def _journal_framework(self, run_id: str, rd: Path) -> dict[str, Any] | None:
         """report.json이 아직 없는 실행의 프레임워크 정보를 저널에서 찾아 반환한다.
-        ``framework_project``, ``plan`` 이벤트를 본다. 지난번에 읽은 곳부터 이어서 읽고, plan 이벤트를 지나면 멈춘다.
+        ``framework_project``, ``plan`` 이벤트를 본다. 지난번에 읽은 곳부터 이어서 읽고, plan 이벤트를 지나면 멈춘다."""
+        scan = self._scan_journal(run_id, rd)
+        return _framework_entry(scan.raw)
+
+    def _journal_conversion(self, run_id: str, rd: Path) -> dict[str, Any] | None:
+        """report.json이 아직 없는 실행의 전환 요약을 저널의 ``framework_converted`` 이벤트에서 찾아 반환한다."""
+        scan = self._scan_journal(run_id, rd)
+        return _conversion_entry(scan.conversion)
+
+    def _scan_journal(self, run_id: str, rd: Path) -> _JournalScan:
+        """실행의 저널을 지난번에 읽은 곳부터 plan 이벤트까지 읽고 찾은 이벤트를 담아 반환한다.
 
         Incremental (offset per run, whole lines only) because `list_runs` asks for every run every 15 s.
-        A later event's `name` / `fix_loop` fill in an earlier one's."""
+        A later event's `name` / `fix_loop` fill in an earlier one's. `framework_converted` is written at intake,
+        before `plan`, so the same bounded scan sees it."""
         path = rd / "journal.jsonl"
         with self._fw_lock:
             scan = self._fw_scans.setdefault(run_id, _JournalScan())
@@ -1126,7 +1232,7 @@ class RunManager:
                 except OSError:
                     size = -1
                 if 0 <= size < scan.offset:        # 다시 만든 파일이면 처음부터 읽는다
-                    scan.offset, scan.raw = 0, None
+                    scan.offset, scan.raw, scan.conversion = 0, None, None
                 while 0 <= scan.offset < size and not scan.done:
                     with open(path, "rb") as fh:
                         fh.seek(scan.offset)
@@ -1139,13 +1245,19 @@ class RunManager:
                         continue
                     scan.offset += end + 1
                     for line in chunk[:end].split(b"\n"):
-                        if b'"framework_project"' not in line and b'"plan"' not in line:
+                        if (b'"framework_project"' not in line and b'"plan"' not in line
+                                and b'"framework_converted"' not in line):
                             continue
                         try:
                             ev = json.loads(line)
                         except ValueError:
                             continue
-                        if not isinstance(ev, dict) or ev.get("event") not in ("framework_project", "plan"):
+                        if not isinstance(ev, dict):
+                            continue
+                        if ev.get("event") == "framework_converted":
+                            scan.conversion = ev
+                            continue
+                        if ev.get("event") not in ("framework_project", "plan"):
                             continue
                         if ev.get("scope") == FRAMEWORK_SCOPE:
                             merged = dict(scan.raw or {})
@@ -1154,7 +1266,32 @@ class RunManager:
                         if ev.get("event") == "plan":
                             scan.done = True
                             break
-            return _framework_entry(scan.raw)
+            return scan
+
+    def framework_mode_problem(self, framework_mode: str | None, flow: str | None,
+                               configs: list[str] | None = None) -> FrameworkModeError | None:
+        """업로드 본문을 받기 전에 처리 방법을 확인한다. 받을 수 없으면 예외 객체를, 받을 수 있으면 None을 반환한다.
+        ``configs``가 None이면 서버 기본 설정으로 확인한다. 설정을 읽지 못하면 None이다. 본문을 받은 뒤에 한 번 더 확인한다."""
+        try:
+            mode = check_framework_mode(framework_mode, check_flow(flow))
+        except FrameworkModeError as e:
+            return e
+        except ValueError:
+            return None                        # 실행 방식 오류는 라우트가 따로 알린다
+        if mode != FRAMEWORK_MODE_CONVERT:
+            return None
+        try:
+            from sbmig.core.config import load_config
+            names = self.default_configs() if configs is None else configs
+            d = self.repo_root / "config"
+            if any(not RUN_ID_RE.match(c) or not (d / c).is_file() for c in names):
+                return None                    # 없는 설정 이름은 본문을 받은 뒤 start_file이 알린다
+            cfg = load_config(*[d / c for c in names], repo_root=self.repo_root)
+        except Exception:  # noqa: BLE001 - 읽지 못한 설정은 start_file이 400으로 알린다
+            return None
+        if convert_available(cfg):
+            return None
+        return FrameworkModeError(FRAMEWORK_MODE_UNAVAILABLE, FRAMEWORK_MODE_UNAVAILABLE_KO)
 
     # ---- 실행 시작과 종료
     def incoming_path(self) -> Path:
@@ -1165,18 +1302,21 @@ class RunManager:
         return uploads / f".incoming-{uuid.uuid4().hex}.part"
 
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
-              llm_provider: str | None = None, flow: str | None = None, project: str | None = None) -> str:
+              llm_provider: str | None = None, flow: str | None = None, project: str | None = None,
+              framework_mode: str | None = None) -> str:
         """메모리에 있는 zip 본문으로 실행을 시작한다. 테스트나 다른 코드에서 쓴다.
         ``start_file``과 똑같이 동작한다. 잘못된 요청이면 ValueError를 던진다."""
         tmp = self.incoming_path()
         tmp.write_bytes(zip_bytes)
         try:
-            return self.start_file(tmp, name, configs, stop_after, llm_provider, flow, project=project)
+            return self.start_file(tmp, name, configs, stop_after, llm_provider, flow, project=project,
+                                   framework_mode=framework_mode)
         finally:
             tmp.unlink(missing_ok=True)
 
     def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
-                   llm_provider: str | None = None, flow: str | None = None, project: str | None = None) -> str:
+                   llm_provider: str | None = None, flow: str | None = None, project: str | None = None,
+                   framework_mode: str | None = None) -> str:
         """업로드된 zip으로 새 실행을 시작하고 실행 id를 반환한다.
         입력 검사 -> zip 이동 -> 설정, 워크스페이스, 오케스트레이터 생성 -> 작업 스레드 시작 순서다.
         잘못된 요청은 ValueError를 던진다. 이때 ``incoming`` 파일은 호출한 쪽이 지운다. 옮긴 뒤에는 실행이 관리한다.
@@ -1192,6 +1332,8 @@ class RunManager:
         phase = parse_stop_after(stop_after)                  # 잘못된 값이면 허용 값을 담은 ValueError를 던진다
         stop_after = phase.value if phase is not None else None
         flow = check_flow(flow)                               # 잘못된 값이면 허용 값을 담은 ValueError를 던진다
+        # 처리 방법도 같다. 취약점 조치만 하는 실행이면 값을 버린다
+        framework_mode = check_framework_mode(framework_mode, flow)
         if project is not None:                               # 라우트가 이미 검사했다. 다른 호출자도 같은 규칙을 따르게 한다
             project = check_project(project)
         if flow == FLOW_REMEDIATION and stop_after:
@@ -1202,12 +1344,16 @@ class RunManager:
             overrides["llm"] = {"provider": llm_provider}
         cfg = load_config(*[self.repo_root / "config" / c for c in configs], overrides=overrides or None,
                           repo_root=self.repo_root)        # pydantic ValidationError도 ValueError다
+        # 전환을 골랐는데 이 설정으로 전환할 수 없으면 실행을 만들지 않고 거절한다
+        if framework_mode == FRAMEWORK_MODE_CONVERT and not convert_available(cfg):
+            raise FrameworkModeError(FRAMEWORK_MODE_UNAVAILABLE, FRAMEWORK_MODE_UNAVAILABLE_KO)
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
         shown = display_upload_name(name)                     # 화면에 보여 줄 원래 파일 이름
         run_id = self._claim_run_id(name, project)
         if self.effective_mode in ("k8s-job", "local-job"):
-            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown, project)
+            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown, project,
+                                   framework_mode=framework_mode)
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         zip_path = uploads / f"{run_id}-{safe}"
@@ -1222,12 +1368,12 @@ class RunManager:
             zip_path.unlink(missing_ok=True)
             raise
         run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider, flow=flow, upload=shown,
-                  project=project)
+                  project=project, framework_mode=framework_mode)
         run.orch = Orchestrator(cfg, ws)
         # 어떤 설정으로 실행했는지 journal 첫 줄에 기록한다. journal만 보고도 알 수 있게 한다
         try:
             ws.journal({"event": "web_run", "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider,
-                        "flow": flow, "upload": shown, "project": project})
+                        "flow": flow, "framework_mode": framework_mode, "upload": shown, "project": project})
         except OSError as e:                   # 참고용 줄이다. 기록하지 못해도 실행은 거부하지 않는다
             log.debug("run %s: web_run journal line not written: %s", run_id, e)
         # daemon 스레드라서 서버와 함께 끝난다. 정리는 shutdown의 중지 요청과 Maven 종료가 맡는다
@@ -1243,8 +1389,9 @@ class RunManager:
             with self._lock:
                 self.runs.pop(run_id, None)
             raise
-        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s flow=%s", run_id,
-                 zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-", flow)
+        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s flow=%s framework_mode=%s", run_id,
+                 zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-", flow,
+                 framework_mode or "-")
         return run_id
 
     def _claim_run_id(self, upload_name: str, project: str | None = None) -> str:
@@ -1264,7 +1411,7 @@ class RunManager:
 
     def _start_job(self, incoming: Path, run_id: str, safe_name: str, configs: list[str], stop_after: str | None,
                    llm_provider: str | None, flow: str = FLOW_FULL, upload_name: str | None = None,
-                   project: str | None = None) -> str:
+                   project: str | None = None, *, framework_mode: str = "") -> str:
         """Job 모드에서 실행을 시작한다. 이 프로세스는 이관을 직접 실행하지 않는다.
         zip을 공유 볼륨의 실행 폴더에 ``source.zip``으로 옮기고 request.json과 queued 상태를 기록한다.
         그다음 Job을 만들고 감시할 작업 스레드를 시작한다."""
@@ -1278,7 +1425,7 @@ class RunManager:
                                     zip_sha256=sha256_file(zip_path), config_digests=config_digests(self.repo_root, configs),
                                     sbmig_version=sbmig_version(), mode=self.effective_mode, stop_after=stop_after,
                                     llm_provider=llm_provider, attempt=1, flow=flow, upload_name=upload_name,
-                                    project=project)
+                                    project=project, framework_mode=framework_mode)
             request.write(run_dir)
             control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=request.attempt,
                                    accepted_at=request.accepted_at)
@@ -1287,10 +1434,10 @@ class RunManager:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
         run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True, request=request, control=control,
-                  flow=flow, upload=upload_name or safe_name, project=project)
+                  flow=flow, upload=upload_name or safe_name, project=project, framework_mode=framework_mode)
         _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": self.effective_mode, "upload": safe_name,
                                   "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider, "flow": flow,
-                                  "upload_name": upload_name, "project": project})
+                                  "framework_mode": framework_mode, "upload_name": upload_name, "project": project})
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
         with self._lock:
             self.runs[run_id] = run
@@ -1560,6 +1707,9 @@ class RunManager:
             env[contract.ACTION_ENV] = run.action
         # full이어도 항상 넣는다. Worker가 request.json의 flow와 비교한다. 비어 있으면 Worker는 full로 본다
         env[contract.FLOW_ENV] = run.flow or FLOW_FULL
+        # 처리 방법은 고른 경우에만 넣는다. Worker는 없는 값과 빈 값을 고르지 않은 것으로 보고 request.json과 비교한다
+        if run.framework_mode:
+            env[contract.FRAMEWORK_MODE_ENV] = run.framework_mode
         return env
 
     def _env_pins(self, run: Run) -> dict[str, str] | None:
@@ -2059,6 +2209,9 @@ class RunManager:
         phase = Phase(run.stop_after) if run.stop_after else None
         # 실행 방식은 full이 아닐 때만 넘긴다. full은 엔진의 기본값이라서 flow를 모르는 엔진에서도 실행된다
         extra: dict[str, Any] = {"flow": run.flow} if run.flow and run.flow != FLOW_FULL else {}
+        # 처리 방법도 고른 경우에만 넘긴다. 고르지 않으면 엔진이 서버 설정의 framework.mode를 쓴다
+        if run.framework_mode:
+            extra["framework_mode"] = run.framework_mode
         try:
             from sbmig.graph import stream_graph
         except ImportError as e:      # LangGraph가 없으면 inline 엔진으로 실행한다. 노드 이벤트는 없다
@@ -2172,7 +2325,8 @@ class RunManager:
                 raise StateConflict(f"the resume request could not be recorded ({type(e).__name__})") from None
             run = Run(run_id, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                       request=rec, control=control, action=ACTION_REMEDIATION_RESUME, flow=rec.flow or FLOW_FULL,
-                      upload=rec.upload_name or rec.upload, project=rec.project or None)
+                      upload=rec.upload_name or rec.upload, project=rec.project or None,
+                      framework_mode=rec.framework_mode or "")
             run.job_name = resume_job_name(run_id, attempt)
             run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.key}", daemon=True)
             self.resumes[run_id] = run
@@ -2342,6 +2496,14 @@ class RunManager:
                                 "flow": (run.flow or FLOW_FULL) if run is not None else _recorded_flow(rd, records),
                                 # 사용자가 올린 파일 이름 그대로. 이전 in-process 실행에는 없을 수 있다
                                 "upload": (run.upload if run is not None else None) or _recorded_upload(rd, records)}
+        # 사내 프레임워크 프로젝트의 처리 방법. 고르지 않았고 보고서에도 없으면 이 키를 넣지 않는다(이전 실행과 같다)
+        try:
+            fw_mode = ("" if info["flow"] == FLOW_REMEDIATION else
+                       _recorded_framework_mode(rd, records, run.framework_mode if run is not None else None))
+        except OSError:
+            fw_mode = ""
+        if fw_mode:
+            info["framework_mode"] = fw_mode
         # 업로드할 때 입력한 프로젝트명. 이전 실행에는 이 키가 없다. 그때 화면은 파일 이름을 쓴다
         project = (run.project if run is not None else None) or _recorded_project(rd, records)
         if project:
@@ -2421,6 +2583,7 @@ class RunManager:
         if rjob is not None:
             info["remediation_job"] = rjob
         framework: dict[str, Any] | None = None
+        conversion: dict[str, Any] | None = None
         from_report = False
         # 실행 방식을 찾을 때 이미 읽은 보고서면 그 내용을 쓴다. 객체가 아닌 JSON은 읽지 못한 보고서로 본다
         data = records.report
@@ -2429,6 +2592,8 @@ class RunManager:
                 # 사내 프레임워크 프로젝트의 줄인 범위는 보고서의 profile.framework가 먼저다
                 framework = _framework_from_report(data)
                 from_report = True
+                # 사내 규정으로 전환한 실행이면 전환 요약을 담는다
+                conversion = _conversion_entry(data.get("conversion"))
                 info["success"] = data.get("success")
                 # 사내 프레임워크 실행이 JDK 21, Jakarta 변환을 마쳤으면 빌드가 실패해도 화면에 완료로 보여 준다.
                 # 보고서를 쓴 뒤 다른 종료 코드로 끝난 파드(137 등)는 완료로 보이지 않게 한다
@@ -2471,8 +2636,15 @@ class RunManager:
             except Exception:  # noqa: BLE001 - 상태 응답은 프레임워크 정보 때문에 실패하면 안 된다
                 log.debug("framework scope of %s not readable from the journal", run_id, exc_info=True)
                 framework = None
+            try:
+                conversion = self._journal_conversion(run_id, rd)
+            except Exception:  # noqa: BLE001 - 상태 응답은 전환 요약 때문에 실패하면 안 된다
+                log.debug("conversion of %s not readable from the journal", run_id, exc_info=True)
+                conversion = None
         if framework is not None:
             info["framework"] = framework
+        if conversion is not None and info.get("flow") != FLOW_REMEDIATION:
+            info["conversion"] = conversion
         # 사람이 중지해서 결과 없이 끝난 실행은 화면에 실패가 아니라 주의 색으로 보여 준다
         if info.get("state") == "finished" and info.get("exit_code") in (EXIT_ABORTED, None) and (
                 info.get("stop_requested") or info.get("control") == RunState.STOPPED.value
@@ -2680,7 +2852,8 @@ def _write_web_status(run: Run) -> None:
     """작업 스레드가 끝날 때 web-status.json(종료 코드, 오류, 중지 요청, 마지막 노드)을 기록한다.
     메모리에서 빠졌거나 서버를 다시 띄운 뒤에는 이 파일로 상태를 응답한다. 기록에 실패해도 실행 결과는 그대로다."""
     try:
-        data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error, "flow": run.flow, "upload": run.upload,
+        data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error, "flow": run.flow,
+                **({"framework_mode": run.framework_mode} if run.framework_mode else {}), "upload": run.upload,
                 **({"project": run.project} if run.project else {}),
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
                 "success": run.success if run.success is not None else getattr(run.report, "success", None)}

@@ -50,7 +50,8 @@
 - [x] 수정 루프를 켠 실행에서 프레임워크 검사를 끝내지 못한 시도는 받아들이지 않고 되돌린다(경고 한 줄, 예외 종류만). 읽지 못하거나 파싱되지 않는 pom 은 빌드에 맡긴다 (v2.1z-br)
 - [ ] 실제 회사 프레임워크 프로젝트로 돌려 보기, 그 프로젝트의 이어지는 취약점 조치(실제 IVAS), Job 모드 화면
 - [x] 사내 프레임워크 프로젝트를 Spring Boot 프로젝트로 전환하는 변환기(`sbmig/fwconvert/`)를 만들었다(2026-11-27, v2.1z-cl). SQL 파일을 MyBatis mapper로, 서비스 XML을 서비스·저장소·컨트롤러 클래스로 바꾸고, 화면 파일을 복사하며 ajax 주소를 고친다. 규칙은 `docs/FW-CONVERT.md`에 있다. 프레임워크 이름은 저장소에 쓰지 않고 자리표시자로 둔다
-- [ ] 변환기를 실행 흐름에 연결하기: pom과 뼈대 클래스, datasource, 게이트, 실행 순서, 화면에서 두 방법 가운데 고르기, 보고서, 실제 Maven 빌드. 지금은 어떤 실행도 변환기를 호출하지 않는다
+- [x] 변환기를 실행 흐름에 연결했다: 처리 방법 `convert`(화면의 「사내 규정으로 전환」, `--framework-mode`, `framework.mode`)를 고르면 접수에서 프로젝트를 부모 pom과 boot / domain / service / store 모듈의 Spring Boot 프로젝트로 새로 만들고(pom과 뼈대 클래스, `application.yml`, DB 연결 정보, 이름은 루트 pom의 groupId / artifactId), 커밋 `convert: generated Spring Boot project` 뒤로는 보통 이관(자동 변환, 구조 정리, 구조 검토, 빌드와 수정 루프)으로 이어진다. 두 보고서의 전환 절(확인 항목을 종류별로 묶음), `convert/queue.json`, 인수인계 두 줄의 한국어, `agent-doc/15-framework-conversion.md`
+- [ ] 사내 규정 전환에서 남은 것: 원본 Java 클래스(유틸, 엔티티 등)와 어노테이션 매핑 옮기기, 안내서 도구의 검증 게이트(LLM 검사), 실제 회사 프레임워크 프로젝트와 회사 클러스터에서 돌려 보기, 요청 담당자가 `convert/queue.json`을 받을 수 있는 경로(화면과 결과 ZIP에 없음), `docs/FW-CONVERT.md` 6절의 열린 결정(DB를 못 찾은 경우, 인증, 응답 모양 등)
 - [ ] 프레임워크만 업그레이드하는 방법(문서를 받은 뒤 설계)
 
 **구조 정리 (회사 레이아웃, 3절의 규칙)**

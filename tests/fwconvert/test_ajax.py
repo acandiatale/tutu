@@ -61,7 +61,8 @@ def test_a9_an_unknown_shape_leaves_the_file_untouched(tmp_path):
     [item] = res.queue
     assert item.component == "js_ajax::order.js"
     assert item.reason.startswith("[AJAX_UNMATCHED] ")
-    assert 'mode=x' in item.reason
+    assert item.reason == "[AJAX_UNMATCHED] unknown query parameter (line 8, column 25)"
+    assert item.last_error == 'function g(t) { return "commonAjax.json?mode=x&"+t+"=1"; }'
     assert item.source_path == f"{lay.static_dir}/order.js"
     assert item.excerpt == text[:2000]
     assert _rw(text) == (text, 0, True)
@@ -194,7 +195,8 @@ def test_queue_reason_names_the_inference_failure(tmp_path):
     res = transform_ajax(tmp_path, lay, RULES)
     [item] = res.queue
     assert item.component == "js_ajax::common/commonLib.js"
-    assert "no service name" in item.reason and 'commonAjax.json?"+t+"=1"' in item.reason
+    assert item.reason == "[AJAX_UNMATCHED] no service name for a call without ServiceName (line 1, column 6)"
+    assert item.last_error == 'u = "commonAjax.json?"+t+"=1";'
 
 
 def test_names_come_from_the_rules():
@@ -306,3 +308,36 @@ def test_two_megabytes_of_one_shape_rewrite_quickly(unit):
     t0 = time.perf_counter()
     rewrite_ajax_text(text, "order.js", RULES)
     assert time.perf_counter() - t0 < 5.0
+
+
+
+def test_the_reason_never_carries_text_of_the_file(tmp_path):
+    lay = _layout()
+    static = tmp_path / lay.static_dir
+    static.mkdir(parents=True)
+    line = 'ajax("/shop/commonAjax.json?ServiceName=" + s, {dbPassword: "Zq9JsVal7"});'
+    (static / "a.js").write_text("// header\nvar x = 1;\n" + line + "\n", encoding="utf-8")
+    res = transform_ajax(tmp_path, lay, RULES)
+    [item] = res.queue
+    assert item.reason.startswith("[AJAX_UNMATCHED] ") and "(line 3, column 13)" in item.reason
+    for piece in ("Zq9JsVal7", "dbPassword", "/shop/", "ajax("):
+        assert piece not in item.reason
+    assert item.last_error == line
+
+
+def test_the_line_number_of_a_left_endpoint_points_into_the_original_file(tmp_path):
+    # the call is rewritten, but its expression t still names the endpoint: the position in the rewritten text is
+    # mapped back to the start of the call in the original file (line 2, column 5)
+    src = 'var a = 1;\nu = "commonAjax.json?ServiceName=x-service&" +\n  m["commonAjax.json"] +\n  "=1";\n'
+    lay = _layout()
+    static = tmp_path / lay.static_dir
+    static.mkdir(parents=True)
+    (static / "a.js").write_text(src, encoding="utf-8")
+    [item] = transform_ajax(tmp_path, lay, RULES).queue
+    assert item.reason == "[AJAX_UNMATCHED] endpoint name still present (line 2, column 5)"
+    assert item.last_error == 'u = "commonAjax.json?ServiceName=x-service&" +'
+    assert (static / "a.js").read_text(encoding="utf-8") == src
+    # a comment that names the endpoint stops earlier, at the comment itself
+    (static / "a.js").write_text("var a = 1;\n// see commonAjax.json\n", encoding="utf-8")
+    [item] = transform_ajax(tmp_path, lay, RULES).queue
+    assert item.reason == "[AJAX_UNMATCHED] endpoint outside a string literal (line 2, column 8)"

@@ -52,7 +52,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "fw-transitive-note",                       # v2.1z-ak: framework only transitive + transitive: note → full
              "fw-build-error",                           # v2.1z-aw: framework project, the build fails after the conversion
              "fw-pom-ms949",                             # v2.1z-ay: framework project, pom saved as MS949 under a UTF-8 header
-             "company-boot-wrap"]                        # v2.1z-bf: single-module Boot app, boot_single_module: wrap
+             "company-boot-wrap",                        # v2.1z-bf: single-module Boot app, boot_single_module: wrap
+             "fw-convert-basic"]                         # v2.1z-cl: framework project, framework.mode convert
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 POM_MS949_FIXTURES = {"fw-pom-ms949"}     # v2.1z-ay: pom.xml saved as MS949 under a UTF-8 declaration
@@ -118,6 +119,8 @@ BUILD_MATRIX = [
     ("fw-transitive-note", ".", "8", "libs"),
     ("fw-build-error", ".", "8", "libs"),              # v2.1z-aw: builds on Java 8; System.runFinalizersOnExit is gone in 21
     ("fw-pom-ms949", ".", "8", "libs"),                # v2.1z-ay: Maven builds the MS949 pom under its UTF-8 header
+    ("fw-convert-basic", ".", "8", "convert"),         # v2.1z-cl: the stand-in framework has no activity classes; the
+                                                      # conversion never builds the as-is tree (no as-is build here)
 ]
 # v2.1z-ak: framework projects in the reduced scope jdk-jakarta — no restructure, no structure review, no LLM answer
 # needed (no replay/ dir); their sbmig.e2e.yml sets `framework` besides llm / kb
@@ -127,6 +130,14 @@ FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts", "fix_loop"}, "fw-parent": {"ar
                        "fw-build-error": {"artifacts", "fix_loop"}, "fw-pom-ms949": {"artifacts", "fix_loop"},
                        "fw-transitive": {"artifacts", "recipe_sets", "fix_loop"},             # + servlet_jakarta_10
                        "fw-transitive-note": {"artifacts", "transitive", "fix_loop"}}
+# v2.1z-cl: framework projects handled the conversion way (framework.mode convert): the override names the framework,
+# the mode and the company layout with role parents; post_checks name files of the generated project
+# (`<project>-boot|domain|service|store/…`), which the as-is tree does not have
+CONVERT_OVERRIDES = {"fw-convert-basic": {"framework": {"artifacts", "mode"},
+                                          "layout": {"module_dir", "boot_module", "comp_module", "front_module",
+                                                     "boot_as_is"},
+                                          "artifacts": {"boot_parent", "comp_parent"}}}
+CONVERT_PROJECTS = {"fw-convert-basic": "shopApp"}   # the generated project's name (camelCase of the root artifactId)
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
     "spring_version": (str, type(None)), "packaging": str, "libraries": list,
@@ -617,10 +628,14 @@ def test_post_check_paths_exist_in_fixture(name: str):
     as-is file by its basename — except the module poms and the generated `*Application.java`."""
     aid = COMPANY_NAMES.get(name, "shop")
     roles = re.compile(rf"(?:{re.escape(aid)})-(?:boot|back|front)/(.+)") if name in COMPANY_OVERRIDES else None
+    generated = re.compile(rf"{re.escape(CONVERT_PROJECTS[name])}-(?:boot|domain|service|store)/.+") \
+        if name in CONVERT_PROJECTS else None
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
             if kind in ("file_exists", "file_absent", "archive_entries"):   # the migrated tree / its build output
                 continue
+            if generated and generated.fullmatch(spec["path"]):
+                continue                  # v2.1z-cl: a file of the generated project, written at intake
             if kind == "file_same_as":
                 assert (FIXTURES / name / spec["source"]).is_file(), f"{name}: file_same_as source {spec['source']}"
             m = roles.fullmatch(spec["path"]) if roles and not (FIXTURES / name / spec["path"]).exists() else None
@@ -816,8 +831,20 @@ def test_fixture_config_override_keeps_8_optionals():
     assert _effective_cfg("fw-transitive-note").framework.transitive == "note"
     assert all(_effective_cfg(n).framework.transitive == "apply" for n in FRAMEWORK_REDUCED)
     assert all(_effective_cfg(n).framework.fix_loop is False for n in FRAMEWORK_OVERRIDES)
+    company = LayoutConfig()
+    for name, keys in CONVERT_OVERRIDES.items():                    # v2.1z-cl: the conversion way
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert {k: set(v) for k, v in raw.items() if k not in LLM_KB} == keys, name
+        cfg = _effective_cfg(name)
+        assert cfg.framework.mode == "convert" and cfg.convert.enabled, name
+        assert cfg.framework.matches("com.example.fw", "example-fw-core") and cfg.framework.display_name() == "Example"
+        assert all(v == "" for v in cfg.convert.versions.values()), name     # looked up in the repository set
+        for key in keys["layout"]:
+            assert getattr(cfg.layout, key) == getattr(company, key), (name, key)
+        assert cfg.artifacts.role_parents and len(cfg.artifacts.optional) == 8, name
+        assert cfg.artifacts.boot_parent.key == cfg.artifacts.comp_parent.key == cfg.artifacts.parent.key, name
     plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES) - DISCOVERY_OFF_OVERRIDES \
-        - set(FRAMEWORK_OVERRIDES)
+        - set(FRAMEWORK_OVERRIDES) - set(CONVERT_OVERRIDES)
     for name in plain:                                              # nothing but the replayed LLM and the own KB
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == LLM_KB, name
@@ -1168,6 +1195,8 @@ def _ghost_cleanup():
 def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_path: Path, request):
     if needs == "ant":
         pytest.skip(f"{name}: Ant project without pom.xml and with stub jars — no as-is Maven build")
+    if needs == "convert":
+        pytest.skip(f"{name}: the stand-in framework has no activity classes — no as-is Maven build")
     _mvn()
     _java_home(jdk)
     src = tmp_path / name

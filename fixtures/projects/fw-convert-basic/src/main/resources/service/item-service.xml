@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A service without a router: every activity becomes a method. `total` calls a statement of the order SQL file,
+     `search` is a project-own activity class (extends ExampleMyBatisSearch), `stock` has Java code only. -->
+<service name="item-service">
+  <activity name="list" class="com.example.fw.activity.ExampleMyBatisSearch">
+    <property name="sql-key" value="item.getList"/>
+  </activity>
+  <activity name="total" class="com.example.fw.activity.ExampleMyBatisSearch">
+    <property name="sql-key" value="order.countAll"/>
+  </activity>
+  <activity name="search" class="com.example.shop.activity.ItemSearchActivity">
+    <property name="sql-key" value="item.findByName"/>
+  </activity>
+  <activity name="stock" class="com.example.shop.activity.StockCheckActivity"/>
+</service>

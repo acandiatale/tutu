@@ -1,0 +1,5 @@
+{
+  "note": "structure review of fw-convert-basic (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Generated multi-module Spring Boot project: the root aggregator inherits the configured parent and lists shopApp-domain, shopApp-store, shopApp-service and shopApp-boot; shopApp-boot inherits the boot parent and packages a WAR, the three others the comp parent; the mandatory starters are in the root; Java 21.\"\n}\n</review>\n"
+}

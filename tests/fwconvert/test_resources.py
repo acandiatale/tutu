@@ -20,6 +20,7 @@ from sbmig.fwconvert.resources import (
     endpoint_for,
     session_call,
     unexposed_endpoints,
+    unreachable_methods,
 )
 from sbmig.fwconvert.rules import load_rules
 from sbmig.fwconvert.servicexml import classify_activity, parse_service_xml
@@ -493,3 +494,67 @@ def test_no_removal_leaves_nothing_unexposed(rules):
     [res] = build_resources([], _order_idx(), FrontendApiMap(rest_endpoints=[RestCall("GET", "/api/order-item/x")]),
                             rules)
     assert all(m.unexposed is None for m in res.methods) and unexposed_endpoints([res], rules) == []
+
+
+# ---- a project-own class: the resolved statement decides ------------------------------
+
+
+@pytest.mark.parametrize("sid, verb, returns, call, read_only", [
+    ("getRows", "select", "list", "selectList", True),
+    ("countRows", "select", "int", "selectOne", True),
+    ("saveRows", "insert", "int", "insert", False),
+    ("removeRows", "delete", "int", "delete", False),
+    ("selectLastUpdateDate", "select", "list", "selectList", True),
+    ("getSaved", "update", "int", "update", False),
+])
+def test_other_kind_with_a_resolved_statement(rules, sid, verb, returns, call, read_only):
+    idx = MapperIndex([_mapper("o", "O", (sid, verb))])
+    svc = ServiceDef(name="o-service", resource="o", x_name="O",
+                     activities=[Activity("a", "x.Own", "other", {"sql-key": f"o.{sid}"})],
+                     verdicts={"a": DbVerdict(True, "strong", "1c", f"o.{sid}")})
+    m = build_resources([svc], idx, None, rules)[0].methods[0]
+    assert (m.returns, m.session_call, m.read_only, m.statement_id) == (returns, call, read_only, sid)
+
+
+def test_inherited_kind_uses_the_kind_table(rules):
+    idx = MapperIndex([_mapper("o", "O", ("insertRow", "insert"))])
+    svc = ServiceDef(name="o-service", resource="o", x_name="O",
+                     activities=[Activity("a", "x.OwnSearch", "search", {"sql-key": "o.insertRow"})],
+                     verdicts={"a": DbVerdict(True, "strong", "1c", "o.insertRow", "extends ExampleMyBatisSearch")})
+    m = build_resources([svc], idx, None, rules)[0].methods[0]
+    assert (m.returns, m.session_call) == ("list", "selectList") and "extends" in m.evidence
+
+
+# ---- methods no address reaches ------------------------------------------------------
+
+
+def test_unreachable_methods_of_a_resource_without_router(rules):
+    text = """<service name="item-service">
+      <activity name="other" class="ExampleMyBatisSearch"><property name="sql-key" value="order.getList"/></activity>
+      <activity name="calc" class="x.CalcActivity"/>
+      <activity name="loose" class="x.LooseActivity"><property name="sql-key" value="nowhere.fetch"/></activity>
+      <activity name="own" class="ExampleMyBatisSearch"><property name="sql-key" value="item.getItems"/></activity>
+    </service>"""
+    idx = MapperIndex([_mapper("order", "Order", ("getList", "select")),
+                       _mapper("item", "Item", ("getItems", "select"), ("lovKinds", "select"))])
+    res = build_resources([_service(text, rules, idx)], idx, None, rules)
+    assert unreachable_methods(res, rules) == [
+        "ItemService.calc  (not database-backed: 3)",
+        "ItemService.fetch  (no statement)",
+        "ItemService.getList  (statement in another mapper: com.example.store.OrderStore.getList)",
+        "ItemService.lovKinds  (list-of-values statement)",
+    ]
+    # endpoints are unchanged: the own statement keeps its address, the order mapper's resource keeps its own
+    item = _by_x(res)["Item"]
+    assert [m.name for m in item.methods if m.endpoint] == ["getItems"]
+
+
+def test_unreachable_methods_ignore_unexposed_and_list_router_methods_without_transition(rules):
+    api = FrontendApiMap(rest_endpoints=[RestCall("GET", "/api/order-item")])
+    res = build_resources([], _order_idx(), api, rules)
+    assert unreachable_methods(res, rules) == []          # removed endpoints are in unexposed_endpoints instead
+    idx = MapperIndex([_mapper("shop", "Shop", ("getList", "select"), ("upsertItem", "insert"),
+                               ("deleteItem", "delete"), ("countAll", "select"))])
+    shop = build_resources([_service(A6_XML, rules, idx)], idx, None, rules)
+    # the mapper statement no transition calls is appended to the router resource and reached by no address
+    assert unreachable_methods(shop, rules) == ["ShopService.countAll  (no transition)"]

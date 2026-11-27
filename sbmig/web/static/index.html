@@ -72,6 +72,7 @@
   .flowopt:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; }
   .flowopt:has(input:focus-visible) input:focus-visible { outline: none; }   /* 항목 전체에 포커스 테두리가 있으므로 라디오 버튼에는 따로 그리지 않는다 */
   .flowpick.locked .flowopt { cursor: default; opacity: .6; }
+  .flowpick .picknote { grid-column: 1 / -1; margin: 0; font-size: 12.5px; color: var(--muted); }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
   /* 프로젝트명 입력란. 비활성 시작 버튼을 눌러도 감싼 요소가 클릭을 받아 무엇이 빠졌는지 알려 준다 */
   .projfield { margin: 0 0 14px; }
@@ -613,6 +614,19 @@
         <span><span class="nm">취약점 해결</span><span class="ds">이미 이관된 프로젝트의 취약점만 조치합니다</span></span>
       </label>
     </fieldset>
+    <!-- 서버가 사내 규정 전환을 쓸 수 있을 때만 보인다. 취약점 해결을 고르면 숨긴다 -->
+    <fieldset class="flowpick" id="fwpick" hidden>
+      <legend id="fwpick-title">사내 프레임워크 프로젝트 처리 방법</legend>
+      <label class="flowopt on" for="fwmode-reduced">
+        <input type="radio" name="framework_mode" id="fwmode-reduced" value="reduced" checked>
+        <span><span class="nm">JDK 21, Jakarta만 적용</span><span class="ds" id="fwmode-reduced-ds">프레임워크는 그대로 둡니다. 빌드 오류는 고치지 않습니다.</span></span>
+      </label>
+      <label class="flowopt" for="fwmode-convert">
+        <input type="radio" name="framework_mode" id="fwmode-convert" value="convert">
+        <span><span class="nm">사내 규정으로 전환</span><span class="ds">Spring Boot 프로젝트로 다시 만들고 사내 부모 pom을 적용한 뒤 빌드 오류를 고칩니다.</span></span>
+      </label>
+      <p class="picknote">프레임워크 프로젝트가 아니면 이 선택은 쓰이지 않습니다.</p>
+    </fieldset>
     <div class="projfield">
       <label class="plabel" for="project">프로젝트명<span class="req" aria-hidden="true">*</span></label>
       <input type="text" id="project" name="project" required maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,29}"
@@ -932,7 +946,8 @@
                                                      : '서버에 기본 설정이 없어 default.yml만으로 돕니다. sbmig serve --config <이름>으로 정하세요.';
     setDropLimit();
     fwRemAlways = !!(d.framework && d.framework.remediation_always === true);
-    setUploadFramework(d.framework);
+    fwCfg = d.framework && typeof d.framework === 'object' ? d.framework : null;
+    setFwChoice(fwDefault());                         // 브라우저가 되살린 선택 대신 서버 기본값으로 시작한다
     renderFramework();
     $('envhint').textContent = d.out_dir ? `결과 폴더 ${d.out_dir}` : '';
     describeConfigs();
@@ -976,9 +991,37 @@
     for (const r of document.querySelectorAll('input[name="flow"]')) r.closest('.flowopt').classList.toggle('on', r.checked);
     if (!uploading) $('startlabel').textContent = startLabel();
     $('stop_after').disabled = chosenFlow() === FLOW_REM;    // 취약점 해결 실행에는 멈출 이관 단계가 없다(서버도 이 값을 받지 않는다)
-    setDropLimit(); describeConfigs();
+    setDropLimit(); describeConfigs(); syncFwMode();
   }
   for (const r of document.querySelectorAll('input[name="flow"]')) r.addEventListener('change', syncFlow);
+
+  // ---- 사내 프레임워크 프로젝트 처리 방법: JDK 21, Jakarta만 적용(reduced) / 사내 규정으로 전환(convert)
+  // 서버 설정(/api/configs의 framework)이 프레임워크를 지정하고 전환을 쓸 수 있을 때만 보여 준다
+  const FW_REDUCED = 'reduced', FW_CONVERT = 'convert';
+  let fwCfg = null;
+  function fwChoiceOn() { return !!(fwCfg && fwCfg.configured === true && fwCfg.convert_available === true); }
+  function fwDefault() { return fwCfg && fwCfg.mode === FW_CONVERT ? FW_CONVERT : FW_REDUCED; }
+  function fwCfgName() { return fwCfg && typeof fwCfg.name === 'string' ? fwCfg.name.trim() : ''; }
+  // 보낼 값이다. 선택이 보이지 않거나 취약점 해결이면 빈 문자열이고, 그때는 보내지 않는다
+  function chosenFwMode() {
+    if (!fwChoiceOn() || chosenFlow() === FLOW_REM) return '';
+    const r = document.querySelector('input[name="framework_mode"]:checked');
+    return r && r.value === FW_CONVERT ? FW_CONVERT : FW_REDUCED;
+  }
+  function setFwChoice(v) {
+    for (const r of document.querySelectorAll('input[name="framework_mode"]')) r.checked = r.value === v;
+    syncFwMode();
+  }
+  function syncFwMode() {
+    for (const r of document.querySelectorAll('input[name="framework_mode"]')) r.closest('.flowopt').classList.toggle('on', r.checked);
+    $('fwpick').hidden = !fwChoiceOn() || chosenFlow() === FLOW_REM;
+    const name = fwCfgName();
+    setText('fwpick-title', name ? `${name} 프레임워크 프로젝트 처리 방법` : '사내 프레임워크 프로젝트 처리 방법');
+    setText('fwmode-reduced-ds', fwCfg && fwCfg.fix_loop === true ? '프레임워크는 그대로 둡니다. 빌드 오류도 고칩니다.'
+                                                                  : '프레임워크는 그대로 둡니다. 빌드 오류는 고치지 않습니다.');
+    setUploadFramework(fwCfg);                        // 업로드 카드의 안내가 선택을 따른다
+  }
+  for (const r of document.querySelectorAll('input[name="framework_mode"]')) r.addEventListener('change', syncFwMode);
 
   // ---- 프로젝트명: 서버(runs.PROJECT_RE)와 같은 규칙이다. 입력을 막거나 고치지 않고 값을 검사해 옆에 알린다
   const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/;
@@ -1057,8 +1100,11 @@
                            stopAfter: $('stop_after').value, llm: $('llm').value });
     q.set('project', projectValue());
     q.set('flow', flow);                                     // full | remediation
+    const fwMode = chosenFwMode();
+    if (fwMode) q.set('framework_mode', fwMode);             // reduced | convert. 선택이 보일 때만 보낸다
     $('start').disabled = true; drop.classList.add('busy');
     uploading = true; $('flowpick').disabled = true; $('flowpick').classList.add('locked');
+    $('fwpick').disabled = true; $('fwpick').classList.add('locked');
     $('startlabel').textContent = '올리는 중…';
     try {
       const r = await fetch('/api/runs?' + q.toString(), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file });
@@ -1067,6 +1113,8 @@
       // 서버 볼륨의 여유 공간이 하한(fleet.min_free_gb)보다 작아 거절된 업로드는 요청자가 할 일을 한국어로 알린다
       if (r.status === 507) { toast('서버의 저장 공간이 부족해 시작하지 못했습니다. 운영 담당자에게 알려 주세요.', true); return; }
       // 서버가 프로젝트명을 거절하면 입력란 옆에 그 문장을 그대로 보여 준다
+      // 처리 방법을 거절하면(전환을 쓸 수 없는 서버 등) 그 문장을 알림으로 보여 준다
+      if (r.status === 400 && d.message_ko && d.field === 'framework_mode') { toast(String(d.message_ko), true); return; }
       if (r.status === 400 && d.message_ko) { showProjectMsg(String(d.message_ko)); $('project').focus(); return; }
       if (!r.ok) { toast('시작하지 못했습니다: ' + (d.error || r.status), true); return; }
       const st = d.status || {};
@@ -1074,6 +1122,7 @@
       toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 대기 안내는 조금 더 오래 보여 준다(화면에도 남는다)
       setFile(null); $('zip').value = '';
       $('project').value = ''; showProjectMsg('');           // 다음 업로드는 새 이름으로 시작한다
+      setFwChoice(fwDefault());                              // 처리 방법도 서버 기본값으로 되돌린다
       attach(d.run_id, false, st.flow || flow, st.upload || upName, st.project || proj);
       if (st.state) setStatus(st);                     // SSE 연결 전에도 '대기 중'을 바로 표시한다(같은 status가 다시 와도 결과는 같다)
       $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1081,6 +1130,7 @@
       toast('서버에 보내지 못했습니다: ' + e, true);
     } finally {
       uploading = false; $('flowpick').disabled = false; $('flowpick').classList.remove('locked');
+      $('fwpick').disabled = false; $('fwpick').classList.remove('locked');
       drop.classList.remove('busy'); $('startlabel').textContent = startLabel(); $('start').disabled = !canStart();
     }
   });
@@ -1227,6 +1277,8 @@
     }
     // 줄인 범위로 실행한 실행이면 서버가 보고서나 저널에서 찾은 framework 값으로 안내를 보여 준다
     if (st.framework && typeof st.framework === 'object' && st.framework.scope === 'jdk-jakarta') setFramework(fwFrom(st.framework, fwInfo));
+    // 사내 규정으로 전환한 실행이면 서버가 보고서나 저널에서 찾은 전환 요약으로 안내를 바꾼다
+    if (st.conversion && typeof st.conversion === 'object') setConversion(st.conversion);
     const d = describe(st);
     const live = st.state === 'running' || st.state === 'queued';
     setTitle(d.cls, d.text, live);
@@ -1362,6 +1414,7 @@
   }
   function fwWho(fw) { return fw && fw.name ? `${fw.name} 프레임워크 프로젝트` : '사내 프레임워크 프로젝트'; }
   function setFramework(fw) {
+    if (fw && fwConv) return;                         // 전환한 실행은 줄인 범위로 실행하지 않는다
     // 같은 내용이 여러 번 와도(저널, status) 레일을 다시 그리지 않는다
     if (fw && fwInfo && fw.name === fwInfo.name && fw.fixLoop === fwInfo.fixLoop) return;
     fwInfo = fw || null; fwReduced = !!fwInfo;
@@ -1369,12 +1422,42 @@
     placeSkipped();
     markVerify();                                     // 범위를 빌드 검증 결과보다 늦게 알게 된 경우다
   }
+  // 사내 규정으로 전환한 실행의 요약이다. { name, project, modules, queueTotal }. 전환하지 않은 실행이면 null이다
+  let fwConv = null;
+  function convHead(name) {
+    return name ? `${name} 프레임워크 프로젝트를 사내 규정의 Spring Boot 프로젝트로 전환합니다.`
+                : '사내 프레임워크 프로젝트를 사내 규정의 Spring Boot 프로젝트로 전환합니다.';
+  }
+  function convBody(c) {
+    let s = '';
+    if (c.project) s = `만든 프로젝트는 ${c.project}입니다` + (c.modules.length ? `(모듈 ${c.modules.join(', ')}). ` : '. ');
+    s += '재구성, 구조 검토, 빌드 오류 수정은 다른 Spring Boot 프로젝트처럼 진행합니다.';
+    if (c.queueTotal > 0) s += ` 직접 확인할 항목 ${c.queueTotal}건은 보고서에 있습니다.`;
+    return s;
+  }
+  // 상태의 conversion이나 저널의 framework_converted 이벤트를 받는다. 모양이 맞지 않는 값은 뺀다
+  function setConversion(src) {
+    let c = null;
+    if (src && typeof src === 'object') {
+      const str = (v) => (typeof v === 'string' ? v.trim() : '');
+      const modules = Array.isArray(src.modules) ? src.modules.filter((m) => typeof m === 'string').slice(0, 20) : [];
+      let total = Number.isInteger(src.queue_total) && src.queue_total >= 0 ? src.queue_total
+        : (Array.isArray(src.queue) ? src.queue.length : (Number.isInteger(src.queue) && src.queue >= 0 ? src.queue : 0));
+      c = { name: str(src.framework) || fwCfgName(), project: str(src.project), modules, queueTotal: total };
+    }
+    if (JSON.stringify(c) === JSON.stringify(fwConv)) return;
+    fwConv = c;
+    if (fwConv) { fwInfo = null; fwReduced = false; }  // 전환한 실행은 재구성과 구조 검토를 한다
+    renderFramework();
+    placeSkipped();
+    markVerify();
+  }
   // 실행 카드와 결과 카드의 안내 문장을 쓴다. 설정 정보가 늦게 오면 다시 호출한다
   function renderFramework() {
     for (const id of ['fwnote', 'fwresult']) {
-      $(id).hidden = !fwReduced;
-      setText(id + '-head', fwReduced ? fwHead(fwInfo) : '');
-      setText(id + '-body', fwReduced ? fwBody(fwInfo) : '');
+      $(id).hidden = !fwReduced && !fwConv;
+      setText(id + '-head', fwConv ? convHead(fwConv.name) : (fwReduced ? fwHead(fwInfo) : ''));
+      setText(id + '-body', fwConv ? convBody(fwConv) : (fwReduced ? fwBody(fwInfo) : ''));
     }
   }
   // 올리기 전 안내. /api/configs의 framework가 configured일 때만 보여 준다
@@ -1383,6 +1466,11 @@
     $('fwupload').hidden = !on;
     if (!on) return;
     const name = typeof f.name === 'string' ? f.name.trim() : '';
+    if (chosenFwMode() === FW_CONVERT) {               // 사내 규정으로 전환을 골랐다
+      setText('fwupload-head', convHead(name));
+      setText('fwupload-body', 'Spring Boot 프로젝트로 다시 만든 뒤 사내 부모 pom을 적용하고, 구조 검토와 빌드 오류 수정까지 진행합니다.');
+      return;
+    }
     setText('fwupload-head', name ? `${name} 프레임워크를 쓰는 프로젝트는 JDK 21, Jakarta만 적용합니다.` : '사내 프레임워크를 쓰는 프로젝트는 JDK 21, Jakarta만 적용합니다.');
     setText('fwupload-body', (f.fix_loop === true ? '구조 정리와 구조 검토는 하지 않고, 변환한 뒤 빌드 오류까지 자동으로 수정합니다.'
                                                   : '구조 정리와 빌드 오류 자동 수정은 하지 않고, 변환한 프로젝트와 빌드 결과를 보고서와 함께 드립니다.')
@@ -1500,6 +1588,8 @@
     }
     // 범위는 분석의 framework_project와 계획의 plan 저널에 있다. 전체 이관(full)이면 따로 표시하지 않는다
     if ((name === 'framework_project' || name === 'plan') && ev.scope === 'jdk-jakarta') setFramework(fwFrom(ev, fwInfo));
+    // 접수에서 프로젝트를 사내 규정의 Spring Boot 프로젝트로 전환했다
+    if (name === 'framework_converted') setConversion(ev);
     if (name === 'phase_start' && ev.phase) $('railnote').textContent = `지금 단계: ${KO[ev.phase] || ev.phase}`;
     // 이관 뒤 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
     if (name === 'graph_node' && ev.node === 'remediation') {
@@ -3398,7 +3488,7 @@
     $('timeline').innerHTML = ''; $('log').replaceChildren(); closeReport(); rv.files = []; if (rp.run !== runId) remPreviewReset(); setReportText(''); $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
-    resetRail(runFlow); setFramework(null); runRem = null; lastRunSt = null; remLlm = null;
+    resetRail(runFlow); setFramework(null); setConversion(null); runRem = null; lastRunSt = null; remLlm = null;
     stopAsked = false; stopNoteKo = ''; $('stop').classList.remove('asked');
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);

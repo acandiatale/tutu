@@ -42,10 +42,13 @@ RUN_LABEL = "sbmig-run-id"                  # 실행 id를 담는 Job, 파드 �
 OWNER_LABEL = "sbmig-owner"                 # 요청마다 난수를 넣는 Job, 파드 라벨. Main은 이 값으로 자기 Job만 지운다
 # Main이 Job마다 넣어 주는 실행별 환경 변수. 나머지는 템플릿의 리터럴, ConfigMap, Secret이 채운다.
 # SBMIG_JOB_SLOT은 슬롯 번호(1부터), SBMIG_WORKER_ACTION은 할 일(비어 있으면 이관)이다.
-# SBMIG_FLOW는 full이나 remediation, SBMIG_JOB_ATTEMPT는 이 Job이 맡은 시도 번호다
+# SBMIG_FLOW는 full이나 remediation, SBMIG_JOB_ATTEMPT는 이 Job이 맡은 시도 번호다.
+# SBMIG_FRAMEWORK_MODE는 사내 프레임워크 프로젝트의 처리 방법이다. 고르지 않은 실행에는 넣지 않는다
 RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
-           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW", "SBMIG_JOB_ATTEMPT")
+           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW", "SBMIG_JOB_ATTEMPT", "SBMIG_FRAMEWORK_MODE")
 FLOW_ENV = "SBMIG_FLOW"                     # Main이 기록하고 Worker가 request.json의 flow와 비교한다
+# Main이 기록하고 Worker가 request.json의 framework_mode와 비교한다
+FRAMEWORK_MODE_ENV = "SBMIG_FRAMEWORK_MODE"
 SLOT_ENV = "SBMIG_JOB_SLOT"                 # Main이 기록하고 Worker가 읽는다
 # Main이 넘기는 시도 번호. Worker가 제어 상태를 읽기 전에 거절해도 결과 파일에 이 번호를 기록한다
 ATTEMPT_ENV = "SBMIG_JOB_ATTEMPT"
@@ -359,6 +362,9 @@ class RequestRecord:
     # 업로드할 때 입력한 프로젝트명. 실행 id 앞부분과 같다. 화면, 관리 페이지, 보고서 제목에 보여 주기만 한다.
     # Worker는 이 값을 검사하지 않는다. 이전 기록에는 이 값이 없다
     project: str | None = None
+    # 사내 프레임워크 프로젝트의 처리 방법(sbmig.core.models.FRAMEWORK_MODES). 빈 문자열이면 고르지 않은 것이다.
+    # 이 키가 없는 이전 request.json도 고르지 않은 것으로 읽는다
+    framework_mode: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -369,6 +375,8 @@ class RequestRecord:
         rec = cls(**{k: v for k, v in data.items() if k in known})
         if not rec.flow:                                        # flow가 null이나 빈 문자열이면 이전 기록처럼 full로 처리한다
             rec.flow = FLOW_FULL
+        if not isinstance(rec.framework_mode, str):             # null이면 고르지 않은 것으로 본다
+            rec.framework_mode = ""
         return rec
 
     def write(self, run_dir: Path) -> Path:

@@ -440,10 +440,15 @@ def _initial_state(orch: Orchestrator, stop_after: Phase | None, dry_run: bool) 
                           dry_run=bool(dry_run), phases=[], phase=None, aborted=None, stopped=False, summary={})
 
 
-def _guard(orch: Orchestrator, dry_run: bool, flow: str = FLOW_FULL) -> Any:
+def _guard(orch: Orchestrator, dry_run: bool, flow: str = FLOW_FULL, framework_mode: str | None = None) -> Any:
     """직접 호출되었으면 run guard를 열어 보고서 생성과 마무리를 보장한다.
-    이미 `orch.run()` 안이면 아무것도 하지 않는 컨텍스트를 반환한다."""
-    return nullcontext(orch.report) if orch.running else orch._run_guard(dry_run, flow=flow)
+    이미 `orch.run()` 안이면 아무것도 하지 않는 컨텍스트를 반환한다.
+    ``framework_mode``는 처리 방법을 줄 때만 넘긴다. 이전 오케스트레이터 대역이 이 인자를 모를 수 있다."""
+    if orch.running:
+        return nullcontext(orch.report)
+    if framework_mode is None:
+        return orch._run_guard(dry_run, flow=flow)
+    return orch._run_guard(dry_run, flow=flow, framework_mode=framework_mode)
 
 
 def _check(orch: Orchestrator, stop_after: Phase | None, dry_run: bool, flow: str | None) -> str:
@@ -455,12 +460,13 @@ def _check(orch: Orchestrator, stop_after: Phase | None, dry_run: bool, flow: st
 
 
 def run_graph(orch: Orchestrator, stop_after: Phase | None = None, dry_run: bool = False,
-              flow: str = FLOW_FULL) -> RunReport:
+              flow: str = FLOW_FULL, framework_mode: str | None = None) -> RunReport:
     """그래프로 이관을 실행한다(CLI 경로). 결과는 `orch.report`에 남는다.
     `orch.run()` 안에서는 모든 예외가 `run()`의 guard로 넘어간다. 직접 호출하면 같은 guard를 스스로 연다.
-    ``flow="remediation"``을 ``stop_after``나 ``dry_run``과 함께 쓰면 ValueError를 던진다."""
+    ``flow="remediation"``을 ``stop_after``나 ``dry_run``과 함께 쓰면 ValueError를 던진다.
+    ``framework_mode``는 사내 프레임워크 처리 방법이다. 모르는 값이면 ValueError를 던진다."""
     flow = _check(orch, stop_after, dry_run, flow)
-    with _guard(orch, dry_run, flow):
+    with _guard(orch, dry_run, flow, framework_mode):
         # 접수에서 거절한 작업 공간은 그 사유로 중단하고 노드를 실행하지 않는다
         if orch.refused_at_intake(orch.report):
             return _report(orch)
@@ -470,14 +476,17 @@ def run_graph(orch: Orchestrator, stop_after: Phase | None = None, dry_run: bool
 
 
 def stream_graph(orch: Orchestrator, stop_after: Phase | None = None,
-                 dry_run: bool = False, flow: str = FLOW_FULL) -> Iterator[tuple[str, dict]]:
+                 dry_run: bool = False, flow: str = FLOW_FULL,
+                 framework_mode: str | None = None) -> Iterator[tuple[str, dict]]:
     """그래프로 이관을 실행하면서 노드마다 (노드 이름, 상태 갱신)을 내보낸다. 웹 UI의 SSE `node` 이벤트가 된다.
     반복이 끝나거나 일찍 닫혀도 guard가 보고서를 마무리한다. 잘못된 ``flow`` 조합은 첫 ``next``에서 ValueError를 던진다.
     `full`에서 아무것도 하지 않은 remediation 노드는 내보내지 않는다.
+    ``framework_mode``는 사내 프레임워크 처리 방법이다. 모르는 값은 첫 ``next``에서 ValueError를 던진다.
 
-    LangGraph ``stream_mode="updates"``; the finalized report is `orch.report`."""
+    LangGraph ``stream_mode="updates"``; the finalized report is `orch.report`. Inside `orch.run()` the run's
+    own `framework_mode` stands and the keyword is ignored."""
     flow = _check(orch, stop_after, dry_run, flow)
-    with _guard(orch, dry_run, flow):
+    with _guard(orch, dry_run, flow, framework_mode):
         # 접수에서 거절한 작업 공간은 그 사유로 중단하고 노드를 실행하지 않는다
         if orch.refused_at_intake(orch.report):
             return

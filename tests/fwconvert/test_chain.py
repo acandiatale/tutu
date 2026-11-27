@@ -1,6 +1,6 @@
 """The converters of sbmig.fwconvert run one after another on a small project: what one writes, the next must find.
 
-Every unit test of this folder feeds a module records built by hand. This one checks the borders: the statement a
+Every unit test of this folder feeds a module records built by hand. This one runs the whole pipeline (``convert_project``) and checks the borders: the statement a
 generated store calls exists in a generated mapper, the address a rewritten script calls is served by a generated
 controller, and a page link of a JSP reaches a page controller."""
 from __future__ import annotations
@@ -10,22 +10,9 @@ from pathlib import Path
 
 from lxml import etree
 
-from sbmig.fwconvert.ajax import transform_ajax
-from sbmig.fwconvert.apimap import extract_api_map
-from sbmig.fwconvert.frontcopy import copy_frontend, fix_jsp_paths
-from sbmig.fwconvert.identity import derive_identity
-from sbmig.fwconvert.inventory import scan_tree
-from sbmig.fwconvert.javagen import (
-    duplicate_mappings,
-    generate_page_controllers,
-    generate_resource,
-    write_generated,
-)
-from sbmig.fwconvert.model import Layout, MapperIndex
-from sbmig.fwconvert.resources import ajax_targets_without_controller, build_resources, unexposed_endpoints
+from sbmig.fwconvert.model import ConvertOptions, Layout
+from sbmig.fwconvert.pipeline import convert_project
 from sbmig.fwconvert.rules import load_rules
-from sbmig.fwconvert.servicexml import decompose_services
-from sbmig.fwconvert.sqlmap import convert_mappers
 
 OVERLAY = {
     "naming": {"package_root": "com.example", "domains": ["d1"], "default_domain": "d1"},
@@ -110,34 +97,22 @@ def _project(root: Path) -> None:
         p.write_text(text, encoding="utf-8")
 
 
+OPTIONS = ConvertOptions(source_name="sample-shop-clean.zip", domain="d1", boot_version="4.1.0",
+                         versions={"org.mybatis.spring.boot:mybatis-spring-boot-starter": "4.1.0"})
+
+
 def _convert(src: Path, out: Path):
-    rules = load_rules("Example", OVERLAY)
-    layout = Layout(derive_identity("sample-shop-clean.zip", rules, domain="d1"))
-    inv = scan_tree(src, rules)
-    mapped = convert_mappers(src, inv.sql, inv.mapper, layout, rules)
-    index = MapperIndex(mapped.mappers)
-    services = decompose_services(src, inv.service_xml, inv.java, index, rules)
-    api_map = extract_api_map(src, rules, inv.jsp + inv.static)
-    resources = build_resources(services.services, index, api_map, rules)
-    files = list(mapped.files)
-    queue = list(services.queue)
-    for res in resources:
-        made, items = generate_resource(res, layout, rules)
-        files += made
-        queue += items
-    copied = copy_frontend(src, out, layout, rules, inv.jsp + inv.static)
-    moved = fix_jsp_paths(out, layout, rules, copied.copied)
-    ajax = transform_ajax(out, layout, rules)
-    queue += moved.queue + ajax.queue + ajax_targets_without_controller(ajax.services, resources, rules)
-    static = layout.static_dir + "/"
-    jsps = sorted(t[len(static):] for _, t in copied.copied if t.endswith(".jsp"))
-    pages = generate_page_controllers(api_map, jsps, layout, rules,
-                                      reserved=[Path(f.path).stem for f in files if f.path.endswith(".java")])
-    files += pages.files
-    clashes = duplicate_mappings(files)
-    errors = (write_generated(out, files) + mapped.errors + services.errors + copied.errors + moved.errors
-              + ajax.errors + inv.errors + clashes)
-    return layout, resources, queue, pages, errors
+    result = convert_project(src, out, load_rules("Example", OVERLAY), OPTIONS)
+    assert result.converted and result.identity is not None
+    return Layout(result.identity), result
+
+
+def _page_urls(out: Path) -> list[str]:
+    urls: list[str] = []
+    for p in sorted(out.rglob("*PageController.java")):
+        for args in re.findall(r"@RequestMapping\((.*)\)", p.read_text(encoding="utf-8")):
+            urls += re.findall(r'"(/[^"]*)"', args)
+    return sorted(urls)
 
 
 def _statement_keys(out: Path, layout: Layout) -> set[str]:
@@ -157,10 +132,13 @@ def _java(out: Path) -> dict[str, str]:
 def test_the_whole_chain_leaves_no_error_and_the_expected_layout(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     _project(src)
-    layout, resources, queue, pages, errors = _convert(src, out)
-    assert errors == []
+    layout, result = _convert(src, out)
+    queue = result.queue
+    assert result.errors == []
     assert layout.identity.project_name == "shopProject" and layout.pkg == "com.example.d1.shopProject"
-    assert sorted(r.x_name for r in resources) == ["Item", "Order"]
+    spec = out / layout.identity.modules.domain / "src/main/java/com/example/d1/shopProject/domain/spec"
+    assert sorted(p.name.removesuffix("Service.java") for p in spec.glob("*Service.java")) == ["Item", "Order"]
+    assert result.counts["resources"] == 2
     names = set(_java(out))
     assert {"OrderService.java", "OrderStore.java", "OrderLogic.java", "OrderSpringLogic.java",
             "OrderMybatisStore.java", "OrderController.java", "ItemService.java", "ItemStore.java",
@@ -202,10 +180,11 @@ def test_the_address_a_rewritten_script_calls_is_served_by_the_router_controller
 def test_a_page_link_of_a_jsp_reaches_a_page_controller_that_names_the_copied_jsp(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     _project(src)
-    layout, _resources, _queue, pages, _errors = _convert(src, out)
-    assert pages.url_prefix_used == "/SH1/SH1A10"
+    layout, _result = _convert(src, out)
+    created = _page_urls(out)
+    assert all(u.startswith("/SH1/SH1A10/") for u in created)
     # the form posts to the page as the JSP spells it; the controller serves that spelling and the kebab form
-    assert sorted(pages.created) == ["/SH1/SH1A10/item-list.mvc", "/SH1/SH1A10/order-detail.mvc",
+    assert created == ["/SH1/SH1A10/item-list.mvc", "/SH1/SH1A10/order-detail.mvc",
                                      "/SH1/SH1A10/order-list.mvc", "/SH1/SH1A10/orderDetail.mvc"]
     detail = _java(out)["OrderDetailPageController.java"]
     assert '"/SH1/SH1A10/orderDetail.mvc"' in detail and 'return "shop/orderDetail";' in detail
@@ -229,7 +208,8 @@ def test_the_same_project_converts_to_the_same_bytes(tmp_path):
 def test_a_copied_jsp_still_finds_what_it_includes_and_calls(tmp_path):
     src, out = tmp_path / "src", tmp_path / "out"
     _project(src)
-    layout, _resources, queue, _pages, _errors = _convert(src, out)
+    layout, result = _convert(src, out)
+    queue = result.queue
     jsp = (out / layout.static_dir / "shop/order-list.jsp").read_text(encoding="utf-8")
     # the include names the place the header was copied to, and that file exists
     assert '<%@ include file="/WEB-INF/static/shopProject/common/header.jsp" %>' in jsp
@@ -246,8 +226,9 @@ def test_a_rewritten_call_to_a_service_nobody_serves_is_handed_over(tmp_path):
     _project(src)
     (src / "WebContent/js/stock.js").write_text(
         'function s(t) { return "commonAjax.json?ServiceName=stock-service&" + t + "=1"; }\n', encoding="utf-8")
-    layout, _resources, queue, _pages, errors = _convert(src, out)
-    assert errors == []
+    layout, result = _convert(src, out)
+    queue = result.queue
+    assert result.errors == []
     # the script is rewritten as the table says, and the address has no controller: said, not left to a 404
     assert '"/api/stock/" + t' in (out / layout.static_dir / "js/stock.js").read_text(encoding="utf-8")
     assert any(q.component == "js_ajax::js/stock.js" and q.reason.startswith("[AJAX_NO_CONTROLLER]") for q in queue)
@@ -259,10 +240,9 @@ def test_an_endpoint_the_front_end_does_not_call_is_removed_and_can_be_traced(tm
     src, out = tmp_path / "src", tmp_path / "out"
     _project(src)
     (src / "WebContent/js/item.js").write_text("function l() { return api.get('/api/item'); }\n", encoding="utf-8")
-    _layout, resources, _queue, _pages, errors = _convert(src, out)
-    assert errors == []
+    _layout, result = _convert(src, out)
+    assert result.errors == []
     controller = _java(out)["ItemController.java"]
     # the list is called and served; the count is not called: no handler, and one line that says which address went
     assert '@GetMapping' in controller and "countAll" not in controller
-    assert unexposed_endpoints(resources, load_rules("Example", OVERLAY)) == \
-        ["GET /api/item/count-all  (ItemService.countAll)"]
+    assert result.unexposed == ["GET /api/item/count-all  (ItemService.countAll)"]
