@@ -1,5 +1,6 @@
 """한국어 주석 규약(docs/v2/CODE-COMMENTS-KO.md) 검사.
 - ``sbmig/``의 모든 모듈 docstring과 공개 최상위 클래스·함수 docstring에 한국어가 있어야 한다
+- 모듈 docstring의 한국어는 두 줄을 넘지 않아야 한다
 - 한국어 주석 줄에는 줄표, 화살표, 굵게, 버전 태그, 날짜, 띄어 쓴 조사가 없어야 한다
 
 Every module under ``sbmig/`` carries a Korean handover docstring (Korean first, then the English original) and every
@@ -28,6 +29,22 @@ def test_module_docstring_starts_in_korean(path: Path):
     assert doc.strip(), "module docstring missing"
     first = next(line for line in doc.splitlines() if line.strip())
     assert HANGUL.search(first), "module docstring must start with the Korean block (English original after it)"
+
+
+def test_module_header_korean_is_at_most_two_lines():
+    # the Korean part of a module docstring says only what the file does: one or two lines, then a blank line and the
+    # English working note (docs/v2/CODE-COMMENTS-KO.md section 2). The package map of sbmig/__init__.py comes after
+    # that blank line, so it passes like every other module.
+    long: list[str] = []
+    for path in MODULES:
+        head: list[str] = []
+        for line in _module_doc(path).splitlines():
+            if not line.strip():
+                break
+            head.append(line)
+        if len(head) > 2:
+            long.append(f"{path.relative_to(ROOT).as_posix()}: {len(head)} lines before the first blank line")
+    assert not long, "module docstrings whose Korean header is longer than two lines:\n" + "\n".join(long)
 
 
 def test_every_public_definition_has_korean_docstring():

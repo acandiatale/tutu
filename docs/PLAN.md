@@ -1630,3 +1630,26 @@ Contract: `docs/INTERFACES.md` "v2.1z-ck".
 | Documents | `agent-doc/00` §7 (the rule and where it shows), `agent-doc/13` (pointer), `deploy/README.md`, `docs/RUNBOOK.md` §0.3, `docs/migration-agent/README.md` §4.9 | `tests/docs` | done |
 | The PM's choices | the rule also holds with `framework.fix_loop` on; unparsed files and JSP leftovers do not undo the label; 「JDK 21, Jakarta」 names the scope also when the plan left the jakarta set out | told to the user | open |
 | Not checked | the company cluster and Job mode (the exit-code paths are read from the code); the real plugin printing only its summary line; an MSA plan made by the real planner, end to end | — | open |
+
+## Status — 2026-11-27, the Korean comments read at a glance (comment polish)
+
+After the sweep of 2026-11-25 / 26 the user asked for one more pass: "너가 나한테 대답해주듯이 그런 말투와 핵심내용만
+전달하게! build_tool.py에 detect_build_tool 안에 if _has_any 위로 붙은 주석처럼 보자마자 알기 쉽게!! 파일 최상단에 붙이는
+주석은 그냥 어떤 일을 하는지만 간략하게 적어도 돼!" The comment held up as the model:
+`# pom이 있으면 Maven으로 본다. 함께 있는 Gradle, Ant 파일은 무시하고 reason에 "ignored"만 남긴다`.
+The rule: `docs/v2/CODE-COMMENTS-KO.md` section 2 (lengths) and the new section 3.1. No behaviour changes.
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| The rule | a module header's Korean is one or two lines that say what the file does (callers and rules live in the English note); every Korean line: one fact per sentence, the case first and then what happens, the meaning instead of the mechanism, the core only; an inline comment says which case this is and what is done about it | `docs/v2/CODE-COMMENTS-KO.md` | done |
+| Pilot | `sbmig/analyze/build_tool.py`, `sbmig/web/jsonsafe.py`, `sbmig/core/stage.py`, `sbmig/kb/store.py`, written by the PM as the worked example | read by the PM | done |
+| The pass | all 181 files of `sbmig/`, 19 work sets, one worker per set with the pilot and the rule as its brief | per set: syntax tree without docstrings and the code token stream equal to before, header length, added lines within 110 characters, a sample of the diff read by the PM | done |
+| Size | module header Korean lines 1,371 to 266 (179 modules had more than two); Korean comment and docstring lines 16,078 to 15,180, of them 4,968 new or reworded | counted with one script on the base commit and the result | done |
+| The package map | `sbmig/__init__.py` keeps its Korean list (one line per package): it is the one header whose content is the list | the PM's decision, written into the rule | done |
+| Claims put right on the way | Korean lines that said something the code does not do, found while rewording: the remediation chain also runs after a failed build of a framework project, the planner's LLM advisor, the unknown-key warning descending into dict / list fields, `finish` of the remediation graph, the boot WAR conditions of the restructurer, `plan_iteration` keeping its order, the cut of a long Job name | each read against the code by the PM | done |
+| Test | `tests/docs/test_korean_comments.py::test_module_header_korean_is_at_most_two_lines` | `tests/docs` | done |
+| Review | four rounds by independent reviewers, 13 passes, 79 findings (41 Korean lines that said something the code does not do, 36 unclear sentences, 2 headers, no lost fact). Round one: every file once (5 wrong lines). Rounds two and three: the largest and most subtle files line by line against the code (24 wrong lines, most of them imprecise before the polish too: a list that named only some of the cases, one of two conditions). Round four: the fixes themselves (8 of 36 places still left out a rule) and an old-against-new comparison of the remaining 139 files (4, two of them in the PM's own pilot files) | each finding read against the code by the PM before the fix; `scripts/check_comments_only.py` after every fix | done |
+| Whole suite | 10,354 passed (10,353 before, plus the header-length test) | `pytest` | done |
+| Lesson | a comment that lists cases claims the list is complete. Where the full rule is long the Korean now states the core and names the function that holds the rule, and the first fix of such a line was wrong again in 8 of 36 places: a fix of a comment is reviewed like a fix of code | — | noted |
+| Not checked | files outside the line-by-line passes had their reworded lines compared with the old text and checked against the code only where the two differed; Korean lines the polish did not touch were not read against the code at all | — | open |
+| Not in this pass | the page's HTML / CSS / JS comments, `config/*.yml` comments, `deploy/` comments | — | open |

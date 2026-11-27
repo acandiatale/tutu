@@ -67,7 +67,7 @@
 | `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
 | `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …)와 토큰 가드(다른 사이트의 요청 거절 포함) · `contract.py` Main ↔ Worker 파일 계약(빌드 식별값 `sbmig_version`, 고정값 대조; 보고서 제목용 입력 프로젝트명 `entered_project` / `display_project`, 보여 주기만; 결과 ZIP을 받는 이름 `zip_download_name`: `<프로젝트명>-migration.zip` / `-remediation.zip`, 없으면 실행 id, 상태의 `zip_name`) · `runs.py` 실행 관리자·SSE 이벤트, 내려받을 때의 보고서 이름 `DOWNLOAD_NAMES`(`report.md` 는 `migration-report.md`, `report.json` 은 `migration-report.json`; 실행 폴더 안 이름은 그대로) · `static/index.html` 화면(바닐라 JS). 보고서는 자체 변환기 `MdView` 로 그린다: 요소와 글자 노드만 만들고(`innerHTML` 안 씀), 링크는 http(s)와 그 실행의 파일만, 그림은 불러오지 않고 설명 글자만, HTML은 `<details>` / `<summary>` 외에는 글자로 보인다. 미리보기는 둘이다: 결과 카드 끝의 마이그레이션 보고서(`#preview`)와 조치 칸 안의 조치 결과 보고서(`#rem-preview`, `/api/remediations/{id}/files/report.md` 그대로, 상태의 `updated`가 바뀔 때만 다시 받음). `?download=1` 이면 `remediation-report.md` 이름으로 내려간다. 고급 설정(`#adv`)은 숨김, 그 밖의 파일 목록은 없음 · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량(조치의 수정 루프 몫 포함, `add_remediation_usage`)과 모델 이름([05](05-llm-gateway-and-prompts.md) 9.1), 로그 ZIP, 올린 원본 받기) · `codediff.py` 코드 변경 화면의 API(`/api/runs/{run_id}/codediff`: 실행 폴더의 `codediff/`와 `result.zip`만 읽는다. 기록은 빌드 쪽 `sbmig/report/codediff.py`가 마무리에서 쓴다) · `jsonsafe.py` 파일 내용을 담는 답과 이벤트(실행 하나의 상태, 업로드 답, 코드 변경, 관리자 사용량, 이벤트 스트림의 `status`)를 보내는 곳: NaN·무한대는 null로 보낸다 |
 
-모듈마다 docstring 맨 앞에 짧은 한국어 블록(역할, 호출 위치, 진입점, 지켜야 할 규칙)이 있고 그 뒤에 영어 상세 기록이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
+모듈마다 docstring 맨 앞에 한국어 1~2줄(이 파일이 하는 일)이 있고 그 뒤에 영어 작업 메모(호출 위치, 진입점, 지켜야 할 규칙)가 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
 
 ## 3. 이 일을 하려면 이 파일
 
