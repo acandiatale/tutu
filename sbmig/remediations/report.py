@@ -1,15 +1,9 @@
-"""취약점 조치 결과를 ``report.json``과 담당자용 한국어 ``report.md``로 만드는 모듈.
-그래프의 ``report`` 노드가 끝 상태에서 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
-- 비밀 값, 토큰, 서버 절대 경로는 넣지 않는다. 경로는 실행 폴더 기준 상대 경로로 쓴다
-- 입력이 같으면 결과도 같도록 현재 시각을 넣지 않고 정렬 순서를 고정한다
-- report.md는 결과 블록, 요약, 해야 할 일, 조치 완료, 빌드 오류 수정 순서로 시작한다
-- 그 뒤는 사내 라이브러리, 직접 확인, 제외 항목, 프로젝트 파일, 변경하지 않은 것, 처리 기록 순서다. 빈 절은 쓰지 않는다
-- 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다
-- report.json에는 저장된 영어 문장과 코드를 그대로 쓴다
-- ``inhouse_artifact`` 항목은 사내 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
-- 사내 라이브러리와 직접 확인 표 아래에는 모듈마다 라이브러리가 들어온 경로를 쓴다
-- ``ignore_actions`` 항목은 제외 항목 절에만 싣고 취약점 개수에 넣지 않는다
-- ``file_components: report``면 파일 컴포넌트는 프로젝트 파일 절에만 싣고 취약점 개수에 넣지 않는다
+"""취약점 조치 결과를 ``report.json``과 담당자가 읽는 한국어 ``report.md``로 만드는 모듈.
+
+The graph's ``report`` node calls ``write_report`` on a final state; the API list uses ``summary``. No token
+is written either, and paths are relative to the run folder. No current time goes in and the sort order is
+fixed. report.md shows stored English sentences through ``i18n.ko_display``. ``ignore_actions`` items are not
+counted as vulnerabilities.
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries; English sentences
 and codes as stored) and `report.md` (Korean, for the project owners). Deterministic for the same input; no
@@ -95,7 +89,7 @@ _VERDICT = {
     STOPPED: "⏹ **조치를 멈췄습니다.**", INTERRUPTED: "⏹ **조치가 중단되었습니다.**",
     QUEUED: "⏳ **조치를 기다리고 있습니다.**", RUNNING: "⏳ **조치를 진행하고 있습니다.**",
 }
-# 사유 코드별 (결과 줄에 쓸 설명, 해야 할 일)이다. "<n>"은 마지막 라운드 번호로 바뀐다
+# 사유 코드마다 (결과 줄에 쓸 설명, 해야 할 일)이다. "<n>"은 마지막 라운드 번호로 바뀐다
 # 사내, 직접 확인처럼 개수가 붙는 할 일은 _next_steps가 개수를 넣는다
 _REASON_KO: dict[str, tuple[str, str]] = {
     "baseline_build_failed": ("올린 프로젝트가 조치 전 빌드에서 실패했습니다. 빌드되지 않는 프로젝트는 검사하지 않습니다.",
@@ -146,14 +140,14 @@ _REASON_KO: dict[str, tuple[str, str]] = {
                      "올리지 않고 같은 분석 결과를 조회합니다.",
                      "**이어서 진행하기** — 계속하려면 조치 화면에서 「이어서 진행」을 눌러 주세요."),
 }
-# include 정책에 따라 빌드에 실패한 수정본을 결과 ZIP으로 냈을 때 쓰는 candidate_build_failed 문장
+# 빌드에 실패한 수정본을 결과 ZIP으로 냈을 때(include 정책)의 candidate_build_failed 문장
 _FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니다.",
                        "**빌드 오류 확인하기** — 빌드에 실패한 결과 ZIP은 배포하지 말고, `rounds/<n>/build.log` 파일과 "
                        "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
 _SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 결과 ZIP을 받아 사용해 주세요."
 # 바꾼 것이 없어 원본을 그대로 낸 결과 ZIP(라운드 0)은 조치 전 검사만 거쳤다
 _SUCCEEDED_STEP_ROUND0 = "**결과 ZIP 받기** — 검사를 마친 결과 ZIP을 받아 사용해 주세요."
-# 조치 전 빌드 실패를 받아들인 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
+# 조치 전 빌드가 실패해도 이어 간 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
 _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 남은 빌드 오류는 프로젝트 담당자와 "
                   "프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
                   "라이브러리를 보는 것이므로 빌드와 상관없이 진행했습니다."),
@@ -161,7 +155,7 @@ _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습�
                   "프로젝트 담당자와 프레임워크 담당자가 고쳐 주세요."))
 _TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP의 pom.xml 버전을 "
                          "그대로 두고 한 번 빌드해 주세요. 빌드가 통과해야 바꾼 버전을 그대로 쓸 수 있습니다.")
-# 빌드 설정 점검에서 읽을 수 없는 pom 때문에 멈췄을 때의 결과 줄 설명과 할 일
+# 빌드 설정을 점검하다 읽을 수 없는 pom이 나와 멈췄을 때의 결과 줄 설명과 할 일
 _POM_REFUSED_WHAT = "pom 파일을 읽지 못해 작업을 중단했습니다."
 _POM_REFUSED_STEP = ("**pom 파일 고치기** — 위에 적힌 pom 파일을 열어 문법 오류나 파일 권한을 확인하고, Maven으로 빌드되는 "
                      "상태로 고친 뒤 다시 올려 주세요.")
@@ -169,7 +163,7 @@ _POM_REFUSED_STEP = ("**pom 파일 고치기** — 위에 적힌 pom 파일을 �
 
 def _clean(text: Any, roots: list[str]) -> Any:
     """문자열에서 비밀 환경 변수 값, URL 속 계정 정보, 실행 폴더 절대 경로를 지우고 마스킹 훅을 거친다.
-    마스킹 훅은 ``SBMIG_REDACT_OUTPUT``이 켜졌을 때만 동작하므로 훅에만 의존하지 않는다."""
+    마스킹 훅은 ``SBMIG_REDACT_OUTPUT``이 켜졌을 때만 동작한다. 그래서 훅에만 맡기지 않고 여기서 먼저 지운다."""
     if not isinstance(text, str):
         return text
     from .graph import scrub_message  # 순환 import를 피하려고 함수 안에서 import한다
@@ -281,24 +275,25 @@ def _delivery_matches(state: RemediationState, final: ScanResult | None) -> bool
 
 
 def _failed_delivery(state: RemediationState) -> bool:
-    """결과 ZIP이 빌드에 실패한 수정본인지(include 정책) 확인한다."""
+    """결과 ZIP이 빌드에 실패한 수정본이면 True를 반환한다(include 정책)."""
     return bool(state.delivery is not None and not state.delivery.build_ok and not state.delivery.build_tolerated)
 
 
 def _tolerated(state: RemediationState) -> bool:
-    """조치 전 빌드가 실패했지만 그 실패를 받아들이고 검사와 조치를 이어 간 실행인지 확인한다."""
+    """조치 전 빌드가 실패했는데도 검사와 조치를 이어 간 실행이면 True를 반환한다."""
     b = state.baseline_build
     return bool(state.baseline_tolerated and b is not None and not b.ok)
 
 
 def _nothing_changed(state: RemediationState) -> bool:
-    """확정한 라운드에 적용한 제안이 하나도 없는지 확인한다. 이때 결과 ZIP은 원본이고 빌드로 확인할 변경이 없다."""
+    """확정한 라운드에 적용한 제안이 하나도 없으면 True를 반환한다.
+    이때 결과 ZIP은 원본이라 빌드로 확인할 변경이 없다."""
     return not any(rs.committed and rs.applied for rs in state.rounds)
 
 
 def build_unconfirmed(summary: Mapping[str, Any] | None) -> bool:
-    """조치 요약(``chain.summary``)을 보고 고칠 것은 다 고쳤고 빌드 확인만 남은 실행인지 확인한다.
-    조치 전 빌드 실패를 받아들인 실행이면서 INCOMPLETE이고 사유가 ``baseline_build_failed`` 하나뿐일 때만 True다.
+    """고칠 것은 다 고쳤고 빌드 확인만 남은 실행인지 조치 요약(``chain.summary``)으로 확인한다.
+    조치 전 빌드 실패를 받아들인 실행이고, INCOMPLETE이고, 사유가 ``baseline_build_failed`` 하나뿐일 때만 True다.
 
     Another reason present, or no `reasons` list, is the ordinary "partly" case."""
     if not isinstance(summary, Mapping):
@@ -322,7 +317,8 @@ def _tolerated_compare(state: RemediationState) -> dict[str, Any]:
 
 
 def _verified_kept(paths: RunPaths) -> dict[str, Any] | None:
-    """실패한 수정본 대신 보관해 둔 앞 라운드의 검증된 ZIP(``delivery/result-r<k>-verified.zip``) 정보를 반환한다."""
+    """앞 라운드에서 검증을 마치고 보관해 둔 ZIP의 정보를 반환한다. 없으면 None이다.
+    수정본이 실패하면 이 ZIP(``delivery/result-r<k>-verified.zip``)을 남겨 둔다."""
     from .graph import find_verified_zip  # 순환 import를 피하려고 함수 안에서 import한다
     z = find_verified_zip(paths)
     if z is None:
@@ -352,8 +348,8 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
                       severity: tuple[float, float, float] | None = None,
                       inhouse: Mapping[str, str] | None = None,
                       file_components: str | None = None) -> dict[str, Any]:
-    """``report.json``에 쓸 내용을 만든다. 도구가 읽는 형식이므로 한국어 번역은 넣지 않는다.
-    state 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP 일치 여부, 제외 항목, 사내 아티팩트별 항목을 담는다.
+    """``report.json``에 쓸 내용을 만든다. 도구가 읽는 파일이라 한국어 번역은 넣지 않는다.
+    state 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP이 검사한 ZIP과 같은지, 제외 항목, 사내 아티팩트별 항목을 담는다.
     ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다.
     ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음에 ``group``을 넣는다.
 
@@ -399,8 +395,8 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
 
 
 def _files_scan(base: ScanResult | None, final: ScanResult | None) -> tuple[ScanResult | None, bool]:
-    """파일 컴포넌트 절에 쓸 검사를 고른다. 끝난 검사 가운데 조치 후 검사를 먼저 쓰고, 그 파일 부분을 읽지 못했으면
-    조치 전 검사를 쓴다. 두 번째 값은 조치 후 검사 대신 조치 전 검사를 썼는지다.
+    """파일 컴포넌트 절에 쓸 검사를 고른다. 끝난 검사 가운데 조치 후 검사가 먼저다.
+    조치 후 검사의 파일 부분을 읽지 못했으면 조치 전 검사를 쓴다. 두 번째 값은 그렇게 조치 전 검사로 바꿨는지다.
 
     The scan whose file findings the report lists: the complete final scan, else the complete baseline; a final scan
     whose file part was not read gives way to a baseline whose file part was (the remediation changes no file)."""
@@ -435,7 +431,7 @@ def _md_cell(text: Any) -> str:
 
 
 def _earlier_delivery(state: RemediationState) -> bool:
-    """작업은 실패로 끝났지만 앞 라운드에서 검증한 결과 ZIP이 남아 있는지 확인한다."""
+    """작업은 실패로 끝났지만 앞 라운드에서 검증한 결과 ZIP이 남아 있으면 True를 반환한다."""
     last = max((rs.round for rs in state.rounds), default=0)
     return bool(state.status == FAILED and state.delivery is not None and state.delivery.round < last)
 
@@ -466,7 +462,8 @@ def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
 
 
 def _boundary_text(state: RemediationState, what: str, step: str) -> tuple[str, str]:
-    """읽을 수 없는 pom이 있으면 어느 파일이 왜 안 읽히는지를 결과 줄에 넣는다. pom만의 문제면 문장과 할 일도 바꾼다."""
+    """읽을 수 없는 pom이 있으면 어느 파일이 왜 안 읽히는지 결과 줄에 넣는다.
+    중단한 이유가 pom뿐이면 문장과 할 일도 pom에 맞게 바꾼다."""
     refused = [b for b in state.boundary if b.action == "refuse"]
     poms = [b for b in refused if b.code == "unparsable_pom"]
     if not poms:
@@ -488,7 +485,7 @@ BUILD_CHANGED_SHOWN = 5
 
 
 def _build_changed_line(rs: RoundState) -> str:
-    """빌드가 바꿔서 원래대로 돌려 둔 파일을 처리 기록 한 줄로 만든다. 없으면 빈 문자열이다.
+    """빌드가 바꿔서 원래대로 되돌려 둔 파일을 처리 기록 한 줄로 만든다. 없으면 빈 문자열이다.
 
     The record line for `RoundState.build_changed` (read defensively: older states have no such field)."""
     paths = [str(x) for x in (getattr(rs, "build_changed", None) or []) if str(x)]
@@ -505,25 +502,27 @@ def _fix_of(rs: RoundState) -> Any:
 
 
 def _changed_fix(fix: Any) -> bool:
-    """소스를 실제로 바꾼 자동 수정인지 확인한다. 다시 빌드해 통과한 경우(``retry_passed``)는 바꾼 파일이 없다."""
+    """자동 수정이 소스를 실제로 바꿨으면 True를 반환한다.
+    다시 빌드해서 통과한 경우(``retry_passed``)는 바꾼 파일이 없다."""
     return bool(fix is not None and getattr(fix, "fixed", False) and (getattr(fix, "changed", None) or []))
 
 
 def _retry_passed(fix: Any) -> bool:
-    """수정 루프의 첫 빌드가 고치지 않고 통과했는지 확인한다. 이 필드가 없는 이전 결과는 바꾼 파일이 없는 것으로 판단한다."""
+    """수정 루프의 첫 빌드가 고치지 않고 통과했으면 True를 반환한다.
+    ``retry_passed``가 없는 이전 결과도 바꾼 파일이 없으면 통과한 것으로 본다."""
     if fix is None or not getattr(fix, "fixed", False):
         return False
     return bool(getattr(fix, "retry_passed", False)) or not (getattr(fix, "changed", None) or [])
 
 
 def _discarded_of(rs: RoundState) -> list[Any]:
-    """라운드에서 수정본을 다시 만들며 버린 자동 수정 목록(``RoundState.fix_discarded``)을 반환한다. 없으면 빈 목록이다."""
+    """수정본을 다시 만들면서 버린 자동 수정 목록(``RoundState.fix_discarded``)을 반환한다. 없으면 빈 목록이다."""
     return list(getattr(rs, "fix_discarded", None) or [])
 
 
 def _fixed_rounds(state: RemediationState) -> list[RoundState]:
-    """빌드 오류를 고쳐서 확정한 라운드를 번호순으로 반환한다. 확정하지 않은 라운드의 소스 수정은 결과에 들어가지 않는다.
-    소스를 바꾸지 않은 라운드(다시 빌드해 통과)도 넣지 않는다.
+    """빌드 오류를 고쳐서 확정한 라운드를 번호순으로 반환한다. 결과에 들어가는 소스 수정은 이 라운드의 것뿐이다.
+    소스를 바꾸지 않은 라운드(다시 빌드해 통과)는 넣지 않는다.
 
     Rounds that are committed with `fix.fixed` and a non-empty `fix.changed`, by number: the only rounds whose fix is in
     the result, so the only ones the report, the page digest and the files route show."""
@@ -550,8 +549,8 @@ def fix_patch_path(paths: RunPaths) -> Path:
 
 
 def write_fix_patch(state: RemediationState, paths: RunPaths) -> Path | None:
-    """확정한 자동 수정 라운드의 ``rounds/<r>/fix.patch``를 라운드 순서대로 하나로 모아 원자적으로 쓴다.
-    라운드마다 ``# round <r>`` 줄을 앞에 붙이고, 없는 파일은 경고를 남기고 ``# round <r>: patch file missing`` 줄만 쓴다.
+    """확정한 자동 수정 라운드의 ``rounds/<r>/fix.patch``를 라운드 순서대로 모아 파일 하나로 원자적으로 쓴다.
+    라운드마다 앞에 ``# round <r>`` 줄을 붙인다. 파일이 없는 라운드는 경고를 남기고 ``# round <r>: patch file missing`` 줄만 쓴다.
     그런 라운드가 없으면 이전에 쓴 파일을 지우고 None을 반환한다.
 
     The rounds are those of `_fixed_rounds`. Bytes are copied as they are (the per-round patches are UTF-8,
@@ -594,7 +593,8 @@ def _fixed_files(state: RemediationState) -> list[str]:
 
 
 def _unfixed_line(state: RemediationState) -> str:
-    """마지막 라운드의 수정본 빌드 실패를 자동 수정이 고치지 못했으면 그 사실과 이유를 한 문장으로 만든다. 아니면 빈 문자열이다."""
+    """자동 수정이 마지막 라운드의 빌드 실패를 고치지 못했으면 그 사실과 이유를 한 문장으로 만든다.
+    그런 경우가 아니면 빈 문자열이다."""
     last = max(state.rounds, key=lambda x: x.round, default=None)
     fix = _fix_of(last) if last is not None else None
     if fix is None or getattr(fix, "fixed", False) or last.committed:
@@ -627,14 +627,14 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     out: list[str] = []
     fixed_files = _fixed_files(state)
     if fixed_files:
-        # 도구가 소스를 고쳤으므로 다른 할 일보다 먼저 확인을 요청한다. 내려받는 파일은 라운드를 모은 fix.patch 하나다
+        # 도구가 고친 소스는 다른 할 일보다 먼저 확인을 요청한다. 내려받는 파일은 라운드를 모은 fix.patch 하나다
         out.append(f"**자동으로 고친 소스 확인하기** — 자동으로 고친 소스 {_num(len(fixed_files))}개를 확인해 주세요. "
                    f"바꾼 내용은 「빌드 오류 수정」과 `{FIX_PATCH_NAME}` 파일에 있습니다.")
     if state.status == SUCCEEDED:
         out.append(_SUCCEEDED_STEP_ROUND0 if state.delivery is not None and state.delivery.round == 0
                    else _SUCCEEDED_STEP)
     if _tolerated(state) and state.status != FAILED and not _nothing_changed(state):
-        # 빌드 오류를 고치고 바꾼 버전으로 빌드해야 결과를 쓸 수 있으므로 맨 앞에 둔다
+        # 빌드 오류를 고치고 바꾼 버전으로 빌드해야 결과를 쓸 수 있다. 그래서 앞쪽에 둔다
         out.append(_TOLERATED_KO[1])
         if state.delivery is not None and state.delivery.build_tolerated and state.delivery.round > 0:
             out.append(_TOLERATED_BUILD_STEP)
@@ -642,7 +642,7 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     others = [_reason_text(state, c)[1] for c in codes
               if c not in (R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
     if state.status in (FAILED, STOPPED, INTERRUPTED, AWAITING_CONFIRMATION):
-        # 실패, 중단, 확인 대기는 원인을 먼저 해결해야 다음 단계로 갈 수 있으므로 앞에 둔다
+        # 실패, 중단, 확인 대기는 원인부터 해결해야 다음 단계로 갈 수 있다. 그래서 앞에 둔다
         out += others
         others = []
     if fx is not None:
@@ -663,7 +663,7 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     if state.status == INTERRUPTED and not out:
         out.append("**이어서 진행하기** — 상태를 확인한 뒤 조치 화면에서 「이어서 진행」을 눌러 주세요.")
     if _tolerated(state) and state.status != FAILED and _nothing_changed(state):
-        # 바꾼 버전이 없으면 결과와 상관없는 안내이므로 맨 뒤에 둔다
+        # 바꾼 버전이 없으면 결과와 상관없는 안내다. 그래서 맨 뒤에 둔다
         out.append(_TOLERATED_KO[1])
     return list(dict.fromkeys(out)) or ["**처리 기록 확인하기** — 「처리 기록」과 `remediation.log` 파일을 확인해 주세요."]
 
@@ -693,7 +693,7 @@ def _default_inhouse_message() -> str:
 
 def _inhouse_of(r: Residual) -> list[str]:
     """사내 아티팩트 항목을 묶을 g:a 목록을 반환한다.
-    항목의 ``inhouse``를 먼저 쓰고, 없으면 설명 문장 속 g:a(이전 형식의 state), 그래도 없으면 항목의 g:a를 쓴다."""
+    항목의 ``inhouse``가 먼저다. 없으면 설명 문장 속 g:a(이전 형식의 state)를, 그것도 없으면 항목의 g:a를 쓴다."""
     return sorted(set(r.inhouse or i18n.inhouse_gas(r.detail) or [r.ga]))
 
 
@@ -703,7 +703,7 @@ def _framework_ga(ga: str, inhouse: Mapping[str, str] | None) -> bool:
         return False
     try:
         return inhouse.get(ga) == FRAMEWORK_GROUP
-    except Exception:  # noqa: BLE001 - 표시에만 쓰므로 판단하지 못하면 표시하지 않는다
+    except Exception:  # noqa: BLE001 - 표시에만 쓴다. 판단하지 못하면 표시하지 않는다
         return False
 
 
@@ -785,7 +785,7 @@ class _Facts:
         self.final = _load_scan(paths, state.final_scan, mode)
         self.b_act, self.b_ign = _split(self.base, ignore, mode)
         self.f_act, self.f_ign = _split(self.final, ignore, mode)
-        # report 모드에서 따로 싣는 파일 컴포넌트다. 조치가 파일을 바꾸지 않으므로 끝난 검사 하나에서 가져온다
+        # report 모드에서 따로 싣는 파일 컴포넌트다. 조치는 파일을 바꾸지 않아서 끝난 검사 하나에서 가져온다
         self.files_scan, self.files_from_base = _files_scan(self.base, self.final) if mode == "report" else (None, False)
         self.files = _files(self.files_scan, mode)
         self.plans = {rs.round: _load_plan(paths, rs.round) for rs in state.rounds}
@@ -802,8 +802,8 @@ class _Facts:
         self._left = {finding_key(f.kind, f.id, f.identifier) for f in self.f_act} if self.final_ok else set()
         self._left_ids = ({(f.id, ga_key(":".join(str(f.identifier or "").split(":")[:2]))) for f in self.f_act}
                           if self.final_ok else set())
-        # 조치한 취약점은 조치 후 검사에 없으므로 점수는 완료된 조치 후 검사에서 먼저, 다음에 조치 전 검사에서 찾는다
-        # 같은 ID가 여러 라이브러리에 있으면 (ID, 대상, 버전)이 맞는 점수를, 없으면 그 ID의 최고 점수를 쓴다
+        # 점수는 완료된 조치 후 검사에서 먼저 찾고, 없으면 조치 전 검사에서 찾는다. 조치한 취약점은 조치 후 검사에 없다
+        # 같은 ID가 여러 라이브러리에 있으면 (ID, 대상, 버전)이 맞는 점수를 쓴다. 맞는 것이 없으면 그 ID의 최고 점수다
         self._exact: list[dict[tuple[str, str, str], float]] = []
         self._by_id: list[dict[str, float]] = []
         for scan in ([self.final] if self.final_ok else []) + ([self.base] if self.base is not None else []):
@@ -847,8 +847,8 @@ class _Facts:
         return len({finding_key(f.kind, f.id, f.identifier) for f in self.b_act} - self._left)
 
     def resolved_ids(self, ga: str, ids: Iterable[str]) -> list[str]:
-        """제안의 취약점 ID 중 완료된 조치 후 검사가 그 라이브러리에 더 이상 보고하지 않는 것만 반환한다.
-        버전과 상관없이 비교한다. 조치 후 검사가 없거나 완료되지 않았으면 그대로 반환한다."""
+        """제안의 취약점 ID 가운데 완료된 조치 후 검사가 그 라이브러리에서 더 이상 보고하지 않는 것만 반환한다.
+        버전은 보지 않는다. 조치 후 검사가 없거나 끝나지 않았으면 ID를 그대로 반환한다."""
         if not self.final_ok:
             return list(ids)
         g = ga_key(ga)
@@ -871,7 +871,7 @@ class _Facts:
         return max(got) if got else None
 
     def sev_cell(self, score: float | None) -> str:
-        """위험도 칸의 문자열을 "🔴 9.8" 형식으로 만든다. 표시 기준보다 낮으면 숫자만, 점수가 없으면 "-"를 쓴다."""
+        """위험도 칸을 "🔴 9.8" 형식으로 만든다. 표시 기준보다 낮으면 숫자만 쓰고, 점수가 없으면 "-"다."""
         if score is None:
             return "-"
         mark = severity_of(score, self.th)[1]
@@ -917,11 +917,11 @@ def _known_and_raw(text: str) -> tuple[list[str], str]:
     return ko, " | ".join(raw)
 
 
-# 메시지가 빌드 요약이거나 결과 줄과 같은 내용이므로 결과 줄에 넣지 않는 사유 코드
+# 결과 줄에 상태 메시지를 넣지 않는 사유 코드. 메시지가 빌드 요약이거나 결과 줄과 같은 내용이다
 _MESSAGE_ELSEWHERE = ("baseline_build_failed", "candidate_build_failed", "text_only_violation", "resolution_mismatch")
-# 상태 메시지가 더 구체적이므로 결과 줄의 일반 문장 대신 메시지를 쓰는 사유 코드
+# 결과 줄에 일반 문장 대신 상태 메시지를 쓰는 사유 코드. 메시지가 더 구체적이다
 _MESSAGE_SAYS_IT = ("chain_budget", "upload_uncertain", "stop_requested")
-# 결과 줄의 숫자 문장이 이미 설명하므로 따로 쓰지 않는 사유 코드
+# 결과 줄에 따로 쓰지 않는 사유 코드. 결과 줄의 숫자 문장이 이미 설명한다
 _NUMBERS_EXPLAIN = ("manual_review", "residual_findings", R_INHOUSE_ARTIFACT)
 
 
@@ -931,7 +931,7 @@ def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
         return []
     total = len(fx.b_act)
     if total == 0:
-        # 파일에서 찾은 취약점은 아래 절에 따로 있으므로 라이브러리에 대한 말임을 밝힌다
+        # 파일에서 찾은 취약점은 아래 절에 따로 있다. 그래서 라이브러리 취약점이 없다고 밝힌다
         return ["조치 전 검사에서 조치할 라이브러리 취약점이 없었습니다." if fx.files
                 else "조치 전 검사에서 조치할 취약점이 없었습니다."]
     fixed = fx.fixed()
@@ -959,7 +959,7 @@ def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
         else:
             out.append(f"{lead} 중 {to_in or to_man} 합니다.")
         if both:
-            # 모듈에 따라 나뉜 항목의 취약점은 두 절에 모두 나오므로 한 번만 센 사실을 밝힌다
+            # 모듈에 따라 나뉜 항목의 취약점은 두 절에 모두 나온다. 그 건수를 따로 밝힌다
             out.append(f"그중 {_num(both)}건은 모듈에 따라 사내 라이브러리 담당자와 프로젝트 양쪽에서 조치해야 해서 두 절에 "
                        "모두 나옵니다.")
     return out
@@ -993,7 +993,7 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
         if _tolerated(state):
             body += _new_error_lines(state)
     from .graph import TOLERATED_HEAD  # 순환 import를 피하려고 함수 안에서 import한다
-    # 조치 전 빌드 실패 문장과 읽을 수 없는 pom의 이유(_boundary_text)는 위에서 이미 썼으므로 상세로 다시 쓰지 않는다
+    # 조치 전 빌드 실패 문장과 읽을 수 없는 pom의 이유(_boundary_text)는 위에서 이미 썼다. 상세로 다시 쓰지 않는다
     pom_said = codes[:1] == ["execution_boundary_refused"] and any(b.code == "unparsable_pom" for b in state.boundary)
     if (state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE)) and not pom_said
             and not str(state.message).startswith(TOLERATED_HEAD)):
@@ -1004,7 +1004,8 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
 
 
 def _tolerated_lines(state: RemediationState, fx: _Facts, codes: list[str]) -> list[str]:
-    """조치 전 빌드 실패를 받아들인 실행의 결과 블록 줄들을 만든다. 굵은 문장, 빌드 사정, 비교 결과, 숫자 순이다."""
+    """조치 전 빌드가 실패해도 이어 간 실행의 결과 블록 줄들을 만든다.
+    순서는 굵은 문장, 빌드 사정, 비교 결과, 숫자다."""
     d = state.delivery
     changed = d is not None and d.round > 0
     cmp = _tolerated_compare(state)
@@ -1033,7 +1034,7 @@ def _tolerated_lines(state: RemediationState, fx: _Facts, codes: list[str]) -> l
 
 
 def _new_error_lines(state: RemediationState) -> list[str]:
-    """실패한 라운드의 수정본 빌드가 조치 전 빌드에 없던 오류로 실패했을 때 그 사실을 알리는 문장을 만든다."""
+    """마지막 라운드의 수정본 빌드가 조치 전에 없던 오류로 실패했으면 그 사실을 알리는 문장을 만든다."""
     last = max(state.rounds, key=lambda x: x.round, default=None)
     cmp = last.build_compare if last is not None else {}
     if not cmp or cmp.get("same"):
@@ -1055,7 +1056,8 @@ def _place(p: Proposal) -> str:
 
 
 def _note_lines(text: str) -> list[str]:
-    """제안 메모를 한국어 문장 목록으로 바꾼다. 규칙 하나가 한 줄이고, 번역하지 못한 부분은 마지막 줄에 원문으로 둔다."""
+    """제안 메모를 한국어 문장 목록으로 바꾼다. 규칙 하나가 한 줄이다.
+    번역하지 못한 부분은 마지막 줄에 원문으로 둔다."""
     ko, raw = _known_and_raw(text)
     return [k for k in ko if k] + ([f"원문: `{raw.replace('`', chr(39))}`"] if raw else [])
 
@@ -1064,7 +1066,8 @@ _DONE_HEAD = ["위험도", "라이브러리", "버전 변경", "수정한 곳", 
 
 
 def _by_pom(p: Proposal) -> bool:
-    """pom마다 묶어 보여 줄 버전 지정 추가 제안인지 확인한다. 모듈별 경로가 없는 이전 형식의 최상위 제안은 False다.
+    """pom마다 묶어 보여 줄 버전 지정 추가 제안이면 True를 반환한다.
+    모듈별 경로가 없는 이전 형식의 최상위 pom 제안은 False다.
 
     A `managed_override` proposal shown per pom under its library: one with module sources or one that edits a module
     pom. A root override of an older state (no sources) keeps the one-row-per-proposal form."""
@@ -1165,7 +1168,7 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal]) -> None:
         if len(u) == 1:
             L.append(f"  - {_md_cell(_pom_line(p))}")
         else:
-            # 이미 적용한 변경이므로 과거형으로 쓴다
+            # 이미 적용한 변경이라 과거형으로 쓴다
             L.append("  - 수정한 pom:")
             L += [f"    - {_md_cell(_pom_line(x))}" for x in u]
         notes = list(dict.fromkeys(n for x in u for n in (_note_lines(x.note) if x.note else [])))
@@ -1213,12 +1216,13 @@ def _dep_path(r: Residual, owner: str) -> str:
 
 
 def _is_parent_group(rows: list[Residual]) -> bool:
-    """이 묶음이 회사 부모 pom에서 온 것인지 확인한다. 의존 경로 없이 부모 pom이나 BOM이 버전을 정하는 행이 있으면 True다."""
+    """이 묶음이 회사 부모 pom에서 왔으면 True를 반환한다.
+    의존 경로 없이 부모 pom이나 BOM이 버전을 정하는 행이 하나라도 있으면 그렇게 본다."""
     return any(not r.via and r.origin in ("parent_managed", "bom_managed") for r in rows)
 
 
 def _common_modules(rows: list[Residual]) -> str | None:
-    """모든 행의 모듈 목록이 같으면 그 목록을, 다르면 None을 반환한다. 모듈이 하나도 없으면 빈 문자열을 반환한다."""
+    """모든 행의 모듈 목록이 같으면 그 목록을, 다르면 None을 반환한다. 모듈이 하나도 없으면 빈 문자열이다."""
     sets = {tuple(sorted(set(r.modules))) for r in rows}
     if len(sets) == 1:
         only = next(iter(sets))
@@ -1252,7 +1256,8 @@ def _one_variant(part: str) -> str:
 
 
 def _variant_words(variant: str) -> str:
-    """``ModuleSource.variant``("jar/, jar/jakarta"처럼 ", "로 이은 목록)를 말로 바꾼다. "jar/"는 쓰지 않는다.
+    """``ModuleSource.variant``("jar/, jar/jakarta"처럼 ", "로 이은 목록)를 읽을 수 있는 말로 바꾼다.
+    일반 jar를 뜻하는 "jar/"는 그대로 보여 주지 않는다.
 
     One readable phrase for a module's variants: "" for a plain jar only; one variant alone as its words
     ("classifier `jakarta`", "형식 `test-jar` classifier `tests`"); several (the plain jar listed as "jar/" first)
@@ -1305,7 +1310,8 @@ def _source_text(s: Any) -> str:
 
 
 def _row_sources(r: Residual) -> list[tuple[list[str], str]]:
-    """행의 모듈을 들어온 경로가 같은 것끼리 묶어 (모듈 목록, 경로 문장) 목록으로 반환한다. 순서는 ``sources``를 따른다."""
+    """행의 모듈을 들어온 경로가 같은 것끼리 묶어서 (모듈 목록, 경로 문장) 목록으로 반환한다.
+    순서는 ``sources``를 따른다."""
     groups: dict[str, list[str]] = {}
     for s in getattr(r, "sources", None) or []:
         text = _source_text(s)
@@ -1318,13 +1324,13 @@ def _row_sources(r: Residual) -> list[tuple[list[str], str]]:
 
 
 def _source_adds(s: Any) -> bool:
-    """의존 경로 칸이 보여 주지 못하는 사실(선언한 줄, 형식이나 classifier)이 경로에 있는지 확인한다."""
+    """의존 경로 칸에 없는 사실(선언한 줄, 형식이나 classifier)이 경로에 있으면 True를 반환한다."""
     d = getattr(s, "declared", None)
     return bool((d is not None and getattr(d, "pom", "")) or _variant_words(str(getattr(s, "variant", "") or "")))
 
 
 def _mixed_origin(r: Residual) -> bool:
-    """모듈별 경로의 출처 코드가 행의 출처와 다른 모듈이 있는지 확인한다. 경로가 없으면 False를 반환한다.
+    """모듈별 경로의 출처가 행의 출처와 다른 모듈이 있으면 True를 반환한다. 경로가 없으면 False다.
 
     True when a module source names another origin than the row's (an also-module declaring the library itself)."""
     hows = {str(getattr(s, "how", "") or "") for s in getattr(r, "sources", None) or []} - {""}
@@ -1337,7 +1343,7 @@ def _sources_block(L: list[str], rows: list[Residual], *, beside_path: bool = Fa
     items = [(r, _row_sources(r)) for r in rows]
     items = [(r, g) for r, g in items if g]
     if beside_path:
-        # 의존 경로 칸이 이미 경로를 보여 주므로 모듈마다 다르거나 칸에 없는 사실이 있는 행만 쓴다
+        # 의존 경로 칸이 이미 경로를 보여 준다. 그래서 모듈마다 다르거나 칸에 없는 사실이 있는 행만 쓴다
         items = [(r, g) for r, g in items if len(g) > 1 or any(_source_adds(x) for x in r.sources)]
     if not items:
         return
@@ -1436,7 +1442,7 @@ def _manual_section(L: list[str], fx: _Facts) -> None:
         L.append(_md_cell(texts[gk] or "-"))
         # 모든 행이 같은 값인 칸은 표에서 빼고 표 위에 한 번만 쓴다
         origins = {r.origin for r in rows}
-        # 모듈별 경로가 행의 출처와 다르면 "모두 간접 의존성" 같은 문장이 틀리므로 표 위로 올리지 않는다
+        # 모듈별 경로가 행의 출처와 다르면 "모두 간접 의존성" 같은 문장이 틀린다. 그래서 표 위로 올리지 않는다
         lift_origin = len(rows) > 1 and len(origins) == 1 and not any(_mixed_origin(r) for r in rows)
         common = _common_modules(rows) if len(rows) > 1 else None
         no_mods = all(not r.modules for r in rows)
@@ -1624,7 +1630,7 @@ def _delivery_text(state: RemediationState, final: ScanResult | None) -> str:
     d = state.delivery
     if d is None:
         return "없음 — 원본은 `original/source.zip`에 그대로 있습니다."
-    # 담당자는 프로젝트명으로 받은 ZIP만 보므로 작업 폴더 안의 경로 대신 결과 ZIP이라고 쓴다
+    # 담당자는 프로젝트 이름으로 내려받은 ZIP만 본다. 그래서 작업 폴더 안의 경로 대신 결과 ZIP이라고 쓴다
     head = "결과 ZIP — "
     if d.build_tolerated:
         what = "원본 그대로, 빌드되지 않음" if d.round == 0 else "빌드로 확인하지 못함(조치 전과 같은 빌드 오류)"
@@ -1687,7 +1693,7 @@ def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
     L.append(f"- 상태 코드: `{state.status}`" + (" · 사유 코드: " + ", ".join(f"`{c}`" for c in codes) if codes else ""))
     L.append(f"- 진행한 라운드: {len(state.rounds)}회")
     if state.message and not {"baseline_build_failed", "candidate_build_failed"} & set(codes):
-        # 빌드 실패 메시지는 Maven 빌드 요약이고 아래 빌드 단계에 그대로 나오므로 여기서는 쓰지 않는다
+        # 빌드 실패 메시지는 Maven 빌드 요약이다. 아래 빌드 단계에 그대로 나오므로 여기서는 쓰지 않는다
         _ko, raw = _known_and_raw(state.message)
         if raw:
             L.append(f"- 실행 메시지 원문: `{_md_cell(raw).replace('`', chr(39))}`")
@@ -1783,7 +1789,7 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
                 cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in sorted(p.risks))))
             L.append("| " + " | ".join(cells) + " |")
         L.append("")
-        # 감사 기록이므로 모듈 목록을 줄이지 않는다
+        # 감사 기록이라 모듈 목록을 줄이지 않는다
         for p in plan.proposals:
             if p.modules:
                 L.append(f"- 적용 범위 ({_md_cell(p.id)}): {_md_cell(', '.join(p.modules))}")
@@ -1832,7 +1838,8 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
 
 
 def _fix_record_line(L: list[str], rs: RoundState) -> None:
-    """처리 기록의 라운드에 빌드 오류 자동 수정의 결과를 쓴다. 버린 수정은 하나에 한 줄이고, 루프가 없던 라운드는 쓰지 않는다."""
+    """처리 기록의 라운드에 빌드 오류 자동 수정 결과를 쓴다. 버린 수정은 하나에 한 줄이다.
+    수정 루프 결과가 없는 라운드는 버린 수정 줄만 쓴다."""
     for old in _discarded_of(rs):
         _discarded_line(L, old)
     fix = _fix_of(rs)
@@ -1851,7 +1858,7 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
     if getattr(fix, "fixed", False):
         files = _num(len(getattr(fix, 'changed', None) or []))
         if not rs.committed:
-            # 채택하지 않은 라운드의 수정은 결과에 없으므로 고쳤다고 쓰지 않고 patch 경로도 쓰지 않는다
+            # 채택하지 않은 라운드의 수정은 결과에 없다. 그래서 고쳤다고 쓰지 않고 patch 경로도 쓰지 않는다
             L.append(f"- 빌드 오류 자동 수정: 수정본을 채택하지 않아 결과에 넣지 않음 · 파일 {files}개 · "
                      f"{n('iterations')}회 반복 · LLM 호출 {n('llm_calls')}회")
             return
@@ -1882,7 +1889,7 @@ def _discarded_line(L: list[str], fix: Any) -> None:
     reason = str(getattr(fix, "reason", "") or "")
     ko, raw = i18n.fix_reason_ko(reason)
     if reason.startswith(INTERRUPTED_FIX_REASON):
-        # 실행이 끝나 중간에 멈춘 수정 루프다. 바꾼 파일은 없고 LLM 호출 수만 의미가 있다
+        # 실행이 중간에 끝나서 멈춘 수정 루프다. 바꾼 파일은 없고 LLM 호출 수만 의미가 있다
         calls = ("LLM 호출 수는 알 수 없음" if reason.endswith(USAGE_UNKNOWN_SUFFIX) or _usage_unknown(fix)
                  else _calls_ko(fix))
         L.append(f"- 빌드 오류 자동 수정: 버린 수정({ko or '실행이 수정 도중에 끝남'}) · {calls}")
@@ -1897,12 +1904,12 @@ USAGE_UNKNOWN_KO = "LLM 사용량 일부는 알 수 없음"
 
 
 def _usage_unknown(fix: Any) -> bool:
-    """수정 루프 결과의 LLM 사용량을 읽지 못했는지 확인한다(``FixResult.usage_unknown``)."""
+    """수정 루프 결과의 LLM 사용량을 읽지 못했으면 True를 반환한다(``FixResult.usage_unknown``)."""
     return bool(getattr(fix, "usage_unknown", False))
 
 
 def _tokens_unknown(fix: Any) -> bool:
-    """토큰 수를 모르는 호출이 든 결과인지 확인한다(``FixUsage.tokens_unknown``)."""
+    """토큰 수를 모르는 호출이 결과에 있으면 True를 반환한다(``FixUsage.tokens_unknown``)."""
     return any(bool(getattr(u, "tokens_unknown", False)) for u in (getattr(fix, "usage", None) or []))
 
 
@@ -1913,7 +1920,8 @@ def _calls_ko(fix: Any) -> str:
 
 
 def _fix_outcome_ko(fix: Any) -> str:
-    """사용량을 모르는 수정 루프 결과를 "고침", "시작하지 않음", "고치지 못함(사유)" 가운데 하나로 반환한다."""
+    """사용량을 모르는 수정 루프의 결과를 짧은 말로 반환한다.
+    "고침", "시작하지 않음", "고치지 못함(사유)" 가운데 하나다."""
     if getattr(fix, "fixed", False):
         return "고침"
     if not getattr(fix, "attempted", False):
@@ -1922,7 +1930,8 @@ def _fix_outcome_ko(fix: Any) -> str:
     return "고치지 못함" + (f"({ko})" if ko else "")
 
 
-# 결과 ZIP 없이 FAILED로 끝난 실행의 「결과 파일」 문장(사유 코드별). 상태 메시지로 정하는 두 경우는 _no_delivery_why가 먼저 본다
+# 결과 ZIP 없이 FAILED로 끝난 실행의 「결과 파일」 문장(사유 코드별)
+# 상태 메시지로 정하는 두 경우는 _no_delivery_why가 먼저 본다
 _NO_DELIVERY_KO = {
     "candidate_build_failed": "빌드에 실패한 수정본은 결과 ZIP으로 만들지 않았습니다.",
     "baseline_build_failed": "조치 전 빌드가 실패해 검사와 조치를 진행하지 않았습니다.",
@@ -1987,7 +1996,8 @@ def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
 
 
 def _fix_section(L: list[str], state: RemediationState) -> None:
-    """빌드 오류를 자동으로 고쳐 확정한 라운드가 있으면 「빌드 오류 수정」 절을 쓴다. 라운드가 여럿이면 라운드마다 소제목을 둔다.
+    """빌드 오류를 자동으로 고쳐 확정한 라운드가 있으면 「빌드 오류 수정」 절을 쓴다.
+    라운드가 여럿이면 라운드마다 소제목을 둔다.
 
     Known limits of the fix loop (INTERFACES "v2.1z-bk", not fixed): a project whose build needs its own `.git`
     (git-commit-id) cannot be built in the work copy, so its loop ends "not fixed"; Maven calls of the loop that do
@@ -2019,7 +2029,8 @@ def _fix_section(L: list[str], state: RemediationState) -> None:
 
 
 def _fix_calls_sentence(rs: RoundState, fix: Any) -> str:
-    """「빌드 오류 수정」의 반복 횟수와 LLM 호출 수 문장을 만든다. 라운드에 버린 루프가 있으면 라운드 전체 호출 수도 쓴다.
+    """「빌드 오류 수정」의 반복 횟수와 LLM 호출 수 문장을 만든다.
+    라운드에 버린 루프가 있으면 라운드 전체 호출 수도 쓴다.
 
     The fixing loop's own count, and when the round has other loops (`fix_discarded`: discarded, interrupted,
     stopped) the round's total: 「빌드와 수정을 N회 반복했고, LLM을 M회 호출했습니다(버린 시도까지 모두 T회).」.
@@ -2032,7 +2043,7 @@ def _fix_calls_sentence(rs: RoundState, fix: Any) -> str:
     head = f"- 빌드와 수정을 {iters}회 반복했고, LLM을 {_num(own)}회 호출했습니다"
     if others:
         total = own + sum(int(getattr(f, "llm_calls", 0) or 0) for f in others)
-        # 사용량 일부를 모르면 합계가 정확한 값처럼 보이지 않게 아는 만큼의 수라고 쓴다
+        # 사용량 일부를 모르면 합계가 정확해 보이지 않게 "알려진 것만"이라고 쓴다
         head += f"(버린 시도까지 {'알려진 것만' if unknown else '모두'} {_num(total)}회)"
     return head + "." + (" LLM 사용량 일부는 알 수 없습니다." if unknown else "")
 
@@ -2047,18 +2058,18 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     else:
         L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
     left_out = bool(state.intake is not None and state.intake.build_output_files)
-    # 이전 버전이 시작한 실행은 빌드 산출물이 든 원본 ZIP을 그대로 검사했다(검사한 ZIP의 sha256이 원본과 같다)
+    # 검사한 ZIP의 sha256이 원본과 같으면 이전 버전이 빌드 산출물이 든 원본 ZIP을 그대로 검사한 실행이다
     original_scanned = bool(left_out and fx.base is not None and state.intake is not None
                             and fx.base.zip_sha256 == state.intake.zip_sha256)
     if state.delivery is not None and state.delivery.round == 0:
-        # 바꾼 것이 없어 조치 전에 검사한 ZIP을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
+        # 바꾼 것이 없어 조치 전에 검사한 ZIP을 그대로 결과 ZIP으로 냈다. 그래서 달라진 버전 표기도 없다
         same_as_upload = state.intake is not None and state.delivery.sha256 == state.intake.zip_sha256
         L.append("- 결과 ZIP은 원본 ZIP에서 빌드 산출물만 뺀 것입니다." if left_out and not same_as_upload
                  else "- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
     elif state.delivery is not None:
         override = any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
         if n_fixed:
-            # 조사가 앞 단어의 받침에 따라 바뀌므로 덧붙일 것이 있을 때는 쉼표로 잇는다
+            # 조사가 앞 단어의 받침에 따라 바뀐다. 그래서 덧붙일 것이 있으면 쉼표로 잇는다
             extra = (", dependencyManagement에 추가한 버전 지정과" if override else "와") + f" 고친 소스 {_num(n_fixed)}개"
         else:
             extra = "와 dependencyManagement에 추가한 버전 지정" if override else ""
@@ -2075,9 +2086,9 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                     inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
                     inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> str:
-    """한국어 ``report.md`` 본문을 만든다. 절은 아래 번호 주석 순서로 쓰고 빈 절은 쓰지 않는다.
-    - 영어 문장은 ``i18n.ko_display``로 바꿔 보여 주고, 같은 설명은 묶음마다 한 번만 쓴다
-    - ``severity``가 None이면 설정 기본값으로 🔴 / 🟠 / 🟡를 붙이고 점수가 높은 행부터 놓는다
+    """한국어 ``report.md`` 본문을 만든다. 절은 아래 번호 주석 순서로 쓴다. 빈 절은 쓰지 않는다.
+    - 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다. 같은 설명은 묶음마다 한 번만 쓴다
+    - ``severity``가 None이면 설정 기본값으로 🔴 / 🟠 / 🟡를 붙인다. 점수가 높은 행이 위에 온다
     - ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다
     - ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음 제목에 "사내 프레임워크"를 붙인다
 
@@ -2156,7 +2167,8 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
 def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                  inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
                  inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> None:
-    """``report.json``, ``report.md``와 모든 자동 수정을 모은 ``fix.patch``를 실행 폴더에 원자적으로 쓴다.
+    """``report.json``, ``report.md``, ``fix.patch``를 실행 폴더에 원자적으로 쓴다.
+    ``fix.patch``는 모든 자동 수정을 모은 파일이다.
     ``ignore_actions``가 None이면 기본값(빈 목록)을 쓴다."""
     write_fix_patch(state, paths)
     write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions,
@@ -2181,8 +2193,8 @@ def summary(state: RemediationState) -> dict[str, Any]:
 
 
 def fix_summary(state: RemediationState) -> dict[str, Any] | None:
-    """화면에 보여 줄 빌드 오류 자동 수정의 요약을 만든다. 수정 루프를 실행한 라운드가 없으면 None을 반환한다.
-    ``changed``는 확정한 라운드에서 고친 소스 파일 수, ``llm_calls``는 모든 라운드의 수정 루프가 호출한 LLM 횟수다.
+    """화면에 보여 줄 빌드 오류 자동 수정 요약을 만든다. 수정 루프를 실행한 라운드가 없으면 None이다.
+    ``changed``는 확정한 라운드에서 고친 소스 파일 수다. ``llm_calls``는 모든 라운드의 수정 루프가 호출한 LLM 횟수다.
 
     The page's digest of the build fix loop: None when no round ran it; `fixed` / `changed` count only rounds committed
     with a fix that changed files (`_fixed_rounds`; a retry that passed changes nothing), `llm_calls` sums every
@@ -2194,7 +2206,7 @@ def fix_summary(state: RemediationState) -> dict[str, Any] | None:
     if not fixes:
         return None
     done = _fixed_rounds(state)
-    # 버린 수정도 LLM을 호출했으므로 센다. 같은 결과를 두 번 세지 않도록 라운드의 fix와 fix_discarded만 더한다
+    # 버린 수정도 LLM을 호출했으니 함께 센다. 두 번 세지 않도록 라운드의 fix와 fix_discarded만 더한다
     out = {"fixed": bool(done), "changed": len(_fixed_files(state)),
            "llm_calls": sum(int(getattr(f, "llm_calls", 0) or 0) for f in fixes),
            "round": done[-1].round if done else None}

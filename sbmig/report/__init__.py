@@ -1,10 +1,9 @@
 """실행 보고서(``report.json``, ``report.md``, 콘솔 요약)를 만드는 패키지.
-수정 루프와 최종 빌드가 끝난 뒤 오케스트레이터가 ``write_report``를 호출한다.
-- ``write_report``: 보고서 파일을 쓴다
-- ``render_markdown``: report.md 본문을 만든다
-- ``build_handover``: 인수인계 섹션의 데이터를 만든다
-- ``console_summary``: 콘솔의 마지막 요약을 만든다
-담당 팀은 인수인계 섹션만 읽으므로 이 섹션을 보고서 맨 앞에 둔다.
+
+The orchestrator calls ``write_report`` after the fix loop and the final build. ``write_report`` writes the
+report files, ``render_markdown`` builds the report.md text, ``build_handover`` the Handover section's data,
+``console_summary`` the last console summary. The owning team reads only the Handover section, so it comes
+first in the report.
 """
 from .handover import build_handover
 from .markdown import (BLOCKED_TITLE, HANDOVER_TITLE, blocked_count_line, flag_help, group_by_file, handover_lines,

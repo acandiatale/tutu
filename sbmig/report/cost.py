@@ -1,7 +1,8 @@
 """실행 한 번의 LLM 비용을 모델별 토큰 사용량과 ``llm.pricing``의 단가로 계산하는 모듈.
-보고서 단계에서 writer.py가 ``compute_llm_cost``를 호출해 report.md의 "LLM usage and cost"를 채운다.
-- 회사 고유값은 코드에 두지 않으므로 단가는 설정에서만 읽는다
-- 단가가 없는 모델은 추정하지 않는다. "unpriced"로 따로 표시하고 합계에서 뺀다
+
+At the report step writer.py calls ``compute_llm_cost`` to fill report.md's "LLM usage and cost". Prices
+come from the configuration only (company values never live in the code). A model without a price is never
+estimated: it is listed as "unpriced" and left out of the total.
 
     compute_llm_cost(by_model, cfg) -> LLMCost
     price_for(model, pricing) -> (key, ModelPrice | None)
@@ -16,7 +17,7 @@ from sbmig.core.models import LLMCost, LLMUsage, ModelCost, asked_model_name, re
 
 def price_for(model: str, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
     """``model``에 맞는 ``llm.pricing`` 항목을 찾아 반환한다. 찾지 못하면 ``("", None)``을 반환한다.
-    같은 id가 없으면 id에 포함되는 가장 긴 키를 쓴다. 날짜가 붙은 모델 id도 기본 이름의 단가를 쓰기 위해서다.
+    같은 id가 없으면 id 안에 들어 있는 가장 긴 키를 쓴다. 그래서 날짜가 붙은 모델 id도 기본 이름의 단가를 쓴다.
 
     Case-insensitive; e.g. `gpt-5.6-terra-2026-08-01` matches the key `gpt-5.6-terra`."""
     m = (model or "").strip().lower()
@@ -47,7 +48,7 @@ def price_for_usage(u: LLMUsage, pricing: dict[str, Any]) -> tuple[str, Optional
 
 
 def _price_fields(p: Any) -> tuple[float, float]:
-    # 테스트와 플러그인이 dict를 넘기기도 하므로 dict와 ModelPrice 객체를 모두 받는다
+    # 테스트와 플러그인이 dict를 넘기기도 한다. 그래서 dict와 ModelPrice 객체를 모두 받는다
     if isinstance(p, dict):
         return float(p.get("input_per_mtok", 0.0)), float(p.get("output_per_mtok", 0.0))
     return float(getattr(p, "input_per_mtok", 0.0)), float(getattr(p, "output_per_mtok", 0.0))
@@ -55,7 +56,7 @@ def _price_fields(p: Any) -> tuple[float, float]:
 
 def compute_llm_cost(by_model: list[LLMUsage], cfg: Any) -> LLMCost:
     """모델별 사용량에 단가를 곱해 실행 비용(LLMCost)을 만든다.
-    호출과 토큰이 모두 0인 모델은 건너뛰고, 호출은 있는데 토큰 수가 없으면 ``usage_missing``을 켠다."""
+    호출과 토큰이 모두 0인 모델은 건너뛴다. 호출은 있는데 토큰 수가 없으면 ``usage_missing``을 켠다."""
     llm = getattr(cfg, "llm", None)
     pricing = dict(getattr(llm, "pricing", None) or {})
     out = LLMCost(currency=str(getattr(llm, "pricing_currency", "USD") or "USD"),
@@ -85,7 +86,7 @@ def compute_llm_cost(by_model: list[LLMUsage], cfg: Any) -> LLMCost:
 
 def fmt_money(value: Optional[float], currency: str = "USD") -> str:
     """금액을 표시용 문자열로 만든다.
-    USD는 ``$1,234.5678``, 다른 통화는 ``1,234.5678 KRW`` 형식이고 값이 없으면 ``-``를 반환한다."""
+    USD는 ``$1,234.5678``, 다른 통화는 ``1,234.5678 KRW`` 형식이다. 값이 없으면 ``-``를 반환한다."""
     if value is None:
         return "-"
     sym = "$" if currency.upper() == "USD" else ""

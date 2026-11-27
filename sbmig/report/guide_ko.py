@@ -1,12 +1,13 @@
 """한국어 report.md를 만드는 모듈. 이관을 요청한 담당자에게 무엇을 바꿨고 무엇을 확인해야 하는지 알려 주는 안내서다.
-영어 보고서를 줄마다 번역하지 않고 이 모듈에서 한국어 문장을 직접 쓴다.
-영어로 저장된 줄(인수인계 할 일, 후속 조치, 플래그 설명)과 특수 절의 문장은 ``i18n``의 번역을 쓴다.
-절 순서: 제목, Ant 안내, 머리 표, 사내 프레임워크, 안내 문장, 전환 내용, 확인해 주세요, 코드 수정 내역,
-해결하지 못한 오류, 진행하지 않은 항목, 특수 절, 참고. 내용이 없는 절은 넣지 않는다.
-새 절을 추가하면 영어 보고서(markdown.py)에도 같이 추가해야 한다.
+영어 보고서를 줄마다 번역하지 않고 한국어 문장을 직접 쓴다.
 
 Rendered when `report.language: ko`; `en` stays in markdown.py byte for byte (`tests/report/golden/`).
-Never raises on missing optional data. Contract: INTERFACES "v2.1z-as"."""
+Never raises on missing optional data. Contract: INTERFACES "v2.1z-as".
+
+Lines stored in English (hand-over steps, follow-ups, flag help) and the special sections' sentences go
+through ``i18n``. Section order: title, Ant notice, head table, in-house framework, guide sentence, 전환 내용,
+확인해 주세요, 코드 수정 내역, 해결하지 못한 오류, 진행하지 않은 항목, special sections, 참고. An empty
+section is left out. A new section must be added to the English report (markdown.py) too."""
 from __future__ import annotations
 
 import re
@@ -142,21 +143,21 @@ def _norm(text: object) -> str:
 
 
 def _aborted(r: RunReport) -> bool:
-    """실행이 중간에 멈췄는지 확인한다."""
+    """실행이 중간에 멈췄으면 True를 반환한다."""
     flags = list(r.flags or [])
     return "aborted" in flags or any(f.startswith("aborted:") for f in flags) \
         or any(str(m).startswith(ABORT_PREFIX) for m in r.manual_followups or [])
 
 
 def _build_failed(r: RunReport) -> bool:
-    """중단되지 않은 실행에서 최종 빌드가 통과하지 못했는지 확인한다."""
+    """중단되지 않은 실행인데 최종 빌드가 통과하지 못했으면 True를 반환한다."""
     if _aborted(r) or r.success:
         return False
     return r.final_build is None or not r.final_build.ok
 
 
 def _converted_not_built(r: RunReport) -> bool:
-    """사내 프레임워크 실행이 변환을 마쳤지만 최종 빌드가 통과하지 않았는지 확인한다.
+    """사내 프레임워크 실행이 변환은 마쳤지만 최종 빌드가 통과하지 않았으면 True를 반환한다.
     이런 실행은 결과 칸과 안내 문장에서 변환 완료로 쓴다.
 
     `conversion_complete` plus not `success` and not `_aborted` (which also reads the abort hand-over line).
@@ -231,7 +232,7 @@ def head_lines(r: RunReport) -> list[str]:
         # 빌드를 한 뒤에 멈춘 실행은 멈췄다는 사실과 마지막 빌드 결과를 함께 쓴다
         result = f"❌ 실행 중단 ({_last_build_ko(r)})"
     elif _converted_not_built(r):
-        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있으므로 최종 빌드 괄호를 덧붙이지 않는다
+        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있다. 최종 빌드 괄호는 덧붙이지 않는다
         result = result_label(r, LANG)
     else:
         result = f"{result_label(r, LANG)} (최종 `mvn clean package`)"
@@ -265,7 +266,7 @@ def purpose_lines(r: RunReport) -> list[str]:
                 + last, ""]
     L: list[str] = []
     if conversion_only_failed(r):
-        # 변환만 하는 실행은 변환이 전부이므로 빌드 결과와 상관없이 변환 실패를 먼저 쓰고 끝낸다
+        # 변환만 하는 실행은 변환이 전부다. 그래서 빌드 결과와 상관없이 변환 실패를 먼저 쓰고 끝낸다
         built = r.final_build is not None and r.final_build.ok
         head = ("빌드는 통과했지만 JDK 21과 Jakarta 자동 변환이 실패해 아무것도 변환되지 않았습니다. 그래서 이번 실행은 "
                 "성공이 아닙니다." if built else
@@ -280,7 +281,7 @@ def purpose_lines(r: RunReport) -> list[str]:
               "정리와 빌드 오류 수정은 진행했지만, 레시피가 바꿨어야 할 코드는 바뀌지 않았을 수 있습니다. 실패 원인은 "
               "「확인해 주세요」의 첫 항목에 적었습니다.", ""]
     if _converted_not_built(r):
-        # 프레임워크 프로젝트는 변환이 이번 작업의 전부이므로 변환을 마쳤다는 것을 먼저 쓰고 빌드 이야기를 잇는다
+        # 프레임워크 프로젝트는 변환이 이번 작업의 전부다. 그래서 변환을 마쳤다는 말을 먼저 쓰고 빌드 이야기를 잇는다
         head = f"JDK 21과 Jakarta 변환을 마쳤습니다. {_fw_who(r)}는 변환까지가 이번 작업의 범위입니다."
         if no_fix_loop(r):
             rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
@@ -296,7 +297,7 @@ def purpose_lines(r: RunReport) -> list[str]:
         return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 어떻게 바꿨는지, 전환 후 무엇을 "
                     "확인하셔야 하는지 순서대로 적었습니다.", ""]
     if _build_failed(r) and no_fix_loop(r):
-        # 고치려고 한 것이 없으므로 남은 오류를 정리했다는 것과 고칠 사람만 쓴다
+        # 고치려고 한 것이 없다. 그래서 남은 오류를 정리했다는 것과 고칠 사람만 쓴다
         rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
                 else "「참고」의 마지막 빌드 로그를 봐 주세요.")
         L += [f"JDK 21과 Jakarta 변환 뒤 빌드가 통과하지 않았습니다. {_fw_who(r)}라 빌드 오류는 자동으로 고치지 않았고, "
@@ -356,7 +357,7 @@ def _after_cell(c: VersionChange) -> str:
 
 
 def _dep_item(item: str) -> Optional[str]:
-    """추가 / 제거 목록의 한 항목(``g:a[:v] (tag)``)을 백틱과 한국어 설명으로 바꾼다. 부모 pom은 위 표에 있으므로 뺀다."""
+    """추가 / 제거 목록의 한 항목(``g:a[:v] (tag)``)을 백틱과 한국어 설명으로 바꾼다. 부모 pom은 위 표에 있어서 뺀다."""
     s = str(item or "").strip()
     if not s or s.startswith("parent "):
         return None
@@ -449,7 +450,7 @@ def _sentence(text: str) -> str:
 
 
 def _path_tail(path: str) -> str:
-    """파일 경로에서 패키지 경로 뒷부분을 구한다. Java 소스 루트 뒤의 경로이고, 소스 루트가 없으면 마지막 두 단계다."""
+    """파일 경로에서 패키지 경로 뒷부분을 구한다. Java 소스 루트 뒤의 경로다. 소스 루트가 없으면 마지막 두 단계다."""
     p = str(path or "").replace("\\", "/").strip("/")
     for root in ("src/main/java/", "src/test/java/", "src/main/resources/", "src/test/resources/"):
         i = p.rfind(root)
@@ -476,7 +477,7 @@ def _subs(parts: Iterable[str]) -> str:
 
 def advisory_item(f: AdvisoryFinding, changed: Iterable[str] = ()) -> str:
     """라이브러리 권고 하나를 확인해 주세요 항목으로 만든다.
-    머리 줄은 권고 제목과 이번 전환에서 한 일이고, 하위 목록은 대체 라이브러리, 설명, 할 일, 수정한 파일, 문서 순이다.
+    머리 줄은 권고 제목과 이번 전환에서 한 일이다. 하위 목록은 대체 라이브러리, 설명, 할 일, 수정한 파일, 문서 순이다.
     내용이 없는 하위 줄은 넣지 않는다."""
     title = " ".join((f.title_ko or f.title or f.library or f.advisory_id or "").split())
     lead = [f"**{_cell(_sentence(title), 300)}**"]
@@ -529,7 +530,7 @@ def _advisory_keys(findings: list[AdvisoryFinding]) -> set[str]:
 
 
 def _from_advisory(line: str, findings: list[AdvisoryFinding], adv_followups: set[str], adv_keys: set[str]) -> bool:
-    """인수인계 줄이 라이브러리 권고에서 나온 줄인지 확인한다. 권고 항목이 이미 같은 내용을 말한다."""
+    """인수인계 줄이 라이브러리 권고에서 나온 줄이면 True를 반환한다. 권고 항목이 이미 같은 내용을 말한다."""
     s = " ".join(str(line).split())
     if _norm(s) in adv_followups:
         return True
@@ -639,7 +640,8 @@ def _lead_line(line: str, limit: int) -> str:
 
 
 def check_items(r: RunReport) -> list[str]:
-    """``## 확인해 주세요``의 항목들을 만든다. 라이브러리 권고, 인수인계 할 일, 남은 후속 조치 순이며 같은 내용은 한 번만 넣는다.
+    """``## 확인해 주세요``의 항목들을 만든다. 순서는 라이브러리 권고, 인수인계 할 일, 남은 후속 조치다.
+    같은 내용은 한 번만 넣는다.
     최종 빌드가 실패했으면 해결하지 못한 오류와 진행하지 않은 항목을 맨 앞에 둔다."""
     findings = list(r.advisories or [])
     adv_fu = _adv_followups(findings)
@@ -714,13 +716,13 @@ def check_items(r: RunReport) -> list[str]:
     if _build_failed(r):
         top = [first[k] for k in ("unresolved", "blocked") if k in first]
         items = top + [x for x in items if x not in top]
-    # 변환되지 않은 파일은 변환 결과에 걸린 일이므로 남은 오류 바로 뒤에 둔다
+    # 변환되지 않은 파일은 변환 결과에 걸린 일이다. 그래서 남은 오류 바로 뒤에 둔다
     unconverted = [x for x in items if x.startswith(f"**{UNCONVERTED_LEAD}**")]
     if unconverted:
         rest = [x for x in items if x not in unconverted]
         at = len([x for x in rest if x in top])
         items = rest[:at] + unconverted + rest[at:]
-    # 자동 변환 실패는 결과 전체에 걸리므로 언제나 첫 항목으로 둔다
+    # 자동 변환 실패는 결과 전체에 걸린다. 그래서 언제나 첫 항목으로 둔다
     failed = [x for x in items if x.startswith("**자동 변환 실패**")]
     items = failed + [x for x in items if x not in failed]
     return [x for x in dict.fromkeys(items) if x]

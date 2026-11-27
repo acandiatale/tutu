@@ -1,13 +1,9 @@
 """웹 화면의 「코드 변경」에 쓰는 기록을 실행 폴더의 codediff/에 남기는 모듈.
-최종 트리의 파일마다 원래 파일(origin)을 찾아 최종 경로 기준으로 비교한다. 위치가 바뀐 파일은 원래 경로도 남긴다.
-origin은 아래 순서로 정한다. git의 이름 변경 감지는 쓰지 않는다.
-- 같은 경로의 as-is 파일
-- 이름과 내용이 같고 원래 경로가 최종 트리에 없는 파일
-- 이름이 같고 최종 파일의 줄을 절반 이상 가진 파일
-- 셋 다 없으면 새로 추가한 파일이다
-마지막 커밋에 없는 파일은 빌드가 남긴 것이라 넣지 않는다. git 프로세스 수는 파일 수와 관계없이 일정하다.
-index.json을 마지막에 써서 patch.bin 없이 index.json만 보이는 일이 없게 한다.
-마무리 단계에서 Orchestrator._finalize_code_diff가 호출한다.
+최종 파일마다 원래 as-is 파일을 찾아서 최종 경로에서 비교한다.
+
+Called at finalize by `Orchestrator._finalize_code_diff`. git's rename detection is not used. A moved file
+keeps its origin path in the index. The number of git processes does not grow with the number of files.
+`index.json` is written last, so it is never seen without its `patch.bin`.
 
 The build side of the code-change view (docs/INTERFACES.md "v2.1z-au"): `<run dir>/codediff/` with `patch.bin`,
 `summary.json` and `index.json`. Every regular file of the final tree (the working tree at finalize, through a
@@ -194,7 +190,7 @@ def compute_origins(asis: Entries, final: Entries,
 
 
 def move_groups(pairs: Iterable[tuple[str, str]]) -> list[dict[str, Any]]:
-    """옮겨진 파일의 (원래 경로, 최종 경로)에서 폴더가 어디로 옮겨졌는지 묶어 파일 수가 많은 순서로 반환한다.
+    """옮겨진 파일의 (원래 경로, 최종 경로)를 폴더 이동 단위로 묶어서 반환한다. 파일 수가 많은 묶음이 먼저다.
 
     Folder moves: per `(old_path, path)` the shared trailing components are cut off, what is left is `from` / `to`
     (`""` = the project root, otherwise with a trailing `/`), grouped, most files first (then `from`, `to`)."""
@@ -209,7 +205,7 @@ def move_groups(pairs: Iterable[tuple[str, str]]) -> list[dict[str, Any]]:
 
 # ------------------------------------------------------------------------------------------ diff 계산
 class _Diff:
-    """두 트리의 `git diff` 한 번의 결과를 담는 클래스. 경로별 numstat과 원본 출력 안의 hunk 범위를 가진다."""
+    """git tree 두 개를 비교한 `git diff` 한 번의 결과를 담는 클래스. 경로별 numstat과 원본 출력 안의 hunk 범위를 가진다."""
 
     def __init__(self, raw: Path):
         self.raw = raw
@@ -350,7 +346,7 @@ def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optio
     try:
         summary = _build(ws, cfg, out, raws, run_id or ws.run_id, t0)
         if summary is None:
-            # 바뀐 파일이 없는 실행(접수에서 거부되거나 멈춘 실행)은 화면에 빈 블록이 생기지 않도록 기록하지 않는다
+            # 바뀐 파일이 없는 실행(접수에서 거부되거나 멈춘 실행)은 기록하지 않는다. 화면에 빈 블록이 생기지 않게 한다
             _remove_artifact(out)
             ws.journal({"event": "code_diff_skipped", "reason": "the run changed no file"})
             return None

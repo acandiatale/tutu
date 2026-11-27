@@ -1,13 +1,12 @@
-"""자동 변환 뒤에 sbmig가 고친 파일을 보고서의 "코드 수정 내역"용으로 모으는 모듈.
-변환 직후 커밋과 최종 작업 트리를 git으로 비교해 파일마다 ``CodeChange`` 하나를 만든다.
-- 여러 시도가 같은 파일을 고쳐도 한 건이고, 되돌린 변경은 나오지 않는다
-- 빌드 산출물, 바이너리, .git 아래 파일은 넣지 않는다
-- 텍스트는 errors.md와 같은 방식으로 마스킹한다
-- 파일 설명은 트리에 남은 시도의 LLM 수정 기록에서, 수정 이유는 케이스의 원인 분석에서 가져온다
-- git이 실패해도 예외를 던지지 않고 빈 목록으로 둔다
+"""자동 변환 뒤에 sbmig가 고친 파일을 모아 보고서의 "코드 수정 내역"을 만드는 모듈.
+변환 직후 커밋과 지금 파일을 git으로 비교해서 파일마다 ``CodeChange`` 하나를 만든다.
 
 Base = the commit right after the automatic conversion (OpenRewrite, restructure). Notes = the kept tries'
-LLM-written `EditNote`s, reasons = the last kept try's `analysis` per (file, case)."""
+LLM-written `EditNote`s, reasons = the last kept try's `analysis` per (file, case).
+
+A file several tries changed is one entry; a reverted change does not appear. Build output, binaries and
+files under .git are left out. Text is redacted the way errors.md is. A git failure raises nothing and leaves
+the list empty."""
 from __future__ import annotations
 
 import logging
@@ -106,7 +105,7 @@ def _note_sentence(n: Any) -> str:
 
 
 def _kept_tries(report: Any) -> list[tuple[str, Any]]:
-    """오류 목록의 시도 중 트리에 남은 것을 (케이스, 시도)로 한 번씩 반환한다."""
+    """오류 목록의 시도 가운데 최종 결과에 남은 것을 (케이스, 시도)로 한 번씩 반환한다."""
     out: list[tuple[str, Any]] = []
     seen: set[Any] = set()
     for e in entries_of(report):
@@ -131,7 +130,7 @@ def _try_files(t: Any) -> set[str]:
 def _notes_and_reasons(report: Any, clean: Any) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     notes: dict[str, list[str]] = {}
     reasons: dict[str, list[str]] = {}
-    case_reason: dict[tuple[str, str], str] = {}        # (경로, 케이스)마다 트리에 남은 마지막 시도의 원인 분석
+    case_reason: dict[tuple[str, str], str] = {}        # (경로, 케이스)마다 최종 결과에 남은 마지막 시도의 원인 분석
     for cid, t in _kept_tries(report):
         for n in getattr(t, "edits", None) or []:
             if getattr(n, "source", "llm") != "llm":
@@ -161,9 +160,9 @@ def _cleaner(ws: Any, cfg: Any) -> Any:
 
 
 def collect_code_changes(ws: Any, report: Any, base_sha: Optional[str], cfg: Any = None) -> None:
-    """``base_sha``와 최종 작업 트리를 비교해 ``report.code_changes`` / ``code_changes_total`` /
-    ``code_changes_base``를 채운다. base가 없으면 빈 목록으로 두고, git이 실패하면 WARNING 한 줄을 남긴다.
-    예외를 던지지 않는다.
+    """변환 직후 커밋(``base_sha``)과 지금 파일을 비교해서 ``report.code_changes`` / ``code_changes_total`` /
+    ``code_changes_base``를 채운다. base가 없으면 빈 목록으로 둔다. git이 실패하면 WARNING 한 줄을 남긴다.
+    예외는 던지지 않는다.
 
     Statuses come from `git diff --no-renames`: a moved file is the old path `deleted` + the new path `added`."""
     report.code_changes = []
