@@ -1,12 +1,11 @@
-"""보고서 맨 앞의 인수인계 섹션 데이터를 만드는 모듈.
-담당 팀은 보고서에서 이 섹션만 읽으므로 짧게 줄여서 보여 준다.
-writer.py가 ``build_handover``를 호출하고 markdown.py가 결과를 보고서 맨 앞에 표시한다.
-- as-is pom과 최종 트리의 pom을 비교한다. as-is 버전은 ``profile.poms``와 접수 때 캡처한 effective
-  dependencyManagement에서 가져온다
-- parent, Java, Boot 버전의 전후, 버전이 바뀐 의존성, 추가되거나 삭제된 아티팩트, 이어서 할 일 목록을 만든다
-- ⚠ 표시는 새 parent나 Boot BOM이 관리하지 않아 as-is 버전을 그대로 둔 의존성이다
-- Ant 프로젝트에서 좌표를 모르는 jar마다 ``mvn install:install-file`` 명령을 만든다
-- 예외를 던지지 않는다. 실패하면 ``notes``에 "handover unavailable: …" 한 줄을 남긴다
+"""보고서 맨 앞의 인수인계 섹션을 만드는 모듈.
+이관 전후 pom을 비교해서 버전 변경, 추가되거나 삭제된 아티팩트, 이어서 할 일을 정리한다.
+
+The owning team reads only this section of the report, so it stays short. `writer.py` calls `build_handover`
+and `markdown.py` renders the result first in the report. A ⚠ marks a dependency kept at its as-is version
+because the new parent / Boot BOM does not manage it. For an Ant project, every jar with unknown coordinates
+gets an `mvn install:install-file` command. Nothing here raises: a failure leaves one "handover unavailable:
+…" line in `notes`.
 
 `build_handover(profile, view, report, effective=None, cfg=None)` compares the as-is poms (`profile.poms`,
 plus the as-is effective dependencyManagement captured at intake for versions the old parent managed) with
@@ -35,7 +34,7 @@ log = logging.getLogger("sbmig.report")
 REASON_CARRIED = "carried over (no longer managed)"
 REASON_PARENT = "parent swap"
 REASON_OPTIONAL = "optional bump"
-# 트리거 의존성(when_present) 때문에 추가한 선택 아티팩트와 그때 지운 트리거 의존성에 붙이는 이유 문구
+# 트리거 의존성(when_present)이 있어서 추가한 선택 아티팩트, 그리고 그때 지운 트리거 의존성에 붙이는 이유 문구
 REASON_OPTIONAL_TRIGGER = "optional (trigger: {matched})"
 REASON_MANDATORY = "mandatory"
 # 새 부모 체인이 관리하지 않아 대상 Spring Boot BOM의 버전으로 고정한 의존성에 붙이는 이유 문구
@@ -47,7 +46,7 @@ REASON_RECIPE = "recipe"
 CARRIED_LIST_MAX = 5
 # "code rewritten by the LLM for <library>" 한 줄에 나열하는 파일 수
 LLM_FILES_MAX = 5
-# 오케스트레이터가 남기는 javax API jar 후속 작업 줄(report.javax_api_inventory)
+# 오케스트레이터가 남기는 javax API jar 후속 작업 줄. report.javax_api_inventory에서 온다
 _JAVAX_FOLLOWUP_RE = re.compile(r"^\d+ javax API jar\(s\) still on the classpath after the migration")
 # "N identical duplicate(s) dropped" 줄에 나열하는 경로 수
 IDENTICAL_LIST_MAX = 5
@@ -62,7 +61,7 @@ PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "s
 DEFAULT_SENTINEL = "__SET_ME__"
 DEFAULT_MAX_REFS = 3
 
-# RunReport에 JSP 변환 결과를 담을 필드가 없으므로 오케스트레이터가 재구성 단계 메모에 이 형식으로 남기고
+# RunReport에는 JSP 변환 결과를 담을 필드가 없다. 그래서 오케스트레이터가 단계 메모에 이 형식으로 남기고
 # 보고서가 다시 읽는다. 쓰는 함수와 읽는 함수를 여기 한 곳에 둔다
 JSP_JAKARTA_LABEL = "JSP javax → jakarta"
 _JSP_JAKARTA_NOTE_RE = re.compile(r"^(?P<step>[\w.\-]+): JSP javax → jakarta: (?P<files>\d+) files?, "
@@ -82,17 +81,17 @@ _JAR_NAME_VERSION_RE = re.compile(r"^(?P<stem>.+?)[-_](?P<ver>\d[\w.\-]*?)\.jar$
 
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
 _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
-# 재구성이 트리거 의존성으로 선택 아티팩트를 추가했을 때 남기는 메모의 접두어.
+# 트리거 의존성 때문에 재구성이 선택 아티팩트를 추가했을 때 남기는 메모의 접두어.
 # Format: "optional artifacts added for trigger dependencies: g:a → <pom> (for m1, m2); …
 #   — replaced: m1 removed from <pom> → g:a; …"
 TRIGGER_NOTE_PREFIX = "optional artifacts added for trigger dependencies:"
 # Boot BOM 버전 고정 메모와, 부모 체인에 Boot BOM이 없을 때의 인수인계 첫 줄을 알아보는 문자열.
-# 보고서는 재구성 패키지를 import하지 않으므로 sbmig.restructure.restructurer의
+# 보고서는 재구성 패키지를 import하지 않는다. 그래서 sbmig.restructure.restructurer의
 # BOOT_PIN_NOTE_PREFIX / PARENT_NO_BOOT_BOM_*와 같은 값을 여기 둔다
 BOOT_PIN_NOTE_PREFIX = "dependency versions pinned from the target Spring Boot BOM (not managed by the parent chain):"
 PARENT_NO_BOOT_BOM_PREFIX = "사내 부모 체인("
 PARENT_NO_BOOT_BOM_FLAG = "parent-chain-no-boot-bom"
-# 보고서는 analyze 패키지를 import하지 않으므로 sbmig.analyze.hollow의
+# 보고서는 analyze 패키지를 import하지 않는다. 그래서 sbmig.analyze.hollow의
 # HOLLOW_PREFIX / HOLLOW_FLAG와 같은 문자열을 여기 둔다
 HOLLOW_PREFIX = "the Maven reactor compiles no sources:"
 HOLLOW_FLAG = "hollow-reactor"
@@ -112,7 +111,7 @@ _Dep = tuple[Optional[str], str]
 
 
 def _clean(v: Optional[str]) -> Optional[str]:
-    # ${...} 속성 참조는 실제 버전이 아니므로 모르는 값으로 처리해야 잘못된 버전 변경 줄이 생기지 않는다
+    # ${...} 속성 참조는 실제 버전이 아니다. 모르는 값으로 둬야 잘못된 버전 변경 줄이 생기지 않는다
     if not v or "${" in v:
         return None
     return v.strip() or None
@@ -127,7 +126,7 @@ def _own_keys(poms: list[PomInfo]) -> set[str]:
 
 
 def _roots(poms: list[PomInfo]) -> list[PomInfo]:
-    """parent가 저장소 밖에 있는 pom, 즉 사내 parent나 BOM을 실제로 상속하는 pom을 얕은 경로부터 반환한다."""
+    """parent가 프로젝트 밖에 있는 pom을 얕은 경로부터 반환한다. 사내 parent나 BOM을 실제로 상속하는 pom이다."""
     out = [p for p in poms if p.parent is not None and not p.parent_in_repo]
     return sorted(out, key=lambda p: (p.path.count("/"), p.path))
 
@@ -163,7 +162,7 @@ def _eff_lookup(effective: dict[str, Any], key: str) -> Optional[str]:
 def _deps_before(poms: list[PomInfo], effective: dict[str, Any], own: set[str],
                  needs_eff: list[str]) -> dict[str, _Dep]:
     """as-is 의존성마다 (버전, 출처)를 구한다.
-    선언된 버전이 있으면 declared, 없으면 as-is effective pom에서 찾아 managed, 거기도 없으면 absent다.
+    pom에 버전이 있으면 declared다. 없으면 as-is effective pom에서 찾아 managed, 거기도 없으면 absent다.
     effective pom에 없는 키는 ``needs_eff``에 모은다. 프로젝트 자신의 모듈(``own``)은 비교하지 않는다."""
     out: dict[str, _Dep] = {}
     for p in poms:
@@ -186,7 +185,7 @@ def _deps_before(poms: list[PomInfo], effective: dict[str, Any], own: set[str],
 
 def _deps_after(poms: list[PomInfo], own: set[str]) -> tuple[dict[str, _Dep], dict[str, str]]:
     """최종 의존성마다 (버전, declared 또는 managed)와 선언한 pom 경로를 구한다.
-    managed 버전은 새 parent나 Boot BOM이 정하므로 None으로 둔다."""
+    managed 버전은 새 parent나 Boot BOM이 정한다. 그래서 None으로 둔다."""
     out: dict[str, _Dep] = {}
     where: dict[str, str] = {}
     for p in poms:
@@ -254,7 +253,7 @@ def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str]]:
 
 
 def _trigger_keys(notes: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """재구성 노트에서 트리거로 추가한 선택 아티팩트와 그때 지운 트리거 의존성을 꺼낸다.
+    """재구성 메모에서 트리거로 추가한 선택 아티팩트와 그때 지운 트리거 의존성을 꺼낸다.
     인수인계의 추가 / 삭제 줄에 이유를 붙이는 데 쓴다.
 
     ({added optional key: matched trigger keys}, {removed trigger key: [itself]}) from the restructure's
@@ -276,7 +275,7 @@ def _trigger_keys(notes: list[str]) -> tuple[dict[str, list[str]], dict[str, lis
 
 
 def _boot_pins(notes: list[str]) -> dict[str, str]:
-    """재구성 노트에서 대상 Boot BOM의 버전으로 고정한 의존성을 ``{g:a: 버전}``으로 꺼낸다."""
+    """재구성 메모에서 대상 Boot BOM의 버전으로 고정한 의존성을 ``{g:a: 버전}``으로 꺼낸다."""
     out: dict[str, str] = {}
     for n in notes:
         i = n.find(BOOT_PIN_NOTE_PREFIX)
@@ -290,7 +289,7 @@ def _boot_pins(notes: list[str]) -> dict[str, str]:
 
 
 def optional_trigger_reason(matched: list[str]) -> str:
-    """트리거로 들어온 선택 아티팩트의 이유 문구 ``optional (trigger: <g:a>[, …])``를 만든다.
+    """트리거로 들어온 선택 아티팩트에 붙일 이유 문구를 만든다. 형식은 ``optional (trigger: <g:a>[, …])``다.
 
     The Handover reason of an optional artifact a trigger introduced, and of the trigger it replaced."""
     return REASON_OPTIONAL_TRIGGER.format(matched=", ".join(matched))
@@ -340,9 +339,9 @@ def _coord(key: str, v: Optional[str]) -> str:
 
 def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any,
               reduced: bool = False) -> dict[str, Optional[str]]:
-    """Java와 Boot 버전의 전후를 구한다. 이후 값은 메인 pom, 다른 pom, 설정의 ``target`` 순으로 찾는다.
-    사내 parent가 버전을 관리하면 최종 pom에는 값이 없으므로 설정 값을 쓴다.
-    사내 프레임워크 프로젝트(``reduced``)는 Boot를 올리지 않으므로 Boot 값은 최종 pom에 있는 것만 쓴다.
+    """Java와 Boot 버전을 이관 전후로 구한다. 이관 후 값은 메인 pom, 다른 pom, 설정의 ``target`` 순으로 찾는다.
+    사내 parent가 버전을 관리하면 최종 pom에 값이 없다. 이때는 설정 값을 쓴다.
+    사내 프레임워크 프로젝트(``reduced``)는 Boot를 올리지 않는다. 그래서 Boot는 최종 pom에 있는 값만 쓴다.
 
     A reduced run (scope jdk-jakarta) never applies the target Boot line, so its Boot after-value is never
     `target.spring_boot_version`. Java keeps the `target.java_version` fallback (the run applied Java 21)."""
@@ -430,8 +429,8 @@ def _written_cell(f: Any, written: set[str], sentinel: str) -> str:
 
 
 def _set_via_cell(f: Any) -> str:
-    """"set via" 칸의 값, 즉 운영에서 값을 넣는 방법(환경 변수 또는 ``-D``)을 만든다.
-    ``System.getProperty``는 환경 변수와 application.properties를 보지 않으므로 ``-D``만 안내한다."""
+    """"set via" 칸을 만든다. 운영에서 값을 넣는 방법(환경 변수 또는 ``-D``)이다.
+    ``System.getProperty``로만 읽는 값은 ``-D``만 안내한다. 환경 변수와 application.properties를 보지 않기 때문이다."""
     sources = {r.source for r in f.refs}
     if sources and sources <= {"system-env"}:
         return f"environment variable {f.key}"
@@ -468,7 +467,8 @@ def external_to_set(inv: Any) -> list[Any]:
 def property_rows(inv: Any, cfg: Any = None) -> list[str]:
     """인수인계 "Properties to set" 표의 줄을 만든다.
     ``external`` 항목마다 칸(``PROPERTY_COLUMNS``)을 `` | ``로 이은 한 줄이다.
-    값이 필요 없는 항목도 넣지만, 값이 필요한 항목이 하나도 없으면 빈 목록을 반환한다. 예외를 던지지 않는다."""
+    값이 필요한 항목이 하나도 없으면 빈 목록이다. 하나라도 있으면 값이 필요 없는 항목도 함께 넣는다.
+    예외를 던지지 않는다."""
     if inv is None or not external_to_set(inv):
         return []
     x = getattr(cfg, "externalized", None) if cfg is not None else None
@@ -493,7 +493,7 @@ def property_rows(inv: Any, cfg: Any = None) -> list[str]:
 
 def split_property_row(row: str) -> list[str]:
     """``property_rows``의 한 줄을 다시 칸으로 나눈다.
-    항상 ``len(PROPERTY_COLUMNS)``칸을 반환하고, 넘치는 값은 마지막 칸에 합친다."""
+    항상 ``len(PROPERTY_COLUMNS)``칸을 반환한다. 칸이 넘치면 마지막 칸에 합치고, 모자라면 "-"로 채운다."""
     cells = [c.strip() for c in str(row).split(PROPERTY_SEP)]
     n = len(PROPERTY_COLUMNS)
     if len(cells) > n:
@@ -553,7 +553,8 @@ def _view_exists(view: Any, path: str) -> bool:
 def resolve_current_path(ws: Any, path: str, cfg: Any = None, name: Optional[str] = None) -> str:
     """재구성 전에 기록된 파일 경로가 지금 어디 있는지 찾아 반환한다.
     파일이 그대로 있거나 ``ws``가 None이면 경로를 그대로 반환한다.
-    없으면 ``src/`` 이후 부분을 레이아웃의 comp, boot, front 모듈 아래에서 찾고, 못 찾으면 원래 경로를 반환한다.
+    없으면 ``src/`` 이후 부분을 레이아웃의 comp, boot, front 모듈 아래에서 찾는다.
+    그래도 못 찾으면 원래 경로를 반환한다.
 
     Module directories come from `cfg.layout.module_path(which, name)` (company `{name}-back` / `-boot` /
     `-front`); a layout without `module_path`, or no config, falls back to `module/comp-jar` / `module/boot-jar`.
@@ -606,14 +607,14 @@ def plural(n: int, word: str) -> str:
 
 
 def jsp_jakarta_text(files: int, refs: int) -> str:
-    """JSP 안의 javax EE 이름을 바꾼 결과를 파일 수와 참조 수가 들어간 영문 구절로 만든다.
+    """JSP 안의 javax EE 이름을 바꾼 결과를 영어 구절 하나로 만든다. 바꾼 파일 수와 참조 수가 들어간다.
 
     Inputs: `RestructureResult.jsp_jakarta_files` / `jsp_jakarta_refs`."""
     return f"{JSP_JAKARTA_LABEL}: {plural(files, 'file')}, {plural(refs, 'reference')}"
 
 
 def jsp_jakarta_note(step_id: str, files: int, refs: int) -> str:
-    """JSP 변환의 파일 수와 참조 수를 담은 단계 메모를 만든다(재구성 또는 ``transform.jsp_jakarta``).
+    """JSP 변환의 파일 수와 참조 수를 담은 단계 메모를 만든다. 단계는 재구성이나 ``transform.jsp_jakarta``다.
     오케스트레이터가 이 메모를 남기고 ``jsp_jakarta_counts``가 다시 읽는다."""
     return f"{step_id}: {jsp_jakarta_text(files, refs)}"
 
@@ -639,7 +640,7 @@ def jsp_jakarta_counts(report: Any) -> tuple[int, int]:
 
 def jsp_javax_left(report: Any) -> int:
     """아직 javax EE 이름이 남았을 JSP 파일 수를 반환한다.
-    분석이 센 ``SourceStats.jsp_javax_files``에서 바꾼 파일 수를 뺀 값이고, 0보다 작아지지 않는다."""
+    분석이 센 ``SourceStats.jsp_javax_files``에서 바꾼 파일 수를 뺀 값이다. 0보다 작아지지 않는다."""
     src = getattr(getattr(report, "profile", None), "source", None)
     found = int(getattr(src, "jsp_javax_files", 0) or 0)
     return max(0, found - jsp_jakarta_counts(report)[0]) if found else 0
@@ -657,7 +658,8 @@ def _jsp_followup_present(report: RunReport) -> bool:
 def jsp_javax_item(report: RunReport, cfg: Any = None) -> str | None:
     """할 일 목록의 JSP 줄 ``JSP javax references remain (N files) …``을 만든다.
     javax가 남은 JSP가 있고 재구성이 같은 후속 작업 줄을 남기지 않았을 때만 만든다. 아니면 None을 반환한다.
-    이름 변경이 꺼져 있었으면 그 사실을 뒤에 붙인다. 최종 빌드가 통과하지 않았으면 빌드가 통과한다는 말은 빼고 쓴다."""
+    이름 변경이 꺼져 있었으면 그 사실을 뒤에 붙인다.
+    최종 빌드가 통과하지 않았으면 빌드가 통과한다는 말은 빼고 쓴다."""
     left = jsp_javax_left(report)
     if not left or _jsp_followup_present(report):
         return None
@@ -694,7 +696,7 @@ def install_file_command(path: str, group_id: str, jar: Any = None) -> str:
 
 def pom_synthesis_counts(ps: Any) -> dict[str, int]:
     """합성 pom의 jar 수와 좌표 출처별 개수를 반환한다.
-    manifest에서 얻은 값은 좌표가 아니므로 접수 로그와 같이 unknown으로 센다."""
+    manifest에서 얻은 값은 좌표가 아니다. 그래서 접수 로그처럼 unknown으로 센다."""
     c = dict(getattr(ps, "counts", None) or {})
     return {"jars": len(getattr(ps, "jars", None) or []), "pom_properties": c.get("pom_properties", 0),
             "name_table": c.get("name_table", 0), "sha1_lookup": c.get("sha1_lookup", 0),
@@ -726,11 +728,11 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     순서: HTTP 차단 / ADF / 빈 reactor -> 사내 부모 체인에 Boot BOM 없음 -> 메이저 업그레이드 확인 ->
     교체되지 않은 권고 -> 교체된 권고 확인 -> 고정 버전 -> 차단 / 미해결 오류 -> 구조 검토 -> 외부 설정 ->
     남은 JSP javax -> 나머지 수동 후속 작업
-    ``advisories.max_from_here``가 양수이면 그 줄 수로 자르고 마지막에 "… and N more"를 붙인다."""
+    ``advisories.max_from_here``가 양수이면 그 줄 수로 자른다. 마지막 줄은 "… and N more"가 된다."""
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
-    # 운영자가 Maven settings를 고쳐야 하므로 HTTP 차단 미러로 중단된 경우를 가장 먼저 알린다
+    # HTTP 차단 미러로 중단된 경우를 가장 먼저 알린다. 운영자가 Maven settings를 고쳐야 한다
     if HTTP_BLOCKED_FLAG in (report.flags or []):
         first = next((m for m in report.manual_followups if m.startswith(HTTP_BLOCKED_PREFIX)), None)
         if first:
@@ -745,7 +747,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         first = next((m for m in report.manual_followups if m.startswith(HOLLOW_PREFIX)), None)
         if first:
             _dedupe_add(out, first)
-    # 사내 부모 체인에 Boot BOM이 없는 것은 모든 프로젝트에 해당하는 구조 문제이므로 앞에 둔다
+    # 사내 부모 체인에 Boot BOM이 없으면 앞에 둔다. 모든 프로젝트에 걸리는 구조 문제다
     if PARENT_NO_BOOT_BOM_FLAG in (report.flags or []):
         first = next((m for m in report.manual_followups if m.startswith(PARENT_NO_BOOT_BOM_PREFIX)), None)
         if first:
@@ -762,7 +764,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         if f.replacement:
             txt += f" (replacement: {f.replacement}{' ' + f.replacement_version if f.replacement_version else ''})"
         _dedupe_add(out, txt)
-    # 교체는 레시피나 수정 스크립트가 했으므로 사람이 동작을 확인해야 한다
+    # 교체는 레시피나 수정 스크립트가 했다. 사람이 동작을 확인해야 한다
     for f in findings:
         if f.outcome != "replaced":
             continue
@@ -799,7 +801,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     entries = list(getattr(report, "error_entries", None) or [])
     left = sum(1 for e in entries if getattr(e, "status", "") in ("open", "unresolved")) if entries \
         else len(report.unresolved)
-    # 미해결 개수는 오류 목록(open, unresolved)에서 세고, 목록이 없을 때만 unresolved를 쓴다
+    # 미해결 개수는 오류 목록의 open, unresolved를 센다. 오류 목록이 없을 때만 unresolved를 쓴다
     if left:
         _dedupe_add(out, f"{left} unresolved error(s) — see Error list")
     jars = list(getattr(report, "javax_api_jars", None) or [])
@@ -816,7 +818,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
             _dedupe_add(out, item)
     except Exception as e:  # pragma: no cover
         log.debug("properties item skipped: %s", e)
-    # OpenRewrite는 JSP를 읽지 않으므로 JSP에 남은 javax는 Tomcat 10 이상에서 실행할 때 실패한다.
+    # JSP에 남은 javax는 Tomcat 10 이상에서 실행할 때 실패한다. OpenRewrite는 JSP를 읽지 않는다.
     # 재구성이 같은 후속 작업 줄을 남겼으면 그 줄을 쓴다
     try:
         jsp = jsp_javax_item(report, cfg)
@@ -827,13 +829,13 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     if "test-compile-skipped" in report.flags:
         _dedupe_add(out, "test sources do not compile yet (main code builds with -Dmaven.test.skip=true) — "
                          "fix the tests before relying on CI")
-    # 권고의 후속 작업 문장은 앞에서 이미 나왔으므로 수동 후속 작업에서 같은 문장은 건너뛴다
+    # 권고의 후속 작업 문장은 앞에서 이미 나왔다. 수동 후속 작업에 같은 문장이 있으면 건너뛴다
     adv_fu: set[str] = set()
     if findings:
         try:
             from sbmig.advisory import followups_for
             adv_fu = {" ".join(x.split()).lower() for x in (followups_for(findings) or [])}
-        except Exception as e:  # pragma: no cover - 권고 패키지를 쓸 수 없어도 계속 진행한다
+        except Exception as e:  # pragma: no cover - 권고 패키지를 쓸 수 없으면 이 비교 없이 계속한다
             log.debug("followups_for unavailable: %s", e)
     for m in report.manual_followups:
         if " ".join(m.split()).lower() in adv_fu:
@@ -854,10 +856,10 @@ def _short(text: object, limit: int) -> str:
 
 def review_followups(report: RunReport) -> list[str]:
     """구조 검토 결과를 할 일 목록 줄로 압축한다.
-    검토가 바꾼 파일 한 줄, 고치지 못한 critical, warning을 최대 ``REVIEW_FOLLOWUPS_MAX``줄까지 담는다.
+    검토가 바꾼 파일, 고치지 못한 critical, warning을 담는다. 최대 ``REVIEW_FOLLOWUPS_MAX``줄이다.
     이슈가 없으면 빈 목록을 반환한다."""
     rv = getattr(report, "structure_review", None)
-    # 입력 자료에 없는 버전이나 속성을 언급한 이슈(`unsupported`)는 보고서에만 남기고 인수인계에는 넣지 않는다
+    # 입력 자료에 없는 버전이나 속성을 말한 이슈(`unsupported`)는 인수인계에 넣지 않는다. 보고서에만 남는다
     issues = [i for i in (rv.issues if rv is not None else []) if not getattr(i, "unsupported", False)]
     if rv is None or not issues:
         return []
@@ -929,7 +931,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     reduced = run_scope(report) is not None
     for k, v in _versions(profile, final, cfg, reduced=reduced).items():
         setattr(h, k, v)
-    # 프레임워크 프로젝트는 Boot를 올리지 않고, 수정 시도가 없었다면 pom을 바꾼 것은 레시피뿐이다
+    # 프레임워크 프로젝트는 Boot를 올리지 않는다. 수정 시도가 없었다면 pom을 바꾼 것은 레시피뿐이다
     tried = any(pr.attempts for pr in report.phases or [])
     other_reason = REASON_RECIPE if reduced and not tried else REASON_OTHER
     boot_reason = other_reason if reduced else REASON_BOOT
@@ -1000,12 +1002,12 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     for k in sorted(set(db) | set(da)):
         if k in db and k in da:
             (bv, bs), (av, as_) = db[k], da[k]
-            # 전후 모두 parent나 BOM이 관리하면 parent / BOM 줄이 이미 보여 주므로 의존성 줄은 만들지 않는다
+            # 전후 모두 parent나 BOM이 관리하면 의존성 줄을 만들지 않는다. parent / BOM 줄이 이미 보여 준다
             if bs in ("managed", "absent") and as_ == "managed":
                 continue
             if bv == av and bs == as_:
                 continue
-            # 이전 parent가 관리하던 버전을 새 parent나 Boot BOM이 관리하지 않아 pom에 그대로 둔 경우다.
+            # 이전 parent가 관리하던 버전이다. 새 parent나 Boot BOM이 관리하지 않아서 pom에 그대로 뒀다.
             # 담당 팀이 확인해야 한다
             carried = (bs == "managed" and as_ == "declared" and av is not None
                        and av == _eff_lookup(effective, k))
@@ -1030,7 +1032,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
             tag = r if r.startswith("advisory:") or r in (REASON_MANDATORY, REASON_OPTIONAL) or k in trig_added else ""
             h.added.append(_coord(k, da[k][0]) + (f" ({tag})" if tag else ""))
 
-    # ---- 플러그인. 추가와 삭제는 재구성 때문에 생긴 것이라 버전 변경만 본다
+    # ---- 플러그인. 버전 변경만 본다. 추가와 삭제는 재구성 때문에 생긴다
     plb, pla = _plugins(before_poms), _plugins(final)
     for k in sorted(set(plb) & set(pla)):
         if plb[k][0] != pla[k][0]:
@@ -1058,9 +1060,9 @@ def _fill_properties(h: HandoverSummary, report: RunReport, cfg: Any) -> None:
 
 def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunReport,
                    effective: Optional[dict[str, Any]] = None, cfg: Any = None) -> HandoverSummary:
-    """as-is pom과 최종 pom, 권고를 비교해 인수인계 섹션 데이터(HandoverSummary)를 만든다.
+    """as-is pom, 최종 pom, 권고를 비교해서 인수인계 섹션(HandoverSummary)을 만든다.
     예외를 던지지 않는다. 프로필이 없으면 "handover unavailable" 메모만 담아 반환한다.
-    비교가 실패해도 merge 충돌, 외부 설정, 할 일 목록은 따로 채워 담당 팀이 읽을 내용을 남긴다."""
+    비교가 실패해도 merge 충돌, 외부 설정, 할 일 목록은 따로 채운다. 담당 팀이 읽을 내용은 남긴다."""
     if profile is None:
         return HandoverSummary(notes=["handover unavailable: no project profile (the run stopped before analyze)"])
     try:

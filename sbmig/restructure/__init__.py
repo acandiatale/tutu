@@ -1,8 +1,9 @@
-"""프로젝트의 디렉토리와 pom을 회사 레이아웃으로 바꾸는 재구성 패키지.
-오케스트레이터가 변환 다음, 구조 검토 전의 ``restructure.*`` 단계에서 ``Restructurer().apply(...)``를 호출한다.
-LLM은 쓰지 않는다. 아래 이름은 공개 인터페이스이므로 바꾸거나 빼지 않는다.
-- restructurer.py: ``Restructurer``, ``RestructureError``, ``sanitize_identifier``, ``sanitize_package``
-- pom_editor.py: ``PomEditor``, ``PomEditError``, ``ArtifactRef``, ``property_ref``
+"""프로젝트의 디렉토리와 pom을 회사 레이아웃으로 바꾸는 재구성 패키지. LLM은 쓰지 않는다.
+
+The orchestrator calls `Restructurer().apply(...)` in the `restructure.*` steps, after the transform and
+before the structure review. These names are the public interface and are never renamed or dropped:
+restructurer.py `Restructurer`, `RestructureError`, `sanitize_identifier`, `sanitize_package`; pom_editor.py
+`PomEditor`, `PomEditError`, `ArtifactRef`, `property_ref`.
 
 The public entry points are fixed in docs/INTERFACES.md."""
 from .pom_editor import ArtifactRef, PomEditError, PomEditor, property_ref

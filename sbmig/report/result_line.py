@@ -1,13 +1,11 @@
 """실행 결과 한 줄(``SBMIG-RESULT …``)과 주의 코드(attn)를 만드는 모듈.
-운영자가 회사 PC의 cp949 콘솔 화면을 보고 손으로 옮겨 적어 보고하는 줄이다.
-``sbmig run``이 끝날 때 콘솔과 로그에 출력하고, 플릿은 프로젝트마다 한 줄과 ``summary.csv``의 attention 칸에 쓴다.
-- 진입점: ``report_result_line``, ``result_line``, ``attention_codes``,
-  ``report_exit_code``(0 성공, 2 빌드 실패, 3 거부 / 중단)
-- 사내 프레임워크 프로젝트(JDK와 jakarta만 적용)는 ``major=`` 뒤에 ``scope=jdk-jakarta``를 붙인다
-- ``llm=``은 이관의 LLM 호출 수와 취약점 조치의 빌드 오류 수정 루프가 호출한 수의 합이다
-- 반드시 한 줄이고 ASCII만 쓴다. ASCII가 아닌 문자는 ``?``로 바꾼다
-- 운영자 보고 양식과 플릿 집계가 이 형식을 그대로 읽으므로 필드 순서와 이름을 바꾸지 않는다.
-  새 필드는 끝에, 값이 있을 때만 붙인다
+운영자가 회사 PC의 cp949 콘솔 화면을 보고 손으로 옮겨서 보고하는 줄이다.
+
+`sbmig run` prints it to the console and the log when it ends; the fleet writes one line per project and the
+`summary.csv` attention column. Entry points: `report_result_line`, `result_line`, `attention_codes`,
+`report_exit_code` (0 success, 2 build failed, 3 refused / aborted). Always one line, ASCII only: any other
+character becomes `?`. The operators' report form and the fleet totals read this format as it is, so field
+order and names never change; a new field goes at the end, only when it has a value.
 
 Format:
 
@@ -86,7 +84,7 @@ def _ascii_token(v: Any) -> str:
 
 def infra_kind(flags: Iterable[str]) -> Optional[str]:
     """인프라 원인 종류(``llm``, ``maven``, ``jdk``, ``repository`` 등)를 반환한다.
-    ``infra:<kind>`` 플래그 중 첫 번째를 쓰고, 없으면 이전 형식의 플래그(``llm-unavailable`` 등)에서 찾는다."""
+    ``infra:<kind>`` 플래그가 있으면 첫 번째를 쓴다. 없으면 이전 형식의 플래그(``llm-unavailable`` 등)에서 찾는다."""
     flags = list(flags or [])
     for f in flags:
         if f.startswith(INFRA_PREFIX) and len(f) > len(INFRA_PREFIX):
@@ -100,14 +98,14 @@ def infra_kind(flags: Iterable[str]) -> Optional[str]:
 def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = None, status: Optional[str] = None,
                     error: Optional[str] = None, blocked_reasons: Iterable[str] = (), unresolved: int = 0) -> list[str]:
     """실행 하나의 주의 코드를 중요한 것부터 중복 없이 반환한다.
-    ``fleet status --attention``이 첫 코드로 프로젝트를 묶으므로 순서가 중요하다. 순서는 모듈 docstring에 있다."""
+    ``fleet status --attention``이 첫 코드로 프로젝트를 묶는다. 그래서 순서가 중요하고, 순서는 모듈 docstring에 있다."""
     flags = list(flags or [])
     err = (error or "").strip()
     codes: list[str] = []
-    # 중간에 LLM 연결이 한 번 끊겼어도 결과는 정상이므로 성공한 실행(exit 0)에는 infra 코드를 붙이지 않는다
+    # 성공한 실행(exit 0)에는 infra 코드를 붙이지 않는다. 중간에 LLM 연결이 한 번 끊겼어도 결과는 정상이다
     kind = err[len(INFRA_PREFIX):].split()[0] if err.startswith(INFRA_PREFIX) and len(err) > len(INFRA_PREFIX) \
         else (infra_kind(flags) if exit_code not in (0, None) or status == "pending" else None)
-    # target/ 파일 잠금으로 차단된 실행은 빌드 PC 환경 문제이므로 infra:file-lock 코드를 붙인다
+    # target/ 파일 잠금으로 차단된 실행에는 infra:file-lock 코드를 붙인다. 빌드 PC 환경 문제다
     if not kind and exit_code not in (0, None) and any(str(r).split(":", 1)[0] == FILE_LOCK_REASON
                                                        for r in blocked_reasons or ()):
         kind = FILE_LOCK_KIND
@@ -128,7 +126,7 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
             codes.append("aborted:" + reason if reason else "aborted")
     reasons = [str(r).split(":", 1)[0] for r in blocked_reasons or ()]
     # LLM이 프로젝트 밖의 차단 사유를 들어 담당 팀의 결정을 기다리는 실행.
-    # 플릿이 첫 코드로 묶으므로 차단 코드들 앞에 한 번 넣는다
+    # 플릿이 첫 코드로 묶는다. 그래서 차단 코드들 앞에 한 번 넣는다
     if NEEDS_OWNER_REASON in reasons:
         codes.append(OWNER_DECISION)
     for r in reasons:
@@ -150,7 +148,7 @@ def report_attention(report: Any, exit_code: Optional[int]) -> list[str]:
 
 def result_attention(r: Any) -> list[str]:
     """플릿 프로젝트 결과(FleetProjectResult)의 주의 코드를 반환한다.
-    아직 실행되지 않은 프로젝트는 볼 필요가 없으므로 빈 목록을 반환한다.
+    아직 실행되지 않은 프로젝트는 볼 필요가 없다. 빈 목록을 반환한다.
 
     "Not run yet" = pending without an infra error, or running. Feeds `summary.csv` attention and
     `fleet status --attention`."""
@@ -168,8 +166,8 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
                 open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
                 remediation: Optional[str] = None, flow: Optional[str] = None, scope: Optional[str] = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다.
-    - 이전 형식을 읽는 쪽이 깨지지 않도록 ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은
-      값이 있을 때만 붙인다
+    - ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은 값이 있을 때만 붙인다.
+      이전 형식을 읽는 쪽이 깨지지 않게 하기 위해서다
     - ``scope=``는 범위가 ``full``이 아닐 때만 ``major=`` 뒤에 붙인다
     - ``flow=``는 실행 방식이 ``full``이 아닐 때만 ``remediation=`` 바로 앞에 붙인다"""
     codes = ",".join(attention) or "-"
@@ -219,8 +217,8 @@ def report_exit_code(report: Any) -> int:
 
 def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Optional[str] = None) -> str:
     """끝난 ``sbmig run``의 ``SBMIG-RESULT …`` 줄을 만든다.
-    ``run_id``를 주면 보고서의 값 대신 쓰고, ``exit_code`` 기본값은 ``report_exit_code``의 결과다.
-    ``major=``는 최종 트리에 남은 메이저 업그레이드 수다."""
+    ``run_id``를 주면 보고서의 값 대신 쓴다. ``exit_code``를 주지 않으면 ``report_exit_code``의 결과를 쓴다.
+    ``major=``는 최종 결과에 남은 메이저 업그레이드 수다."""
     code = report_exit_code(report) if exit_code is None else exit_code
     o, r = entry_counts(getattr(report, "error_entries", None) or [])
     flow = getattr(report, "flow", None)
@@ -277,14 +275,14 @@ def _field(obj: Any, name: str) -> Any:
 
 
 def conversion_complete(report: Any) -> bool:
-    """사내 프레임워크 실행이 JDK 21, Jakarta 변환을 끝냈는지 확인한다. 화면과 보고서가 이 실행을 완료로 표시하는 조건이다.
-    최종 빌드가 실패해도 True이고, 종료 코드와 ``build=`` 값은 이 함수와 무관하다. 아래를 모두 만족해야 True다.
+    """사내 프레임워크 실행이 JDK 21, Jakarta 변환을 끝냈는지 확인한다. True면 화면과 보고서가 완료로 표시한다.
+    최종 빌드가 실패해도 True일 수 있다. 종료 코드와 ``build=`` 값은 이 함수와 상관없다. 아래를 모두 만족해야 True다.
     - 줄인 범위(``jdk-jakarta``)로 계획한 이관 실행이다
     - 중단되지 않았다
     - 계획한 자동 변환 단계마다 실행 결과가 있고 실패한 변환이 없다
     - 소스가 없는 reactor가 아니다
     - 최종 빌드를 시도한 결과가 있다
-    RunReport와 report.json에서 읽은 dict를 모두 받는다. 읽을 수 없는 값은 조건을 만족하지 않은 것으로 보고 예외를 던지지 않는다.
+    RunReport와 report.json에서 읽은 dict를 모두 받는다. 읽을 수 없는 값이 있으면 False다. 예외를 던지지 않는다.
 
     One rule for every place that words the outcome of such a run: the page (`status()["conversion_complete"]`),
     the admin page (result word `converted`), both report renderers and the console summary. A run with
@@ -311,7 +309,7 @@ def conversion_complete(report: Any) -> bool:
         return False
     if REWRITE_FAILED in flags or HOLLOW_REACTOR in flags:
         return False
-    # 최종 빌드는 성공 여부가 적힌 결과여야 한다. 통과했는지는 보지 않는다
+    # 최종 빌드 결과에 ok 값(True / False)이 있어야 한다. 통과했는지는 보지 않는다
     if not isinstance(_field(_field(report, "final_build"), "ok"), bool):
         return False
     steps = _field(plan, "steps")
@@ -340,7 +338,7 @@ def _kind(step: Any) -> str:
 
 
 def run_scope(report: Any) -> Optional[str]:
-    """실행 범위를 반환한다. JDK와 jakarta만 적용한 사내 프레임워크 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
+    """실행 범위를 반환한다. JDK와 jakarta만 적용한 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
     계획이 있으면 계획의 범위를 쓰고, 계획 전에 끝난 실행은 프로필의 검사 결과를 쓴다."""
     plan = getattr(report, "plan", None)
     if plan is not None:
@@ -351,7 +349,7 @@ def run_scope(report: Any) -> Optional[str]:
 
 def remediation_token(report: Any) -> Optional[str]:
     """``remediation=`` 값을 반환한다.
-    이어서 실행한 조치의 상태(SUCCEEDED 등)나 "skipped"이고, 조치 요약이 없으면 None을 반환한다."""
+    이어서 실행한 조치의 상태(SUCCEEDED 등)나 "skipped"를 반환한다. 조치 요약이 없으면 None이다."""
     rem = getattr(report, "remediation", None)
     if not isinstance(rem, dict):
         return None
@@ -367,7 +365,7 @@ def remediation_build_ok(report: Any) -> bool:
     - 업로드한 그대로의 조치 전 빌드가 통과했다
     - 사유에 빌드 실패(``BUILD_FAILED_REASONS``)가 없다
     - 결과 ZIP이 ``build_ok: false``가 아니다
-    시작하지 않았거나 조치 전 빌드 전에 멈춘 실행은 False다. 조치의 성공 여부(종료 코드)와는 별개다."""
+    시작하지 않았거나 조치 전 빌드 전에 멈춘 실행은 False다. 조치가 성공했는지(종료 코드)와는 별개다."""
     rem = getattr(report, "remediation", None)
     if not isinstance(rem, dict) or str(rem.get("status") or "") in ("", "skipped"):
         return False

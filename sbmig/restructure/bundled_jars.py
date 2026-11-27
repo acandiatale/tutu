@@ -1,13 +1,12 @@
-"""어느 pom도 선언하지 않은 트리 안의 jar를 재구성에서 첫 빌드 전에 모듈 pom에 연결하는 모듈.
-JDBC 드라이버, 필터, taglib처럼 컴파일 오류를 내지 않는 런타임 전용 jar도 as-is WAR처럼 패키징하려는 것이다.
-jar마다 아래 결과 중 하나를 정한다.
-- ``superseded``: 목표 부모 체인이나 Boot BOM이 관리한다. 손대지 않는다
-- ``container``: Tomcat이 제공하는 서블릿, JSP API다. 손대지 않는다
-- ``unused``: 어디서도 참조하지 않는다. 선언하지 않고 인수인계에 이름만 남긴다
-- ``declared``: 대상 pom이 이미 선언했다
-- ``compile``: 좌표를 알고 저장소에 있다
-- ``system``: 그 밖의 경우다. ``<module>/lib``에 복사하고 system scope로 선언한다
-- ``skip``: ``intake.unknown_jar: skip``이거나 저장소를 읽지 못했거나 연결 중 오류가 났다
+"""어느 pom도 선언하지 않은 프로젝트 안의 jar를 재구성 단계에서 첫 빌드 전에 모듈 pom에 연결하는 모듈.
+
+The aim: runtime-only jars (JDBC drivers, filters, taglibs) never cause a compile error, so they are wired
+here to be packaged as in the as-is WAR. One verdict per jar: `superseded` (the target parent chain or Boot
+BOM manages it; left alone), `container` (a servlet / JSP API Tomcat supplies; left alone), `unused`
+(nothing references it; not declared, only named in the Handover), `declared` (the target pom declares it
+already), `compile` (known coordinates the repository has), `system` (anything else: copied to
+`<module>/lib` and declared with system scope), `skip` (`intake.unknown_jar: skip`, the repository could not
+be read, or wiring failed).
 
 Contract: docs/INTERFACES.md "v2.1z-j". `plan_bundled_jars` is pure; `apply_bundled_jars` writes through
 `system_jars.wire_bundled_jar` and never raises past a per-jar WARNING (a failed jar becomes `skip`)."""
@@ -80,7 +79,7 @@ class BundledPlan:
 
 def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
     """저장소에 g:a:v가 정확히 있는지 확인하는 함수를 만든다.
-    ``pom_text(g, a, v)``가 있으면 True, 없으면 ``versions(g, a)``에 v가 있는지로 정한다.
+    ``pom_text(g, a, v)``가 있으면 True다. 없으면 ``versions(g, a)``에 v가 있는지로 정한다.
     조회기가 없거나 예외가 나면 False다. 그러면 그 jar는 system scope로 연결된다."""
     def _has(g: str, a: str, v: str) -> bool:
         if lookup is None:
@@ -97,7 +96,7 @@ def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
 
 def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str]]:
     """저장소에 g:a:v가 있는지 (상태, 사유)로 답하는 함수를 만든다. 상태는 present, absent, unreadable이다.
-    원격 저장소가 응답하지 않아 찾지 못했으면 없다고 하지 않고 unreadable과 사유를 반환한다.
+    원격 저장소가 응답하지 않아 찾지 못했으면 없다고 하지 않는다. unreadable과 사유를 반환한다.
 
     present: the pom of g:a:v, else the version in the metadata (remote or local).
     absent: asked and not there, or no lookup configured.
@@ -121,7 +120,7 @@ def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str
 
 def unused_jar_followup(name: str) -> str:
     """참조가 없어 선언하지 않은 jar의 인수인계 문장을 만든다.
-    한국어 보고서는 i18n PATTERNS로 번역하므로 문장을 바꾸면 그쪽도 함께 고친다."""
+    한국어 보고서는 i18n PATTERNS로 이 문장을 번역한다. 문장을 바꾸면 그쪽도 함께 고친다."""
     return (f"bundled jar `{name}` is referenced by no source / JSP / XML / properties file — not declared (add it by "
             "hand if a runtime needs it)")
 
@@ -150,7 +149,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
                       source_roots: Iterable[str] = (), extra_dirs: Iterable[str] = (),
                       current: dict[str, str] | None = None, managed_known: bool = True) -> BundledPlan:
     """jar마다 결과를 하나 정한다. 파일은 바꾸지 않는다.
-    참조 여부는 ``source_roots``의 Java와 ``extra_dirs``의 JSP, XML, properties로 다시 확인한다.
+    jar를 참조하는지는 ``source_roots``의 Java와 ``extra_dirs``의 JSP, XML, properties로 다시 확인한다.
     sha1이 같은 두 번째 jar는 첫 jar의 결과를 따른다.
 
     First rule wins: managed g:a -> superseded; container API copy -> container; nothing references it ->
@@ -165,7 +164,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
     boots = list(dict.fromkeys(boot_poms or ()))
     cur = dict(current or {})
     policy = getattr(getattr(cfg, "intake", None), "unknown_jar", "system") if cfg is not None else "system"
-    # 분석 결과는 그대로 두고, 깊은 복사본으로 재구성 뒤 위치 기준의 used를 다시 계산한다
+    # 분석 결과는 그대로 둔다. 깊은 복사본에서 재구성 뒤 위치를 기준으로 used를 다시 계산한다
     copies = [j.model_copy(deep=True) for j in jars]
     roots = [d for d in source_roots if d is not None]
     extra = [d for d in extra_dirs if d is not None]
@@ -207,7 +206,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
             if j.source in TRUSTED_SOURCES and g and a and ver and repository is not None:
                 try:
                     answer = repository(g, a, ver)
-                    # repository_state_fn은 (상태, 사유)를 반환하고, bool을 반환하는 함수도 받는다
+                    # repository_state_fn은 (상태, 사유)를 반환한다. bool을 반환하는 함수도 받는다
                     if isinstance(answer, tuple):
                         has = answer[0] == "present"
                         unreadable = (answer[1] or "no reason given") if answer[0] == "unreadable" else ""
@@ -217,7 +216,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
                     log.debug("repository check %s:%s:%s failed: %s", g, a, ver, e)
                     has = False
             if unreadable:
-                # 응답이 없었을 뿐인데 없다고 보고 Nexus 등록을 요청하면 안 되므로 연결하지 않는다
+                # 저장소가 응답하지 않았을 뿐이다. 없다고 보고 Nexus 등록을 요청하면 안 되니 연결하지 않는다
                 item.verdict, item.why = "skip", (f"skip: repository unreadable — {g}:{a}:{ver} could not be looked up "
                                                   f"({unreadable}); not wired and not called missing — run again when "
                                                   "the repository answers")
@@ -234,7 +233,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
 
 def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: str = "") -> list[WiredJar]:
     """``compile``과 ``system`` 항목을 ``wire_bundled_jar``로 pom에 쓴다. 커밋은 하지 않는다.
-    jar 하나가 실패하면 WARNING을 남기고 그 항목을 ``skip``으로 바꾼 뒤 다음 jar로 넘어간다.
+    jar 하나가 실패하면 WARNING을 남기고 그 항목을 ``skip``으로 바꾼다. 그리고 다음 jar로 넘어간다.
     예외를 던지지 않는다."""
     out: list[WiredJar] = []
     for item in plan.items:

@@ -1,10 +1,11 @@
 """JSP와 태그 파일 안의 javax EE 이름을 jakarta로 바꾸는 모듈.
-OpenRewrite는 JSP를 파싱하지 않고 Maven도 JSP를 컴파일하지 않는다.
-그대로 두면 빌드는 되어도 Tomcat 10 이상에서 실행할 때 실패한다.
-파일 이동과 pom 작업이 끝난 뒤 ``layout.jsp_jakarta_rename``이 켜져 있으면 :func:`rename_jsp_files`를 호출한다.
-- 분석기와 같은 코드 영역(``jsp_code_spans``)과 같은 표(``jakarta_packages.yml``)를 쓴다
-- 스크립틀릿 안의 문자열과 주석, taglib uri, HTML, EL은 바꾸지 않는다
-- 바뀐 파일만 원래 인코딩과 줄바꿈으로 다시 쓴다. 다시 실행하면 바뀌는 것이 없다
+OpenRewrite가 JSP를 파싱하지 않기 때문에 여기서 따로 바꾼다.
+
+Maven does not compile JSPs either: left as they are, the build passes and Tomcat 10+ fails at runtime.
+Called after the file moves and the pom work when `layout.jsp_jakarta_rename` is on. Uses the analyzer's
+code regions (`jsp_code_spans`) and its table (`jakarta_packages.yml`). Strings and comments inside
+scriptlets, taglib URIs, HTML and EL are never changed. Only changed files are written, in their own
+encoding and line endings; a second run changes nothing.
 
 Code regions: page / tag `import`, useBean `class` / `type`, scriptlets. The table's `to` is used
 (`javax.security.cert` -> `java.security.cert`). Taglib URIs stay because JSTL 3 still serves the
@@ -33,14 +34,14 @@ from sbmig.analyze.jsp import JSP_SUFFIXES, jakarta_rules, javax_ee_token, jsp_c
 
 log = logging.getLogger("sbmig.restructure")
 
-# 분석기의 javax 감지 결과와 어긋나지 않도록 분석기의 패턴을 복사하지 않고 그대로 쓴다
+# 분석기의 패턴을 복사하지 않고 그대로 쓴다. 분석기의 javax 감지 결과와 어긋나지 않게 하기 위해서다
 JAVAX_TOKEN_RE: re.Pattern = _jsp._JAVAX_TOKEN_RE
 JAVA_LITERAL_RE: re.Pattern = _jsp._JAVA_LIT_RE
 
 # 태그 파일도 JSP처럼 tag import와 스크립틀릿에 Java 타입을 쓴다
 RENAME_SUFFIXES: tuple[str, ...] = tuple(dict.fromkeys((*JSP_SUFFIXES, ".tag", ".tagx")))
 DEFAULT_ENCODINGS: tuple[str, ...] = ("utf-8", "cp949", "euc-kr")
-SKIP_DIRS = frozenset({".git", ".svn", ".hg", "node_modules"})     # 트리 어디에 있든 뺀다
+SKIP_DIRS = frozenset({".git", ".svn", ".hg", "node_modules"})     # 어느 깊이에 있든 뺀다
 SKIP_ROOT_DIRS = frozenset({"out"})                                # 검사 루트 바로 아래에 있을 때만 뺀다
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -55,7 +56,7 @@ _XML_DECL_RE = re.compile(r"""^\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([\w.:-]+)[
 @lru_cache(maxsize=1)
 def jakarta_targets() -> dict[str, str]:
     """``jakarta_packages.yml`` 표에서 {원래 패키지: 새 패키지}를 반환한다. 표는 한 번만 읽는다.
-    파일이 없으면 빈 사전이다. ``to``가 없는 항목은 ``jakarta.`` 뒤에 나머지 이름을 붙여 처리한다."""
+    파일이 없으면 빈 사전이다. ``to``가 없는 항목은 사전에 넣지 않는다. 바꿀 때 ``javax``를 ``jakarta``로 바꿔 쓴다."""
     table = Path(_jsp.__file__).resolve().with_name("jakarta_packages.yml")
     try:
         doc = yaml.safe_load(table.read_text(encoding="utf-8")) or {}
@@ -91,7 +92,7 @@ def rename_jsp_javax(text: str, rules: Iterable[tuple[str, bool]] | None = None)
     pos = n = 0
     for s, e, kind in jsp_code_spans(text):
         chunk = text[s:e]
-        # "javax.servlet" 같은 문자열은 참조가 아니므로 문자열과 주석을 같은 길이의 공백으로 가린다.
+        # 문자열과 주석은 같은 길이의 공백으로 가린다. "javax.servlet" 같은 문자열은 참조가 아니다.
         # 위치는 그대로라 원문에서 바로 바꿀 수 있다
         scan = JAVA_LITERAL_RE.sub(lambda m: " " * len(m.group(0)), chunk) if kind == "code" else chunk
         for m in JAVAX_TOKEN_RE.finditer(scan):
@@ -220,7 +221,7 @@ def rename_jsp_files(ws: Any, root: str = "", *, rules: Iterable[tuple[str, bool
             continue
         decoded = decode_jsp(data, encodings)
         if decoded is None:
-            # 원래 바이트로 되돌릴 인코딩이 없으면 다시 쓸 때 한글이 깨지므로 그대로 둔다.
+            # 원래 바이트로 되돌릴 인코딩이 없으면 그대로 둔다. 다시 쓰면 한글이 깨진다.
             # javax가 보이면 실패로 센다
             if _jsp.jsp_javax_refs(data.decode("latin-1"), rules):
                 log.warning("JSP javax → jakarta: %s skipped: no encoding of %s round-trips its bytes",

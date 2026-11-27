@@ -1,9 +1,11 @@
 """``sbmig inventory`` 명령의 결과 파일 inventory.md와 inventory.json을 만드는 모듈.
-inventory.md는 ``report.language``에 따라 en이나 ko로 만들고, inventory.json은 언어와 관계없다.
-이관과 별개인 읽기 전용 명령이다. pom이 없는 트리는 접수에서 거부하므로, 담당 팀에 보낼 안내용으로
-트리를 설명만 하고 아무것도 바꾸지 않는다.
-- 진입점: ``render_inventory``(markdown 본문), ``write_inventory``(두 파일 쓰기)
-- 모든 문장은 ``tr(lang, "…")``을 거친다. 한국어 표는 i18n.py에 있고 테스트가 누락을 잡는다
+pom이 없는 프로젝트를 설명만 하고, 아무것도 바꾸지 않는다.
+
+inventory.md follows `report.language` (en / ko); inventory.json does not depend on the language. A
+read-only command apart from the migration: the intake refuses a tree without a pom, and this describes such
+a tree for the note to the owning team without changing anything. Entry points: `render_inventory` (the
+markdown body) and `write_inventory` (writes both files). Every sentence goes through `tr(lang, "…")`; the
+Korean table is in i18n.py and a test catches a missing entry.
 
 Identifiers, paths, jar names, coordinates and the analyzer's notes / warnings stay untranslated.
 """
@@ -19,7 +21,7 @@ from .i18n import normalize, tr
 
 
 def _cell(s: object) -> str:
-    # markdown 표 칸 안의 "|"와 줄바꿈은 표를 깨뜨리므로 이스케이프하거나 공백으로 바꾼다
+    # 표 칸 안의 "|"와 줄바꿈은 markdown 표를 깨뜨린다. "|"는 이스케이프하고 줄바꿈은 공백으로 바꾼다
     return str(s).replace("|", "\\|").replace("\n", " ")
 
 
@@ -151,7 +153,7 @@ def render_inventory(inv: WebappInventory, language: str = "en") -> str:
                 L += [f"- {_cell(n)}" for n in p.notes]
                 L.append("")
 
-    # ADF 트리는 이관이 아니라 재작성 대상이므로 규모 블록을 "다음 할 일"보다 먼저 보여 준다
+    # ADF 프로젝트는 이관이 아니라 새로 만들어야 하는 대상이다. 그래서 규모 블록을 "다음 할 일"보다 먼저 보여 준다
     if getattr(inv, "adf", None) is not None and getattr(inv.adf, "families", None):
         from sbmig.analyze.adf import adf_sizing_lines
         L += [f"## {tr(lang, 'ADF sizing')}", "",

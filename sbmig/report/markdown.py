@@ -1,15 +1,18 @@
 """영어 진단용 report.md를 만드는 모듈. 에이전트가 고치지 못한 것을 이어받는 as-is 담당 팀이 읽는다.
-보고서 단계에서 writer.py의 ``write_report``가 ``render_markdown``을 호출한다.
-섹션 순서는 아래와 같다. 담당 팀은 인수인계 섹션만 읽으므로 이 섹션을 앞쪽에 둔다.
-  머리 표(``SBMIG-RESULT`` 줄 포함) -> 사내 프레임워크 -> 인수인계 -> Error list -> Fixes by case
-  -> Structure review -> Bundled jars -> 취약점 조치 -> Blocked -> javax API jar -> Manual follow-ups
-  -> Flags -> What we changed -> LLM usage and cost -> Notes -> Outputs
-- ``report.language``가 ``ko``면 ``guide_ko.render_guide_ko``가 만든 요청 담당자용 안내서를 반환한다
-- 문장은 ``tr`` / ``tr_line``을 거친다. 영어 원문이 i18n.py 번역 표의 키이므로 문장을 바꾸면 i18n.py도 함께 바꾼다
-- 이관 없이 취약점 조치만 한 실행(``remediation``)은 짧은 보고서(``render_remediation_flow``)를 만든다
-- Ant 프로젝트를 거부한 실행은 제목 바로 아래에 회사 안내 문구를 둔다(``intake_notice_lines``)
-- 사내 프레임워크 프로젝트는 재구성과 구조 검토를 하지 않는다. 그 절은 없고 사내 프레임워크 절에서 한 번 알린다
-- 새 섹션은 한국어 안내 보고서(``guide_ko.py``)에도 넣는다
+``report.language``가 ``ko``면 요청 담당자용 한국어 안내서(``guide_ko.py``)를 대신 반환한다.
+
+`write_report` in writer.py calls `render_markdown` at the report stage. Section order: head table (with the
+`SBMIG-RESULT` line) -> in-house framework -> Handover -> Error list -> Fixes by case -> Structure review ->
+Bundled jars -> vulnerability remediation -> Blocked -> javax API jars -> Manual follow-ups -> Flags -> What
+we changed -> LLM usage and cost -> Notes -> Outputs. The Handover comes early because the owning team reads
+only that section.
+
+Every sentence goes through `tr` / `tr_line`: the English source text is the key of the table in i18n.py, so
+a changed sentence needs the same change there. A remediation-only run (`remediation`) gets the short report
+of `render_remediation_flow`. A run that refused an Ant project puts the company notice right under the
+title (`intake_notice_lines`). An in-house framework project gets no restructure and no structure review:
+those sections are absent and the framework block says so once. A new section goes into the Korean guide
+(`guide_ko.py`) too.
 
 The English output is pinned byte for byte by `tests/report/golden/`."""
 from __future__ import annotations
@@ -47,7 +50,7 @@ from .handover import (
 from .i18n import normalize, tr, tr_line
 from .result_line import conversion_complete, conversion_only_failed, report_result_line, run_scope
 
-# 플래그별로 보고서 "Flags" 섹션에 쓸 설명. 값이 i18n.py STRINGS의 키이기도 하므로 바꾸면 번역도 함께 바꾼다
+# 보고서 "Flags" 섹션에 쓸 플래그별 설명. 값이 i18n.py STRINGS의 키이기도 하다. 바꾸면 번역도 함께 바꾼다
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
                             "(see follow-ups) — fix the tests before relying on CI",
@@ -67,7 +70,7 @@ FLAG_HELP = {
     # Maven의 HTTP 차단 미러가 저장소를 거부한 경우. 프로젝트나 sbmig가 아니라 Maven settings를 고쳐야 한다
     "aborted:http-blocked": "Maven (3.8.1+) refused an HTTP repository through its blocker mirror (maven-default-http-blocker): "
                             "the project and sbmig are not the cause — fix the Maven settings (see the Handover's first line)",
-    # 사내 부모의 as-is 버전이 저장소에 없어 설정의 버전으로 맞추고 레시피를 다시 실행했거나, 레시피 없이 계속한 경우
+    # 사내 부모의 as-is 버전이 저장소에 없는 경우. 설정의 버전으로 맞춰 레시피를 다시 실행했거나, 레시피 없이 계속했다
     "asis-parent-aligned": "the project's own version of the company parent was not in the repository: sbmig set the "
                            "configured version in those poms (openrewrite.unresolvable_asis_parent: align) — the recipes "
                            "ran on the target parent's classpath, not the as-is one (see the Handover)",
@@ -123,7 +126,7 @@ FLAG_HELP = {
     "pomless-library": "a library's repository has its jar but no pom: the build used a minimal pom that sbmig wrote into "
                        "the server's local Maven repository, so Maven does not know that library's own dependencies — "
                        "see Manual follow-ups",
-    # 어느 pom도 선언하지 않은 jar가 트리 안에 있는 경우.
+    # 어느 pom도 선언하지 않은 jar가 프로젝트 안에 있는 경우.
     # 빌드 오류가 그 jar를 필요로 하면 수정 루프가 연결한다
     "bundled-jars": "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against "
                     "them, Maven does not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: "
@@ -132,14 +135,14 @@ FLAG_HELP = {
     "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
                    "not one application and not MSA services): the run stopped before any Maven call — add a root "
                    "pom.xml or run sbmig on each application's directory",
-    # 모듈의 소스 루트에는 소스가 없고 트리의 다른 곳에 있는 경우. 소스가 이관되지 않았으므로 성공이 아니다
+    # 소스가 모듈의 소스 루트가 아니라 프로젝트의 다른 곳에 있는 경우. 소스가 이관되지 않았으니 성공이 아니다
     "hollow-reactor": "the Maven reactor compiles no sources: the java / JSP files lie outside its modules' source and "
                       "web roots and were not migrated (the as-is build only packaged files produced elsewhere) — the "
                       "run is not a success; map the sources into the modules first (see the Handover's first line)",
     "sources-outside-reactor": "more java files lie outside the modules' source roots than inside them: they are "
                                "neither built nor migrated — check whether they belong to the application",
     # Oracle ADF 프로젝트는 변환하지 않는다.
-    # 근거가 두 계열 이상이면 분석에서 중단하고, 한 계열이면 흔적으로만 남긴다
+    # 근거가 두 계열 이상이면 분석에서 멈춘다. 한 계열이면 흔적으로만 남긴다
     "adf-project": "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf "
                    "imports, ADF Model bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 "
                    "불가능합니다; the run stopped at analyze (intake.adf_policy: stop) — see \"ADF sizing\" and the Handover's "
@@ -212,7 +215,7 @@ def _blocked_types(b: BlockedItem) -> str:
 
 def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
     """"Blocked" 섹션의 표 줄을 만든다.
-    사람이나 라이브러리 담당자가 할 일이 한 줄에 보이도록 이유, 아티팩트, 타입, 파일, 시도 수, 제안을 담는다."""
+    한 줄에 이유, 아티팩트, 타입, 파일, 시도 수, 제안을 담는다. 사람이나 라이브러리 담당자가 할 일이 한 줄에 보인다."""
     rows = [tr(lang, "| reason | artifact / owner class | required → found | files | attempts | suggestion |"),
             "|---|---|---|---|---|---|"]
     for b in items:
@@ -224,7 +227,7 @@ def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
 
 
 def _in_house_groups(r: RunReport, cfg: Any = None) -> list[str]:
-    """사내 라이브러리에 Jakarta 빌드를 요청하라는 안내를 낼지 판단할 때 쓰는 사내 groupId 목록을 반환한다.
+    """사내 groupId 목록을 반환한다. 사내 라이브러리에 Jakarta 빌드를 요청하라고 안내할지 정할 때 쓴다.
     설정의 parent, 필수, 선택 아티팩트 그룹과 인수인계에 있는 최종 parent의 그룹을 합친다.
     Spring 그룹은 넣지 않는다."""
     out: list[str] = []
@@ -273,7 +276,8 @@ def _javax_what_to_do(j: Any, groups: list[str], lang: str = "en") -> str:
 
 def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
     """``## javax API jars still on the classpath`` 섹션을 만든다. 없으면 빈 목록을 반환한다.
-    빌드가 통과해도 javax 기반 라이브러리가 남아 있으면 jakarta 타입을 넘기는 코드가 실행 시 실패하므로 따로 보여 준다.
+    javax 기반 라이브러리가 남아 있으면 빌드가 통과해도 jakarta 타입을 넘기는 코드가 실행 시 실패한다.
+    그래서 따로 보여 준다.
 
     Data: `report.javax_api_inventory` (`RunReport.javax_api_jars`)."""
     jars = list(r.javax_api_jars or [])
@@ -322,7 +326,7 @@ def _remediation_ran(r: RunReport) -> bool:
 
 def no_fix_loop(r: RunReport) -> bool:
     """프레임워크 프로젝트를 변환과 빌드 1회로 끝낸 실행(수정 루프 없음)인지 확인한다.
-    분석에 ``framework.fix_loop: false``가 기록됐고 수정 시도가 하나도 없어야 True다.
+    분석에 ``framework.fix_loop: false``가 기록됐고, 수정 시도가 하나도 없으면 True다.
 
     Contract: docs/INTERFACES.md "v2.1z-aw"."""
     use = getattr(getattr(r, "profile", None), "framework", None)
@@ -333,7 +337,7 @@ def no_fix_loop(r: RunReport) -> bool:
 
 def converted_nothing(r: RunReport) -> bool:
     """변환만 하는 실행에서 빌드는 통과했지만 자동 변환이 실패했는지 확인한다.
-    이런 실행은 바뀐 것이 없으므로 성공이 아니다.
+    이런 실행은 바뀐 것이 없다. 그래서 성공이 아니다.
 
     Contract: docs/INTERFACES.md "v2.1z-ay"."""
     return conversion_only_failed(r) and r.final_build is not None and bool(r.final_build.ok)
@@ -346,7 +350,7 @@ def result_label(r: RunReport, lang: str = "en") -> str:
     Order: NOT CONVERTED first, then BUILD SUCCESS, then CONVERTED when `conversion_complete` holds, else NOT
     BUILDING. Only the label moves; the error sections, `SBMIG-RESULT` and the exit code stay.
     Contract: docs/INTERFACES.md "v2.1z-ck"."""
-    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    # tr의 원문은 리터럴로 쓴다. tests/report/test_report_i18n.py가 번역 표와 대조하기 때문이다
     if converted_nothing(r):
         return tr(lang, "❌ NOT CONVERTED (the build passed)")
     if r.success:
@@ -372,7 +376,7 @@ def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
         return []
     reduced = run_scope(r) is not None
     name = str(getattr(use, "name", "") or "").strip()
-    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    # tr의 원문은 리터럴로 쓴다. tests/report/test_report_i18n.py가 번역 표와 대조하기 때문이다
     if reduced:
         title = tr(lang, "{name} framework project", name=name) if name else tr(lang, "In-house framework project")
     else:
@@ -542,7 +546,7 @@ def _guide_items(guide: str) -> list[str]:
 
 def operator_check_lines(r: RunReport, lang: str = "en") -> list[str]:
     """인수인계 맨 위의 "Operator checks (N major upgrades)" 블록을 만든다. 확인할 것이 없으면 빈 목록을 반환한다.
-    메이저 업그레이드는 막지 않으므로 사람이 실행 동작을 꼭 확인해야 한다.
+    메이저 업그레이드는 막지 않는다. 그래서 사람이 실행 동작을 꼭 확인해야 한다.
     항목마다 좌표, pom, 케이스, 커밋, 운영자 가이드와 가이드를 쓴 쪽을 담는다.
 
     One item per major upgrade / library replacement still in the final tree (`report.operator_checks`)."""
@@ -594,7 +598,7 @@ def pom_synthesis_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list
     """인수인계의 "Ant project: pom.xml synthesized" 블록을 만든다. 합성하지 않은 실행은 빈 목록을 반환한다.
     좌표, 패키징, 디렉토리 구성, 출처별 jar 수, 빠진 jar, 옮기지 못한 build.xml 단계를 담는다.
     좌표를 모르는 jar마다 ``mvn install:install-file`` 명령을 넣는다.
-    system scope jar는 WAR에 포함되지 않아 실행 시 실패하므로 Nexus에 설치하도록 안내한다."""
+    system scope jar는 WAR에 들어가지 않아서 실행 시 실패한다. 그래서 Nexus에 설치하라고 안내한다."""
     ps = getattr(r, "pom_synthesis", None)
     if ps is None or not getattr(ps, "ok", False):
         return []
@@ -721,7 +725,7 @@ def _pom_correction(e: Any) -> bool:
 
 def _kind_label(kind: str, lang: str) -> str:
     """버전 변경 표의 종류(parent, dependency, bom, plugin, property)를 보고서 언어로 바꾼다."""
-    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    # tr의 원문은 리터럴로 쓴다. tests/report/test_report_i18n.py가 번역 표와 대조하기 때문이다
     labels = {"parent": tr(lang, "parent"), "dependency": tr(lang, "dependency"), "bom": tr(lang, "bom"),
               "plugin": tr(lang, "plugin"), "property": tr(lang, "property")}
     return labels.get(kind, kind)
@@ -730,7 +734,7 @@ def _kind_label(kind: str, lang: str) -> str:
 def pom_correction_lines(r: RunReport, lang: str = "en") -> list[str]:
     """인수인계에 넣을 sbmig의 pom 정정 목록을 만든다. 프레임워크 프로젝트만 만들고, 없으면 빈 목록을 반환한다.
     변환 단계에서 sbmig가 직접 고친 pom 항목(as-is provided scope 복원, 소스 인코딩 기록)이다.
-    전체 이관에서는 재구성의 정정이 오류 목록에 남으므로 여기서 만들지 않는다."""
+    전체 이관에서는 재구성의 정정이 오류 목록에 남는다. 그래서 여기서 만들지 않는다."""
     if run_scope(r) is None:
         return []
     fixes = [e for e in entries_of(r) if _pom_correction(e)]
@@ -749,7 +753,7 @@ def pom_correction_lines(r: RunReport, lang: str = "en") -> list[str]:
 def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
     """report.md의 첫 섹션인 인수인계를 만든다.
     운영자 확인, pom 합성, 교체된 버전, pom 정정, 주의 라이브러리, merge 충돌, 외부 설정, 할 일 목록 순이다.
-    데이터 줄은 영어로 저장되어 있으므로 ``tr_line``으로 번역한다.
+    데이터 줄은 영어로 저장되어 있다. 그래서 ``tr_line``으로 번역한다.
 
     `cfg` gives the `intake.*` policy of the install-file lines."""
     lang = normalize(lang)
@@ -809,7 +813,7 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
         from .handover import operator_checks_item
         items = [operator_checks_item(len(r.operator_checks)), *items]
     if items:
-        # HTTP 차단 줄은 운영자가 settings 경로 두 개를 보고 다시 입력하므로 짧게 자르지 않는다
+        # HTTP 차단 줄은 짧게 자르지 않는다. 운영자가 settings 경로 두 개를 보고 다시 입력한다
         L += [f"{i}. {_cell(tr_line(lang, x), 1000 if x.startswith(HTTP_BLOCKED_PREFIX) else 500)}"
               for i, x in enumerate(items, 1)]
     else:
@@ -819,7 +823,8 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
 
 
 # ---- 오류 목록과 케이스별 수정
-# 오류 목록은 처음 본 단계별로 묶은 오류 한 줄씩, 케이스별 수정은 LLM의 원인과 해결, 적용한 변경, 저장한 스크립트를 담는다
+# 오류 목록은 오류를 처음 본 단계별로 묶어 한 줄씩 보여 준다.
+# 케이스별 수정은 LLM이 쓴 원인과 해결, 적용한 변경, 저장한 스크립트를 담는다
 ERROR_LIST_TITLE = "Error list"
 FIXES_TITLE = "Fixes by case"
 ERROR_LIST_MAX_ROWS = 50                     # `seen` 묶음마다의 상한. 실행 폴더의 errors.md에는 모두 있다
@@ -858,7 +863,7 @@ def _entry_message(e: Any, lang: str) -> str:
 
 def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
     """``## Error list`` 섹션을 만든다. 개수, ``seen`` 단계별 표, 마지막 빌드 로그 경로를 담는다.
-    표는 묶음당 ``ERROR_LIST_MAX_ROWS``줄까지 쓰고 전체는 실행 디렉토리의 errors.md에 있다.
+    표는 묶음마다 ``ERROR_LIST_MAX_ROWS``줄까지 쓴다. 전체는 실행 디렉토리의 errors.md에 있다.
     오류 목록이 없으면 마지막 빌드의 미해결 오류를 파일별로 보여 준다.
 
     Groups follow `sbmig.report.errors.ordered` (the stage where each error was first seen).
@@ -980,7 +985,8 @@ def _review_script_state(rv: StructureReview, lang: str = "en") -> str:
 
 def review_summary(rv: StructureReview, lang: str = "en") -> str:
     """머리 표와 콘솔에 쓸 구조 검토 요약 한 줄을 만든다.
-    결과, 이슈 수, 수정이 한 일을 담는다. 검토는 빌드를 막지 않으므로 failed여도 빌드를 진행했다고 쓴다."""
+    결과, 이슈 수, 수정이 한 일을 담는다.
+    검토는 빌드를 막지 않는다. 그래서 failed여도 빌드를 진행했다고 쓴다."""
     if rv.verdict == "skipped":
         return tr(lang, "skipped ({note})", note=_short(rv.note or "-", 160))
     if rv.verdict == "failed":
@@ -1021,7 +1027,8 @@ def _review_script_lines(rv: StructureReview, lang: str = "en") -> list[str]:
 
 
 def _review_answer_lines(r: RunReport, rv: StructureReview, lang: str = "en") -> list[str]:
-    """구조 검토의 답변(해결 방법, 직접 수정 개수, KB용 스크립트 유무)과 남은 검토 시도가 바꾼 파일을 줄로 만든다."""
+    """구조 검토의 답변과 남은 검토 시도가 바꾼 파일을 줄로 만든다.
+    답변 줄에는 해결 방법, 직접 수정 개수, KB용 스크립트가 있는지가 들어간다."""
     L: list[str] = []
     a = getattr(rv, "answer", None)
     if a is not None:
@@ -1060,7 +1067,7 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
             sev = f"**{tr(lang, 'critical')}**" if i.severity == "critical" else tr(lang, "warning")
             where = f"`{_cell(i.file, 120)}`" if i.file else tr(lang, "(project)")
             problem = i.problem
-            # 입력 자료에 없는 내용을 언급한 이슈는 표시만 해서 남기고 적용하거나 인수인계에 넣지 않는다
+            # 입력 자료에 없는 내용을 말한 이슈는 표시만 해서 남긴다. 적용하지도 인수인계에 넣지도 않는다
             if getattr(i, "unsupported", False) and not problem.startswith(UNSUPPORTED_MARK):
                 problem = UNSUPPORTED_MARK + problem
             L.append(f"| {sev} | {where} | {_cell(problem, 400)} | {_cell(i.fix_hint or '-', 300)} |")
@@ -1101,13 +1108,13 @@ def _bundled_wired(r: RunReport) -> dict[str, str]:
 
 def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
     """``## Bundled jars (declared by no pom)`` 섹션을 만든다.
-    ``profile.bundled_jars``의 jar마다 경로, 좌표, 패키지 수, 사용 여부, 연결 scope를 한 줄로 담는다.
+    ``profile.bundled_jars``의 jar마다 경로, 좌표, 패키지 수, 코드에서 쓰는지, 연결 scope를 한 줄로 담는다.
     없으면 빈 목록을 반환한다."""
     jars = list(getattr(getattr(r, "profile", None), "bundled_jars", None) or [])
     if not jars:
         return []
     wired = _bundled_wired(r)
-    # 프레임워크 프로젝트는 부모 체인을 바꾸지 않으므로 "목표" 체인이 아니라 프로젝트의 부모 체인이라고 쓴다
+    # 프레임워크 프로젝트는 부모 체인을 바꾸지 않는다. 그래서 "목표" 체인이 아니라 프로젝트의 부모 체인이라고 쓴다
     reduced = run_scope(r) is not None
     managed_line = (tr(lang, "A jar whose coordinates the project's parent chain manages (an old Spring jar, say) is "
                              "superseded by the managed version and is never wired.") if reduced else
@@ -1191,7 +1198,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     if not isinstance(rem, dict) or not rem.get("status"):
         return []
     chained = getattr(r, "flow", "full") != "remediation"     # 조치만 한 실행에는 "이관 뒤에 이어서" 문장을 쓰지 않는다
-    # 빌드가 실패한 프레임워크 프로젝트도 조치를 이어서 실행하므로 빌드 성공 뒤라고 쓰지 않는다
+    # 빌드가 실패한 프레임워크 프로젝트도 조치를 이어서 실행한다. 그래서 빌드 성공 뒤라고 쓰지 않는다
     after_failure = chained and not getattr(r, "success", True) and str(rem.get("status")) != "skipped"
     # 수정 루프를 실행했는데도 빌드가 실패한 경우는 루프를 끈 경우와 문장을 달리한다
     fb = getattr(r, "final_build", None)
@@ -1229,7 +1236,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     n_files = _file_findings(counts)
     if n_files:
         L.append(tr(lang, "- File findings listed apart in the remediation report, not counted above: {n}", n=n_files))
-    # 사내 아티팩트에서 온 취약점은 그 담당자가 고쳐야 하므로 개수 목록에 묻히지 않게 한 줄을 따로 둔다
+    # 사내 아티팩트에서 온 취약점은 그 담당자가 고쳐야 한다. 개수 목록에 묻히지 않게 한 줄을 따로 둔다
     n_inhouse = counts.get("residual_inhouse") if isinstance(counts, dict) else 0
     if isinstance(n_inhouse, int) and n_inhouse > 0:
         L.append(tr(lang, "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
@@ -1243,7 +1250,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 
 def _file_findings(counts: object) -> int:
-    """조치가 따로 적은 프로젝트 파일 취약점 수를 반환한다. 조치 후 개수를 먼저 쓰고, 없으면 조치 전 개수를 쓴다.
+    """조치가 따로 나열한 프로젝트 파일 취약점 수를 반환한다. 조치 후 개수를 먼저 쓰고, 없으면 조치 전 개수를 쓴다.
     둘 다 없으면 0을 반환한다.
 
     Listed apart only with `remediation.file_components: report`; `count` mode and older states have
@@ -1262,7 +1269,7 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
     """한국어 이관 보고서의 ``## 취약점 조치`` 절을 만든다.
     결과 문장, 취약점 개수, 사내 라이브러리, 상태 메시지, 결과 파일을 담는다.
     집계 키 이름은 보고서에 쓰지 않는다."""
-    # 순환 import를 막기 위해 sbmig.remediations는 필요할 때 import한다
+    # sbmig.remediations는 필요할 때 import한다. 순환 import를 막기 위해서다
     from sbmig.remediations.i18n import REASON_KO, ko_display, label
     from sbmig.remediations.report import _VERDICT, UNCONFIRMED_VERDICT_KO, build_unconfirmed
     L = [f"## {tr('ko', 'Vulnerability remediation')}", ""]
@@ -1304,7 +1311,7 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
         L.append("- 취약점: " + ", ".join(parts))
     n_files = _file_findings(counts)
     if n_files:
-        # 파일에서 찾은 취약점은 조치 대상이 아니므로 위 개수와 섞지 않고 한 줄로만 알린다
+        # 파일에서 찾은 취약점은 조치 대상이 아니다. 위 개수와 섞지 않고 한 줄로만 알린다
         L.append(f"- 프로젝트 파일에서 찾은 취약점 {n_files:,}건은 위 개수에 넣지 않고 자세한 결과에 따로 적었습니다.")
     n_inhouse = counts.get("residual_inhouse")
     if isinstance(n_inhouse, int) and n_inhouse > 0:
@@ -1336,7 +1343,7 @@ def _abort_reason(r: RunReport) -> str:
 
 def intake_notice_lines(r: RunReport, lang: str = "en") -> list[str]:
     """접수에서 Ant 프로젝트를 거부한 실행의 머리 안내를 만든다. Ant 거부가 아니면 빈 목록을 반환한다.
-    첫 줄은 중단 사유(``intake.ant_message`` 그대로)이고 둘째 줄은 확인한 build.xml이다."""
+    첫 줄은 중단 사유(``intake.ant_message`` 그대로)다. 둘째 줄은 확인한 build.xml이다."""
     if ANT_FLAG not in (r.flags or []):
         return []
     why = _abort_reason(r)
@@ -1380,7 +1387,7 @@ def render_remediation_flow(report: RunReport, language: str = "en") -> str:
     L += [f"`{report_result_line(r)}`", ""]
     section = remediation_lines(r, lang)
     L += section
-    # 조치 보고서는 조치가 끝나야 만들어지므로 파일이 있을 때만 경로를 쓴다
+    # 조치 보고서는 조치가 끝나야 생긴다. 그래서 파일이 있을 때만 경로를 쓴다
     has_report = "report_md" in (rem.get("files") or {}) if isinstance(rem, dict) else False
     path = received_name("remediation/report.md") if lang == "ko" else "remediation/report.md"
     if rem and rem.get("status") != "skipped" and has_report and not any(path in ln for ln in section):
@@ -1412,7 +1419,7 @@ def model_cell(m: Any) -> str:
 
 
 def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """``## LLM usage and cost`` 섹션을 만든다. 모델마다 한 줄을 쓰고 단가는 ``llm.pricing``의 정가를 쓴다.
+    """``## LLM usage and cost`` 섹션을 만든다. 모델마다 한 줄이고, 단가는 ``llm.pricing``의 정가를 쓴다.
     LLM 호출이 없으면 빈 목록을 반환한다."""
     from .cost import fmt_money
     c = r.llm_cost
@@ -1469,7 +1476,7 @@ def jsp_jakarta_lines(r: RunReport, lang: str = "en") -> list[str]:
     files, refs = jsp_jakarta_counts(r)
     if not files:
         return []
-    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    # tr의 원문은 리터럴로 쓴다. tests/report/test_report_i18n.py가 번역 표와 대조하기 때문이다
     fw = tr(lang, "{n} file", n=files) if files == 1 else tr(lang, "{n} files", n=files)
     rw = tr(lang, "{n} reference", n=refs) if refs == 1 else tr(lang, "{n} references", n=refs)
     what = tr(lang, "JSP javax → jakarta: {files}, {refs}", files=fw, refs=rw)
@@ -1484,7 +1491,7 @@ def jsp_jakarta_lines(r: RunReport, lang: str = "en") -> list[str]:
 def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) -> str:
     """report.md 전체를 ``language``로 만든다. "ko"면 한국어 안내서를, 그 밖에는 영어 진단 보고서를 반환한다.
     ``remediation`` 실행은 ``render_remediation_flow``의 짧은 보고서를 반환한다. 섹션 순서는 모듈 docstring에 있다.
-    ``cfg``는 사내 그룹 판단과 pom 합성 안내에 쓰며 없어도 된다.
+    ``cfg``는 사내 그룹 판단과 pom 합성 안내에 쓴다. 없어도 된다.
 
     "What we changed" order: the intake's pom synthesis, plan steps, OpenRewrite runs, the JSP rename."""
     lang = normalize(language)
@@ -1503,11 +1510,11 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     L.append("| | |")
     L.append("|---|---|")
     if not r.success and conversion_complete(r):
-        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있으므로 최종 빌드 괄호를 덧붙이지 않는다
+        # 결과 칸에 이미 빌드 이야기가 괄호로 들어 있다. 최종 빌드 괄호는 덧붙이지 않는다
         L.append(tr(lang, "| **Result** | {ok} |", ok=ok))
     else:
         L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))
-    # 운영자가 보고서만 보고도 옮겨 적을 수 있도록 콘솔 마지막 줄과 같은 SBMIG-RESULT 줄을 머리 표에도 둔다
+    # 콘솔 마지막 줄과 같은 SBMIG-RESULT 줄을 머리 표에도 둔다. 운영자가 보고서만 보고 옮겨 쓸 수 있다
     L.append(f"| SBMIG-RESULT | `{report_result_line(r)}` |")
     entries = entries_of(r)
     # 프레임워크 프로젝트에서는 sbmig가 고친 pom 항목을 빌드 오류와 따로 센다
@@ -1554,12 +1561,12 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| Structure review | {summary} |", summary=_cell(review_summary(r.structure_review, lang),
                                                                           300)))
     L.append("")
-    # 사내 프레임워크 프로젝트는 무엇을 하고 무엇을 하지 않았는지가 결과를 읽는 전제이므로 머리 표 바로 뒤에 둔다
+    # 사내 프레임워크 절은 머리 표 바로 뒤에 둔다. 무엇을 하고 무엇을 하지 않았는지 알아야 결과를 읽을 수 있다
     L += framework_lines(r, lang)
 
-    # ---- 인수인계. 담당 팀은 보고서에서 이 섹션만 읽으므로 앞에 둔다
+    # ---- 인수인계. 담당 팀은 보고서에서 이 섹션만 읽는다. 그래서 앞에 둔다
     L += handover_lines(r, lang, cfg)
-    # ADF 규모는 재작성 여부를 판단하는 자료이므로 인수인계 바로 뒤에 둔다
+    # ADF 규모는 인수인계 바로 뒤에 둔다. 프로젝트를 새로 만들지 판단하는 자료다
     L += adf_lines(r, lang)
 
     # ---- 실행의 모든 오류와 케이스별 수정
@@ -1568,7 +1575,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
 
     # ---- 구조 검토. 첫 빌드 전에 실행했고 그 항목은 오류 목록에도 있다
     L += structure_review_lines(r, lang)
-    # 어느 pom도 선언하지 않은 트리 안의 jar를 구조 검토 바로 뒤에 보여 준다
+    # 어느 pom도 선언하지 않은 프로젝트 안의 jar를 구조 검토 바로 뒤에 보여 준다
     L += bundled_jars_lines(r, lang)
     # 이관 뒤 이어서 실행한 취약점 조치를 짧은 절로 보여 준다. 자세한 내용은 remediation/report.md에 있다
     L += remediation_lines(r, lang)
@@ -1642,7 +1649,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # ---- LLM 사용량과 비용. 회사가 프로젝트별 API 비용을 본다
     L += cost_lines(r, lang)
 
-    # JSP 이름 변경 메모는 "What we changed"에 이미 나오므로 여기서 뺀다
+    # JSP 이름 변경 메모는 "What we changed"에 이미 나온다. 여기서는 뺀다
     notes = [(pr.phase.value, n) for pr in r.phases for n in pr.notes if not is_jsp_jakarta_note(n)]
     if notes or (r.plan and r.plan.notes):
         L.append(tr(lang, "## Notes"))

@@ -1,8 +1,9 @@
-"""실행 디렉토리에 report.json과 report.md를 쓰고 콘솔에 실행 요약(rich 표)을 출력하는 모듈.
-최종 빌드와 KB 기록이 끝난 뒤 오케스트레이터가 ``write_report``를, CLI가 ``console_summary``를 호출한다.
-그다음 CLI가 ``SBMIG-RESULT`` 줄을 출력한다.
-- report.json은 언어와 관계없이 같고, report.md만 ``report.language``에 맞춰 만든다
-- 회사 Windows 콘솔(cp949)은 em dash 같은 문자를 출력하지 못하므로 콘솔 줄은 되도록 ASCII로 쓴다
+"""실행 디렉토리에 report.json과 report.md를 쓰고, 콘솔에 실행 요약(rich 표)을 출력하는 모듈.
+
+After the final build and the KB record the orchestrator calls `write_report` and the CLI calls
+`console_summary`; then the CLI prints the `SBMIG-RESULT` line. report.json is the same in every language;
+only report.md follows `report.language`. The company's Windows console (cp949) cannot print characters such
+as the em dash, so console lines stay ASCII where possible.
 """
 from __future__ import annotations
 
@@ -39,7 +40,7 @@ def report_language(cfg: Any = None) -> str:
 def write_report(report: RunReport, ws: Any, cfg: Any = None, *, language: Optional[str] = None) -> dict[str, str]:
     """실행 디렉토리에 report.json과 report.md를 쓰고 두 경로를 반환한다.
     report.md는 ``language``(없으면 설정의 언어)로 만든다.
-    ``cfg``는 javax jar 섹션이 회사 그룹을 판단하도록 ``render_markdown``에도 넘긴다.
+    ``cfg``는 ``render_markdown``에도 넘긴다. javax jar 섹션이 회사 그룹을 판단할 때 쓴다.
 
     Returns {"report_json": path, "report_md": path}."""
     run_dir = ws.run_dir
@@ -70,8 +71,9 @@ def advisory_lines(report: RunReport) -> list[str]:
 
 
 def properties_console_line(report: RunReport) -> Optional[str]:
-    """인수인계에 외부 설정 키가 있으면 콘솔 한 줄 ``properties to set: N (placeholders in <파일>)``을 만든다.
-    키 목록과 플레이스홀더 파일은 같은 조사 결과(``report.properties``, 없으면 ``profile.properties``)에서 읽는다."""
+    """인수인계에 외부 설정 키가 있으면 콘솔 한 줄을 만든다. 형식은 ``properties to set: N (placeholders in <파일>)``이다.
+    키 목록과 플레이스홀더 파일은 같은 조사 결과에서 읽는다. ``report.properties``가 없으면 ``profile.properties``다.
+    외부 설정 키가 없으면 None을 반환한다."""
     from .handover import external_to_set
 
     h = report.handover
@@ -84,7 +86,7 @@ def properties_console_line(report: RunReport) -> Optional[str]:
 
 
 def review_console_line(report: RunReport) -> Optional[str]:
-    """구조 검토 결과를 콘솔 한 줄로 만든다. cp949 콘솔을 위해 em dash와 백틱을 뺀다.
+    """구조 검토 결과를 콘솔 한 줄로 만든다. cp949 콘솔에서 깨지지 않게 em dash와 백틱을 뺀다.
     검토가 없었으면 None을 반환한다."""
     rv = report.structure_review
     if rv is None:
@@ -110,7 +112,7 @@ CONSOLE_OPEN = 10
 
 def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     """``sbmig run``이 끝날 때 콘솔 요약을 출력한다.
-    결과, 오류 수, 차단, 권고, 케이스별 수정, 열린 오류, 구조 검토, LLM 비용, 외부 설정, 후속 작업 순이다.
+    순서는 결과, 오류 수, 차단, 권고, 케이스별 수정, 열린 오류, 구조 검토, LLM 비용, 외부 설정, 후속 작업이다.
     ``SBMIG-RESULT`` 줄은 이 다음에 CLI가 출력한다."""
     from rich.console import Console
     from rich.table import Table
@@ -119,9 +121,9 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     ok = "[bold green]BUILD SUCCESS[/]" if report.success else "[bold red]NOT BUILDING[/]"
     if converted_nothing(report):        # 빌드는 통과했지만 변환이 실패한 프레임워크 실행
         ok = "[bold red]NOT CONVERTED (the build passed)[/]"
-    elif not report.success and conversion_complete(report):    # 변환을 마친 프레임워크 실행은 빌드가 실패해도 변환 완료다
+    elif not report.success and conversion_complete(report):    # 변환을 마친 프레임워크 실행. 빌드가 실패해도 변환 완료다
         ok = "[bold yellow]CONVERTED (the build does not pass)[/]"
-    # cp949 콘솔(Windows, 리다이렉트, 작업 스케줄러)은 em dash나 체크 표시를 출력하지 못하므로 콘솔 줄은 ASCII로 쓴다.
+    # 콘솔 줄은 ASCII로 쓴다. cp949 콘솔(Windows, 리다이렉트, 작업 스케줄러)은 em dash나 체크 표시를 출력하지 못한다.
     # CLI도 stdout / stderr에 errors="replace"를 건다
     console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) - {ok}   run {report.run_id}")
     el = error_list_console_line(report)

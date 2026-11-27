@@ -1,10 +1,11 @@
 """사내 부모 pom의 as-is 버전이 저장소에 없을 때 설정된 버전으로 맞추는 모듈.
-프로젝트가 이미 사내 부모 g:a나 별칭을 쓰는데 그 버전이 Nexus에 없어도, 설정 버전을 받을 수 있으면 계속 진행한다.
-as-is pom에서 변환이 실패했을 때와 수정 루프의 사전 시도 ``sbmig-parent``에서 호출된다.
-- ``classify_parent_misses``: 찾지 못한 부모를 configured, asis-version, foreign으로 나눈다
-- ``align_asis_parent``: 그 부모를 쓰는 pom의 ``<parent>``를 설정 버전으로 바꾼다
-- 설정 버전 자체가 없으면(configured) 중단한다. 버전은 추정하지 않고 설정 값만 쓴다
-- 예외를 던지지 않는다
+
+The project already uses the company parent's g:a or an alias, at a version Nexus does not have; when the
+configured version can be downloaded, the run goes on. Called when the conversion failed on the as-is poms
+and by the fix loop's pre-try `sbmig-parent`. `classify_parent_misses` sorts each missing parent into
+configured / asis-version / foreign; `align_asis_parent` sets the configured version in the `<parent>` of
+every pom that uses it. A missing configured version (configured) stops the run: no version is guessed, only
+the configured value is used. Nothing here raises.
 
 Contract: docs/INTERFACES.md "v2.1z-ag". Config keys: `artifacts.parent` / `boot_parent` / `comp_parent`.
 Caller of the rewrite path: `Orchestrator._step_rewrite`. Edits go through `PomEditor` (formatting kept).
@@ -106,10 +107,10 @@ def declared_parents(ws: Any) -> list[tuple[str, GAV, str | None]]:
 
 def classify_gav(gav: GAV, cfg: Any, ws: Any = None) -> ParentMiss:
     """찾지 못한 부모 하나가 어떤 종류인지 정한다.
-    - configured: 사내 부모 g:a이고 버전이 설정 버전과 같다. 설정 좌표 자체가 없으니 중단한다
+    - configured: 사내 부모 g:a이고 버전이 설정 버전과 같다. 설정한 좌표 자체가 저장소에 없으니 중단한다
     - asis-version: 사내 부모 g:a나 별칭인데 버전이 다르다
     - foreign: 사내 부모가 아니다
-    설정 버전이 비어 있으면 비교할 수 없으므로 configured로 본다.
+    설정 버전이 비어 있으면 비교할 수 없다. 그래서 configured로 본다.
 
     When Maven's text names no version, the versions the poms on disk declare decide."""
     name, spec = matching_spec(cfg, gav.key)
@@ -148,8 +149,8 @@ def classify_parent_misses(text: str, cfg: Any, ws: Any = None) -> list[ParentMi
 
 def align_asis_parent(ws: Any, miss: ParentMiss) -> AlignResult:
     """asis-version인 ``miss``의 부모를 쓰는 pom을 모두 설정된 부모로 맞춘다.
-    g:a가 같으면 ``<version>``만 바꾸고, 별칭이면 groupId, artifactId, version을 모두 바꾼다.
-    버전 속성이 프로젝트 pom에 정의돼 부모 버전에만 쓰이면 속성 값을 바꾸고, 아니면 ``<version>``을 바꾼다.
+    g:a가 같으면 ``<version>``만 바꾼다. 별칭이면 groupId, artifactId, version을 모두 바꾼다.
+    버전 속성이 프로젝트 pom에 정의돼 있고 부모 버전에만 쓰이면 속성 값을 바꾼다. 아니면 ``<version>``을 바꾼다.
     예외를 던지지 않는다. 실패하면 WARNING을 남기고 그때까지의 결과를 반환한다.
 
     relativePath is left untouched."""
@@ -160,7 +161,7 @@ def align_asis_parent(ws: Any, miss: ParentMiss) -> AlignResult:
     old, new = miss.gav.version, miss.target.version
     alias = miss.gav.key != miss.target.key
     try:
-        # pom 밖(.mvn/maven.config, -D)에서 정의돼 풀리지 않은 ${prop}도 Maven이 말한 버전으로 본다
+        # 풀리지 않은 ${prop}도 Maven이 말한 버전으로 본다. pom 밖(.mvn/maven.config, -D)에서 정의된 속성이다
         hits = [(rel, prop) for rel, g, prop in declared_parents(ws)
                 if g.key == miss.gav.key and (g.version == old or (prop and g.version == "${" + prop + "}"))]
         if not hits:

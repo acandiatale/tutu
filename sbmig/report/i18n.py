@@ -1,11 +1,13 @@
-"""report.md의 문장을 한국어로 바꾸는 번역 표와 도우미 함수를 담은 모듈(``report.language: en | ko``).
-markdown.py와 guide_ko.py가 report.md를 만들 때 ``tr``과 ``tr_line``으로 문장을 번역한다. report.json은 영어 그대로 둔다.
-웹 화면도 중단 사유를 ``tr_line``으로 번역한다.
-- ``tr``: 영어 원문을 키로 번역을 찾고, 없으면 영어를 그대로 반환한다
-- ``tr_line``: 저장된 영어 줄 전체를 ``PATTERNS`` 정규식으로 맞춰 번역한다
-- 키가 영어 원문이므로 영어 문장을 바꾸면 이 표의 키나 패턴도 함께 바꿔야 한다. 그러지 않으면 영어로 출력된다
-- 한국어는 요청한 담당자에게 쓰는 합니다체 문장으로 쓰고, 식별자, 경로, 명령, 캡처한 값은 그대로 둔다
-- Maven / javac 메시지와 LLM이 쓴 자유 문장은 번역하지 않는다
+"""report.md의 영어 문장을 한국어로 바꾸는 모듈(``report.language: en | ko``).
+번역 표와 번역 함수 ``tr``, ``tr_line``을 둔다.
+
+`markdown.py` and `guide_ko.py` translate with `tr` and `tr_line` while they render report.md; report.json
+stays English. The web page translates abort reasons with `tr_line` too. `tr` looks a translation up by its
+English source text and returns the English when there is none. `tr_line` matches a whole stored English
+line against the `PATTERNS` regular expressions. The keys are the English source: a changed English sentence
+needs the same change in its key or pattern here, or it is printed in English. The Korean is written in 합니다체
+for the requester; identifiers, paths, commands and captured values stay as they are. Maven / javac messages
+and free text the LLM wrote are never translated.
 
 No dependencies. `tr` fills `{name}` placeholders with `str.format`; `en` output never changes. Stored lines
 (from-here items, follow-ups, blocked suggestions, abort reasons, handover notes) stay English in the data.
@@ -758,7 +760,7 @@ def _aggregator_ko(m: "re.Match[str]") -> str:
     return out
 
 
-# report.json에 영어로 저장된 줄(인수인계 할 일, 후속 조치, 차단 항목의 조치 문구, 중단 사유)을 한국어로 바꾸는 패턴.
+# report.json에 영어로 저장된 줄을 한국어로 바꾸는 패턴. 인수인계 할 일, 후속 조치, 차단 항목의 조치 문구, 중단 사유가 있다.
 # 줄 전체로 맞춘다. 영어 문장을 바꾸면 패턴도 함께 바꿔야 한다. 맞지 않으면 영어 그대로 출력된다
 # LLM이 쓴 문장, 지식 YAML의 권고 문장, 설정 값처럼 모르는 줄은 그대로 둔다
 # pom 인코딩 수정 한 건의 영어 표현(sbmig.restructure.pom_charset.PomCharsetFix._what)
@@ -911,7 +913,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                 + "포함되어 있습니다(" + ("`" + m.group("api") + "`, " if m.group("api") else "") + "프레임워크 `"
                 + m.group("f") + "`, 경로 "
                 + " > ".join(x.strip() for x in m.group("path").split("→")) + "). " + FRAMEWORK_OWNER_KO)),
-    # 사내 프레임워크 프로젝트의 부모 pom을 저장소에서 받지 못한 경우. 부모 pom을 바꾸지 않으므로 실행을 중단한다
+    # 사내 프레임워크 프로젝트의 부모 pom을 저장소에서 받지 못한 경우. 부모 pom을 바꾸지 않는 프로젝트라 실행을 멈춘다
     (r"^Maven cannot resolve the parent (?:pom )?(?P<p>.+?)[;.] .*\bframework project keeps its (?:own )?parent\b.*$",
      r"부모 pom을 저장소에서 받지 못했습니다(\g<p>). 프레임워크 프로젝트는 부모 pom을 바꾸지 않으므로 저장소에서 받을 수 "
      r"있어야 합니다."),
@@ -1314,7 +1316,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                 + f" 폴더는 올리신 그대로 돌려드립니다. 이 폴더로 직접 빌드하기 전에 JDK {m.group('n')}과 사용하는 Maven "
                 "버전에 맞는지 확인해 주세요.")),
     # 저장소에 pom 없이 jar만 있는 라이브러리를 최소 pom으로 빌드했다는 안내다.
-# 최소 pom을 이번 실행이 만들었든 앞선 실행이 만들었든 맞는 문장이다
+    # 최소 pom을 이번 실행이 만들었든 앞선 실행이 만들었든 맞는 문장이다
     ((r"^libraries with a jar but no pom in the repository: (?P<libs>.+?) — the build used a minimal pom that sbmig "
       r"wrote for each into the server's local Maven repository; Maven therefore does not know what these libraries "
       r"themselves depend on \(declare anything they need in the project\), and the lasting fix is that the library's "
@@ -1458,7 +1460,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
       r"가져오는 라이브러리에 Jakarta 빌드가 필요합니다: \g<libs>")),
 )]}
 
-# tr이 채우는 값 가운데 저장된 영어 줄(설정 값, 검토 메모)이어서 tr_line으로 한 번 더 번역할 자리
+# tr이 채우는 값 가운데 tr_line으로 한 번 더 번역할 자리. 저장된 영어 줄(설정 값, 검토 메모)이 들어온다
 _LINE_FIELDS: dict[str, tuple[str, ...]] = {
     "Prices: {note}.": ("note",),
     "skipped ({note})": ("note",),
@@ -1473,8 +1475,8 @@ def normalize(lang: object) -> str:
 
 
 def tr(lang: str, text: str, **fmt: object) -> str:
-    """영어 원문 ``text``를 ``lang`` 언어로 번역하고, ``fmt``가 있으면 ``str.format``으로 채운다.
-    번역이 없으면 영어를 그대로 쓰므로 ``en`` 출력은 바뀌지 않는다.
+    """영어 원문 ``text``를 ``lang`` 언어로 번역한다. ``fmt``가 있으면 ``str.format``으로 값을 채운다.
+    번역이 없으면 영어를 그대로 쓴다. ``en``이면 번역하지 않는다.
     ``_LINE_FIELDS``에 있는 값은 채우기 전에 ``tr_line``으로 번역한다."""
     s = text
     if lang != "en":
@@ -1500,13 +1502,13 @@ def tr_line(lang: str, line: str) -> str:
         if m:
             # 값에 따라 문장 모양이 달라지는 규칙(선택 그룹, 경로 구분자 변환)은 함수로 둔다
             return m.expand(tmpl) if isinstance(tmpl, str) else tmpl(m)
-    # 차단 항목의 조치 문구 뒤에 검색 기록, 찾지 못한 소유 클래스, EOL 권고가 붙을 수 있으므로 나눠서 번역한다
+    # 차단 항목의 조치 문구 뒤에는 검색 기록, 찾지 못한 소유 클래스, EOL 권고가 붙을 수 있다. 나눠서 따로 번역한다
     for sep in _TAIL_SEPARATORS:
         if sep in line:
             head, tail = line.split(sep, 1)
             tail = sep[2:] + tail
             head_ko = tr_line(lang, head)
-            # 번역된 앞 문장은 마침표로 끝나므로 공백으로 잇고, 영어 그대로면 원래 구분자를 쓴다
+            # 번역된 앞 문장은 마침표로 끝난다. 그러면 공백으로 잇고, 영어 그대로면 원래 구분자를 쓴다
             joint = " " if head_ko != head and head_ko.rstrip().endswith(".") else "; "
             return f"{head_ko}{joint}{tr_line(lang, tail)}"
     return line
