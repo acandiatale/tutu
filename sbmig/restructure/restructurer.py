@@ -1,16 +1,12 @@
 """Maven 프로젝트를 회사 표준 모듈 구조로 바꾸는 모듈. 디렉토리를 옮기고 pom을 다시 쓴다.
-OpenRewrite 변환 다음에 오케스트레이터가 ``Restructurer().apply(...)``를 호출한다.
-LLM은 쓰지 않는다.
-- ``layout``: Boot가 아닌 프로젝트를 ``{name}-boot`` / ``{name}-back`` / ``{name}-front`` 모듈로 나눈다
-- ``boot_pom`` / ``msa_pom``: Boot 프로젝트와 MSA 서비스는 디렉토리를 그대로 두고 pom만 고친다
-- ``optional_bump``: 선택 사내 아티팩트의 버전만 맞춘다
-부모 pom 좌표는 config에서 읽는다.
-루트는 ``artifacts.parent``, boot 모듈은 ``boot_parent``, 나머지는 ``comp_parent``다.
-검사는 파일을 옮기기 전에 끝낸다.
-문제가 있으면 ``RestructureError``로 중단하고 ok=False를 반환한다.
-다시 실행해도 결과가 같고, 프로젝트 밖 경로는 읽지도 바꾸지도 않는다.
 
 Company-layout restructuring (ARCHITECTURE §8).
+
+The orchestrator calls ``Restructurer().apply(...)`` right after the OpenRewrite run; no LLM is used.
+Parent coordinates come from config: the root gets ``artifacts.parent``, a boot module ``boot_parent``,
+every other module ``comp_parent``. All checks run before any file moves; a problem raises
+``RestructureError`` and ``apply`` returns ok=False. A second run gives the same result, and nothing
+outside the project root is read or changed.
 
 Module paths come from `layout.module_path(which, name)` (`{name}` = `layout.project_name` or the root
 artifactId): by default `{name}-boot` / `{name}-back` / `{name}-front` directly under the root, or
@@ -108,8 +104,8 @@ PARENT_NO_BOOT_BOM_PREFIX = "사내 부모 체인("
 
 
 def parent_no_boot_bom_followup(roots: str, target: str) -> str:
-    """사내 부모 pom 체인이 Spring Boot BOM을 import하지 않을 때 인수인계 맨 앞에 넣을 할 일 문장을 만든다.
-    보고서가 이 문장을 앞부분으로 찾으므로 문구를 바꾸면 안 된다.
+    """사내 부모 pom 체인이 Spring Boot BOM을 import하지 않을 때 인수인계 맨 앞에 넣을 문장을 만든다.
+    보고서가 이 문장의 앞부분으로 찾는다. 그래서 문구를 바꾸면 안 된다.
 
     `sbmig.report.handover` finds it by `PARENT_NO_BOOT_BOM_PREFIX` (docs/INTERFACES.md "v2.1s")."""
     return (f"{PARENT_NO_BOOT_BOM_PREFIX}{roots})이 Spring Boot BOM 을 import 하지 않습니다 — `spring-boot.version` 속성만으로는 "
@@ -169,11 +165,11 @@ APPLICATION_XML_WEB_RE = re.compile(
     r"<(?:\w+:)?web-uri>\s*([^<]+?)\s*</(?:\w+:)?web-uri>\s*<(?:\w+:)?context-root>\s*([^<]*?)\s*"
     r"</(?:\w+:)?context-root>")
 JSP_EXTS = (".jsp", ".jspf", ".jspx")
-# 이 확장자의 WEB-INF 파일은 설정이므로 boot 보관 폴더로 보낸다. 나머지는 front jar의
-# META-INF/resources/WEB-INF/ 아래 같은 경로에 두어 jsp:include로 계속 쓸 수 있게 한다
+# 이 확장자의 WEB-INF 파일은 설정 파일이다. boot 모듈의 보관 폴더로 보낸다
+# 나머지는 front jar의 META-INF/resources/WEB-INF/ 아래 같은 경로에 둔다. 그래야 jsp:include로 계속 쓸 수 있다
 WEBINF_CONFIG_EXTS = (".xml", ".properties", ".yml", ".yaml", ".conf", ".ini", ".cfg")
 WEB_RESOURCE_DIRS = ("static", "public", "templates")   # src/main/resources/<dir> 아래는 같은 경로로 front 모듈에 둔다
-# Boot 앱은 classpath:/resources/와 /META-INF/resources/에서도 정적 파일을 서비스하므로 함께 front로 옮긴다
+# Boot 앱은 classpath:/resources/와 /META-INF/resources/의 정적 파일도 서비스한다. 그래서 이 폴더도 front로 옮긴다
 BOOT_WEB_RESOURCE_DIRS = ("static", "public", "resources", "META-INF/resources", "templates")
 # 테스트 패키지에서 애플리케이션 클래스를 찾아 컨텍스트를 띄우는 테스트 어노테이션
 BOOT_CONTEXT_TEST_RE = re.compile(
@@ -181,7 +177,7 @@ BOOT_CONTEXT_TEST_RE = re.compile(
     r"GraphQlTest|DataMongoTest|DataRedisTest|DataR2dbcTest|DataCassandraTest|DataCouchbaseTest|DataElasticsearchTest|"
     r"DataLdapTest|DataNeo4jTest|WebServiceClientTest|WebServiceServerTest)\b")
 EXPLICIT_SCAN_RE = re.compile(r"\bscanBasePackages\b|\bscanBasePackageClasses\b|@ComponentScan\b")
-# 파일 경로로 웹 파일을 읽는 코드는 파일이 jar로 들어가면 동작하지 않으므로 찾아서 알린다
+# 파일 경로로 웹 파일을 읽는 코드를 찾아서 알린다. 파일이 jar 안에 들어가면 이 코드는 동작하지 않는다
 REAL_PATH_RE = re.compile(r"\.getRealPath\s*\(|\"src/main/webapp")
 # 이름을 찾을 때 주석과 문자열 안의 단어는 쓰임으로 보지 않는다
 JAVA_NOISE_RE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"', re.DOTALL)
@@ -212,7 +208,8 @@ _TEMPLATES = jinja2.Environment(
 
 class RestructureError(Exception):
     """재구성을 중단할 때 던지는 예외 클래스. ``apply``가 잡아서 ok=False와 오류 메시지로 반환한다.
-    루트 pom이 없을 때, 프로젝트 밖 모듈을 감싸려 할 때, ``merge_collision: fail``에서 파일이 충돌할 때, 이동할 곳에 이미 파일이 있을 때 던진다."""
+    루트 pom이 없거나, 프로젝트 밖 모듈을 감싸려 하거나, 옮길 곳에 이미 파일이 있으면 던진다.
+    ``merge_collision: fail``에서 파일이 충돌할 때도 던진다."""
 
 
 def render(template: str, **kw: Any) -> str:
@@ -222,7 +219,7 @@ def render(template: str, **kw: Any) -> str:
 
 
 def sanitize_identifier(name: str, fallback: str = "x") -> str:
-    """임의 문자열을 생성 클래스 이름에 쓸 수 있는 Java 식별자로 바꾼다.
+    """문자열을 생성하는 클래스의 이름으로 쓸 수 있게 Java 식별자로 바꾼다.
     쓸 수 없는 문자는 _로 바꾼다.
     숫자로 시작하면 앞에, 예약어면 뒤에 _를 붙인다."""
     out = re.sub(r"[^A-Za-z0-9_$]", "_", name or "")
@@ -246,7 +243,8 @@ def sanitize_package(pkg: str | None) -> str | None:
 
 @dataclass
 class _Ctx:
-    """``apply`` 한 번 동안의 작업 상태를 담는 클래스. 바뀐 파일, 이동 기록, 모듈 경로, front / WAR / JSP 여부를 들고 있다.
+    """``apply`` 한 번의 작업 상태를 담는 클래스.
+    바뀐 파일, 이동 기록, 모듈 경로, front 모듈과 WAR, JSP가 있는지를 들고 있다.
     파일 이동, 복사, 쓰기, 노트, 커밋은 모두 이 클래스를 거쳐 기록한다."""
     ws: Workspace
     profile: ProjectProfile
@@ -277,10 +275,10 @@ class _Ctx:
     overlay_conf: Any = None            # as-is maven-war-plugin의 <configuration><overlays> 요소
     overlay_carry: bool = False         # overlay를 boot WAR로 옮긴다
     module_mains: set[str] = field(default_factory=set)    # merge한 jar 모듈마다 보고한 main 클래스
-    # 이번 패스에서 버전을 넣은 의존성을 (pom, g:a)별로 (버전, versions_pinned 줄, 출처 'asis' | 'repository')로 기록한다
-    # 바로 뒤 _drop_managed_versions가 새 부모 체인이 관리하는 버전은 다시 비우고, 새 체인을 모르면 전부 되돌린다
-    # asis_unknown은 as-is 빌드도 저장소도 버전을 모르는 (pom, g:a), asis_keys는 as-is 프로젝트가 선언한 g:a,
-    # asis_before는 pom별 (버전을 넣기 전 바이트, 그 전에 바뀐 파일이었는지)다
+    # 이번 패스에서 버전을 넣은 의존성. (pom, g:a)마다 (버전, versions_pinned 줄, 출처 'asis' | 'repository')다
+    # 바로 뒤 _drop_managed_versions가 새 부모 체인이 관리하는 버전은 다시 비운다. 새 체인을 모르면 전부 되돌린다
+    # asis_unknown: as-is 빌드도 저장소도 버전을 모르는 (pom, g:a). asis_keys: as-is 프로젝트가 선언한 g:a
+    # asis_before: pom마다 (버전을 넣기 전 바이트, 그 전에 이미 바뀐 파일이었는지)
     asis_pins: dict[tuple[str, str], tuple[str, str, str]] = field(default_factory=dict)
     asis_unknown: list[tuple[str, str]] = field(default_factory=list)
     asis_keys: set[str] = field(default_factory=set)
@@ -343,7 +341,7 @@ class _Ctx:
 
     def move(self, src: str, dst: str) -> int:
         """파일이나 디렉토리를 옮기고 이동을 기록한다. 대상 디렉토리가 이미 있으면 파일 단위로 합친다.
-        같은 이름의 파일이 이미 있으면 사람이 만든 파일을 잃지 않도록 덮어쓰지 않고 RestructureError를 던진다."""
+        같은 이름의 파일이 이미 있으면 덮어쓰지 않고 RestructureError를 던진다. 사람이 만든 파일을 잃지 않기 위해서다."""
         absrc = self.ws.abs(src)
         if not absrc.exists():
             return 0
@@ -369,8 +367,8 @@ class _Ctx:
 
     def copy(self, src: str, dst: str) -> int:
         """파일 하나를 바이트 그대로 복사한다.
-        web root 안의 <resource> 파일을 classpath에 남긴 채 front static에도 둘 때 쓴다.
-        원본이 파일이 아니면 0을 반환하고, 대상이 이미 있으면 RestructureError를 던진다."""
+        web root 안의 <resource> 파일을 classpath에 그대로 두고 front static에도 둘 때 쓴다.
+        원본이 파일이 아니면 0을 반환한다. 대상이 이미 있으면 RestructureError를 던진다."""
         absrc, abdst = self.ws.abs(src), self.ws.abs(dst)
         if not absrc.is_file():
             return 0
@@ -412,7 +410,7 @@ class _Ctx:
 
     def commit(self, message: str) -> None:
         """중간 결과를 ``restructure: ...`` 메시지로 git 커밋한다.
-        ``commit=False``이거나 git이 없으면 건너뛰고, 커밋이 실패해도 재구성은 계속한다."""
+        ``commit=False``면 커밋하지 않는다. git이 없거나 커밋이 실패해도 경고만 남기고 재구성은 계속한다."""
         if not self.commit_enabled:
             return
         try:
@@ -430,8 +428,8 @@ _SCAN_CHUNK = 1 << 20
 
 def names_referenced_outside_poms(ws: Any, names: Iterable[str], poms: Iterable[str]) -> set[str]:
     """``names`` 중에서 ``poms`` 밖의 텍스트 파일이 ``${이름}``이나 ``@이름@``으로 참조하는 이름을 반환한다.
-    Maven은 필터링되는 리소스나 assembly descriptor에서도 속성을 치환하므로 이런 속성은 지우면 안 된다.
-    트리를 순회하지 못하면 모든 이름을 반환한다.
+    Maven은 필터링되는 리소스와 assembly descriptor 안의 속성도 치환한다. 그래서 이런 속성은 지우면 안 된다.
+    프로젝트 파일을 순회하지 못하면 모든 이름을 반환한다.
 
     Every text file counts, because which files a build filters is spread over resources, war, assembly and
     copy-resources settings (build output, `.git` and the intake's ignored folders excluded; a file with a NUL
@@ -479,9 +477,8 @@ def names_referenced_outside_poms(ws: Any, names: Iterable[str], poms: Iterable[
 def orphan_version_properties(eds: dict[str, "PomEditor"], skip: set[str], *,
                               outside: Optional[Callable[[list[str]], set[str]]] = None
                               ) -> list[tuple[str, str, str]]:
-    """값이 버전처럼 생겼는데(``VERSION_LIKE_RE``) 어느 pom도 ``${이름}``으로 참조하지 않는 속성을 지운다.
-    지운 (pom, 이름, 값) 목록을 반환한다.
-    저장은 호출하는 쪽이 한다.
+    """어느 pom도 ``${이름}``으로 참조하지 않는 버전 속성을 지운다. 값이 버전처럼 생긴 속성만 본다(``VERSION_LIKE_RE``).
+    지운 (pom, 이름, 값) 목록을 반환한다. 저장은 호출하는 쪽이 한다.
     ``skip``에 있는 이름과 ``outside``가 pom 밖에서 참조된다고 알려 준 이름은 남긴다."""
     texts = {q: ed.to_string() for q, ed in eds.items()}
     cands: list[tuple[str, str, str]] = []
@@ -518,7 +515,7 @@ class Restructurer(LegacyContextMixin):
               mode: Literal["layout", "msa_pom", "optional_bump", "boot_pom"] = "layout",
               params: dict[str, Any] | None = None) -> RestructureResult:
         """``mode``에 맞는 재구성을 실행하고 RestructureResult를 반환한다.
-        RestructureError / PomEditError / OSError는 던지지 않고 ok=False와 오류 메시지로 반환한다.
+        RestructureError, PomEditError, OSError가 나도 예외를 던지지 않는다. ok=False와 오류 메시지를 반환한다.
 
         params (optional, from the PlanStep): starter, split_policy, multi_module_policy, merge_collision (layout);
         library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory); from the
@@ -550,8 +547,8 @@ class Restructurer(LegacyContextMixin):
         # pom을 다루는 모드가 성공했을 때만 as-is provided scope를 되살리고 소스 인코딩을 처리한다
         if result.ok and mode in ("layout", "boot_pom", "msa_pom"):
             self._lc_after_mode(c, mode)
-        # OpenRewrite는 JSP를 읽지 못하므로 파일이 최종 위치로 간 뒤 JSP의 javax 이름을 jakarta로 바꾼다
-        # 실패한 재구성은 트리를 되돌리므로 여기서도 건드리지 않는다
+        # OpenRewrite는 JSP를 읽지 못한다. 그래서 파일이 최종 위치로 간 뒤 JSP의 javax 이름을 jakarta로 바꾼다
+        # 재구성이 실패했으면 프로젝트를 되돌리므로 JSP도 건드리지 않는다
         self._jsp_jakarta(c)
         try:
             result.parent_manages_spring_boot_effective = self._manages_boot(c)
@@ -565,7 +562,7 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _start_point(ws: Workspace) -> Optional[str]:
         """실패했을 때 되돌아갈 시작 커밋을 반환한다.
-        트리가 깨끗하지 않거나 git이 없으면 None을 반환한다.
+        커밋하지 않은 변경이 있거나 git이 없으면 None을 반환한다.
 
         A dirty tree gives None because resetting would also throw away changes that are not this step's."""
         try:
@@ -575,8 +572,8 @@ class Restructurer(LegacyContextMixin):
 
     @staticmethod
     def _undo_failed(ws: Workspace, start: Optional[str], result: RestructureResult) -> RestructureResult:
-        """실패한 단계가 파일을 옮기거나 커밋했으면 시작 커밋으로 되돌리고, 그 사실을 노트로 담은 결과를 반환한다.
-        시작할 때 트리가 깨끗하지 않았거나 되돌리기가 실패하면 그대로 두고 노트만 남긴다.
+        """실패한 단계가 파일을 옮기거나 커밋했으면 시작 커밋으로 되돌린다. 되돌렸다는 노트를 담은 결과를 반환한다.
+        시작할 때 커밋하지 않은 변경이 있었거나 되돌리기가 실패하면 그대로 두고 노트만 남긴다.
 
         The orchestrator's Handover says "the tree keeps the as-is layout" after a failed restructure; this
         makes it true. The returned result lists nothing as changed."""
@@ -602,8 +599,8 @@ class Restructurer(LegacyContextMixin):
     # ================================================================== JSP javax를 jakarta로
     def _jsp_jakarta(self, c: _Ctx) -> None:
         """JSP와 태그 파일의 코드 부분에서 javax EE 이름을 jakarta로 바꾸고 따로 커밋한다.
-        ``layout.jsp_jakarta_rename``이 꺼져 있으면 javax를 쓰는 JSP 수만 후속 작업으로 남긴다.
-        재구성이 실패했으면 건너뛰고, 파일 하나가 실패해도 노트만 남기고 계속한다.
+        ``layout.jsp_jakarta_rename``이 꺼져 있으면 바꾸지 않고, javax를 쓰는 JSP 수만 후속 작업으로 남긴다.
+        재구성이 실패했으면 건너뛴다. 파일 하나가 실패해도 노트만 남기고 계속한다.
 
         Runs in every mode, after the mode's work put the files in place; fills `result.jsp_jakarta_*`."""
         res = c.result
@@ -639,8 +636,10 @@ class Restructurer(LegacyContextMixin):
     def _layout(self, c: _Ctx) -> None:
         """``layout`` 모드에서 Boot가 아닌 프로젝트를 회사 모듈 구조로 바꾼다.
         이미 재구성된 프로젝트는 사내 부모 버전 맞춤과 pom 정리만 한다.
-        순서: 프로젝트 밖 모듈 검사 -> ``_single`` / ``_merge`` / ``_wrap`` -> 루트 이름 반영, 외부 설정 플레이스홀더, 역할 부모 설정 -> 모든 pom
-        정리
+
+        Order: modules outside the project are checked first, then ``_single`` / ``_merge`` / ``_wrap``,
+        then the root name, the externalized-config placeholders and the role parents, last the pass over
+        every pom.
         """
         L = c.cfg.layout
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
@@ -702,7 +701,7 @@ class Restructurer(LegacyContextMixin):
                     self._skip_outside(c, root_rel, m, tgt)
                     continue
             inside.append(m)
-        # wrap은 프로젝트 밖 모듈을 옮길 수 없으므로 반쯤 옮긴 상태가 남지 않게 아무것도 옮기기 전에 중단한다
+        # wrap은 프로젝트 밖 모듈을 옮길 수 없다. 반쯤 옮긴 상태가 남지 않게 아무것도 옮기기 전에 중단한다
         if outside and policy != "merge":
             msg = (f"module(s) declared in {root_rel} resolve outside the project root: {', '.join(outside)}; the "
                    "layout restructure cannot move them — nothing was changed (move the module into the project or "
@@ -720,7 +719,7 @@ class Restructurer(LegacyContextMixin):
         else:
             self._single(c, root, coords)
         self._repoint_renamed_root(c)
-        # 런타임 설정(application.properties)은 boot jar가 읽으므로 외부 설정 플레이스홀더는 boot 모듈에 둔다
+        # 외부 설정 플레이스홀더는 boot 모듈에 둔다. 런타임 설정(application.properties)은 boot jar가 읽는다
         self._write_placeholders(c, f"{c.p(c.boot_rel)}/src/main/resources")
         self._placeholder_followup(c)
         self._align_role_parents(c)
@@ -750,8 +749,8 @@ class Restructurer(LegacyContextMixin):
 
     # ------------------------------------------------------------------ 프로젝트 이름
     def _project_name_coords(self, c: _Ctx, root: PomEditor, coords: GAV) -> GAV:
-        """루트 pom의 ``sbmig.project-name`` 속성을 merge 뒤 루트 artifactId로 쓰고, 그 좌표를 반환한다.
-        남길 boot 모듈의 artifactId가 이 이름이면 바꾸지 않는다.
+        """merge 뒤 루트 artifactId를 루트 pom의 ``sbmig.project-name`` 속성 값으로 정하고, 그 좌표를 반환한다.
+        속성이 없거나, 남길 boot 모듈의 artifactId가 이 이름이면 바꾸지 않는다.
 
         The intake aggregator took `<name>-aggregator` because a member (typically the EAR) had
         `<group>:<name>`; after the merge no reactor collision is left. The generated module artifactIds
@@ -805,8 +804,8 @@ class Restructurer(LegacyContextMixin):
 
     # ------------------------------------------------------------------ pom이 참조하지 않는 웹 파일
     def _web_content_left(self, c: _Ctx) -> None:
-        """어느 pom도 참조하지 않아 옮기지 않은 JSP(예: ``STATIC/index.jsp``)를 후속 작업으로 알린다.
-        어디서 서비스되는지 모르므로 옮기지 않는다.
+        """어느 pom도 참조하지 않는 JSP(예: ``STATIC/index.jsp``)를 후속 작업으로 알린다.
+        어디서 서비스되는지 모르기 때문에 이 JSP는 옮기지 않는다.
         최상위 디렉토리마다 후속 작업 하나와 플래그 ``web-content-left``를 남긴다."""
         src = c.profile.source
         mods = [c.p(m) for m in (c.comp_rel, c.boot_rel, c.front_rel) if m]
@@ -842,7 +841,7 @@ class Restructurer(LegacyContextMixin):
 
     def _dedupe_webinf_stash(self, c: _Ctx) -> None:
         """같은 XML 빈 설정 파일이 boot 모듈에 두 번 들어가면 실제로 import되는 복사본만 남긴다.
-        ``legacy-config/`` 복사본(@ImportResource 대상)은 두고 ``asis-webinf/`` 보관 파일을 지운다."""
+        ``legacy-config/``의 복사본(@ImportResource 대상)은 남기고, ``asis-webinf/``에 보관한 쪽을 지운다."""
         boot = getattr(c, "boot_rel", None)
         if not boot:
             return
@@ -876,8 +875,10 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ single module
     def _single(self, c: _Ctx, root: PomEditor, coords: GAV) -> None:
         """단일 모듈 프로젝트를 회사 모듈 구조로 나눈다.
-        순서: 소스를 comp(back)로 이동 -> front 모듈 -> WAR overlay 계획 -> comp pom -> boot 모듈 -> 루트를 aggregator로 front에서
-        JSP가 있는지 정해져야 boot를 WAR로 만들지 알 수 있으므로 순서를 바꾸면 안 된다."""
+        front 모듈을 boot 모듈보다 먼저 만든다. front에 JSP가 있는지 알아야 boot를 WAR로 만들지 정할 수 있다.
+
+        Order: sources to comp (back) -> front module -> WAR overlay plan -> comp pom -> boot module -> root
+        as aggregator."""
         L = c.cfg.layout
         comp = c.p(c.comp_rel)
         boot = c.p(c.boot_rel)
@@ -891,7 +892,7 @@ class Restructurer(LegacyContextMixin):
             c.note(f"directory {raw} of the root pom resolves outside the project root; not moved (nothing outside "
                    "the project is read or changed)")
         c.commit("restructure: move as-is sources to comp-jar")
-        # JSP를 옮겼는지에 따라 boot 모듈이 WAR인지 jar인지 정해지므로 front를 boot보다 먼저 처리한다
+        # front를 boot보다 먼저 처리한다. JSP를 옮겼는지에 따라 boot 모듈이 WAR인지 jar인지 정해진다
         # Boot 앱을 나누는데 front 모듈을 쓰지 않으면 웹 파일을 as-is와 같은 경로로 boot 모듈에 둔다
         if c.boot_split and not c.front_rel:
             self._boot_web_into_boot(c, comp, boot, asis_packaging)
@@ -916,7 +917,7 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ 모듈이 하나인 Boot 앱 나누기
     def _boot_web_into_boot(self, c: _Ctx, comp: str, boot: str, asis_packaging: str) -> None:
         """front 모듈을 쓰지 않을 때 Boot 앱의 웹 파일을 as-is와 같은 경로로 boot 모듈에 옮긴다.
-        web root에 JSP가 있거나(``jsp_boot_packaging: war``) as-is가 WAR였으면 boot 모듈을 실행형 WAR로 만든다.
+        web root에 JSP가 있고 ``jsp_boot_packaging: war``이거나, as-is가 WAR였으면 boot 모듈을 실행형 WAR로 만든다.
 
         Applies to `front_module: null` in a Boot split: the web root and Boot's static / template
         locations."""
@@ -942,7 +943,7 @@ class Restructurer(LegacyContextMixin):
 
     def _move_users(self, c: _Ctx, src_root: str, dst_root: str, names: set[str],
                     extra: Optional[re.Pattern[str]] = None) -> list[str]:
-        """``names`` 중 하나를 코드에서 쓰는 소스를 ``dst_root``로 옮기고, 옮긴 클래스를 쓰는 소스도 이어서 옮긴다.
+        """``names`` 중 하나를 코드에서 쓰는 소스를 ``dst_root``로 옮긴다. 옮긴 클래스를 쓰는 소스도 이어서 옮긴다.
         옮긴 클래스의 FQCN 목록을 반환한다.
         주석과 문자열 안의 이름은 쓰임으로 보지 않는다.
 
@@ -1058,7 +1059,7 @@ class Restructurer(LegacyContextMixin):
                     t = ed.text_of(r, "directory")
                     if t:
                         paths.append(t)
-            # war 플러그인의 warSourceDirectory / webResources도 소스와 함께 옮기고 _populate_front가 front와 comp로 나눈다
+            # war 플러그인의 warSourceDirectory, webResources도 소스와 함께 옮긴다. front와 comp로는 _populate_front가 나눈다
             paths.extend(w.dir for w in pom_web_dirs(ed.to_string()))
         for pth in paths:
             pth = re.sub(r"^\$\{(?:project\.)?basedir\}/?", "", pth).strip().strip("/")
@@ -1071,10 +1072,10 @@ class Restructurer(LegacyContextMixin):
 
     # ------------------------------------------------------------------ 멀티 모듈: wrap
     def _wrap(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
-        """``multi_module_policy: wrap``일 때 as-is 모듈은 그대로 두고 jar 모듈에 의존하는 boot 모듈을 하나 추가한다.
-        ``layout.module_dir``가 있으면 모듈을 그 아래로 옮기고 <modules>와 <parent><relativePath>를 다시 계산한다.
+        """``multi_module_policy: wrap``일 때 as-is 모듈은 그대로 두고, jar 모듈에 의존하는 boot 모듈을 하나 추가한다.
+        ``layout.module_dir``가 있으면 모듈을 그 아래로 옮긴다. <modules>와 <parent><relativePath>는 다시 계산한다.
         WAR 모듈은 WAR로 두고 boot 모듈이 의존하지 않는다.
-        모듈이 상속하므로 루트의 의존성과 build 플러그인은 남긴다.
+        루트의 의존성과 build 플러그인은 남긴다. 모듈이 상속하기 때문이다.
 
         WAR modules keep building as WARs (S7): no class is taken out of them. Nested `<modules>` and
         `<parent><relativePath>` of moved poms are recomputed (S5)."""
@@ -1227,7 +1228,7 @@ class Restructurer(LegacyContextMixin):
         """``multi_module_policy: merge``(기본값)일 때 모든 as-is 모듈과 루트 ``src/``를 comp(back) 모듈 하나로 합친다.
         디렉토리 이름이 boot 모듈 이름인 모듈은 boot 모듈로 남기고 pom만 고친다.
         - 같은 경로 파일이 겹치면 ``layout.merge_collision``을 따른다.
-          first-wins는 ``<modules>`` 순서상 먼저인 파일을 남기고 다른 복사본을 ``<run dir>/merge-conflicts/``에 저장한다.
+          first-wins는 ``<modules>`` 순서로 먼저 나온 파일을 남긴다. 내용이 다른 복사본은 ``<run dir>/merge-conflicts/``에 저장한다.
           fail은 RestructureError를 던진다
         - META-INF/services, spring.factories, *.imports는 충돌로 보지 않고 양쪽 줄을 합친다
         - 검사와 결정은 첫 이동 전에 모두 끝낸다
@@ -1289,7 +1290,7 @@ class Restructurer(LegacyContextMixin):
         for m in mods:
             visit(m, self._module_dir(m), 0)
 
-        # 1. 이미 *-boot로 나뉜 프로젝트를 다시 쪼개지 않도록 디렉토리 이름이 boot 모듈 이름인 첫 모듈은 남긴다
+        # 1. 디렉토리 이름이 boot 모듈 이름인 첫 모듈은 남긴다. 이미 *-boot로 나뉜 프로젝트를 다시 쪼개지 않기 위해서다
         # 같은 이름의 모듈이 또 있으면 comp로 합친다
         kept: tuple[str, str, PomEditor] | None = None
         for entry in flat:
@@ -1304,7 +1305,7 @@ class Restructurer(LegacyContextMixin):
         kept_ed = kept[2] if kept is not None else None
         eds = [ed for _, _, ed in merged_jar]
         all_merged = [e for e in order if e is not kept]
-        # Spring Boot는 EAR을 만들지 않으므로 EAR 모듈의 소스는 합치지 않는다(_drop_ear)
+        # EAR 모듈의 소스는 합치지 않는다(_drop_ear). Spring Boot는 EAR을 만들지 않는다
         ears = [e for e in merged_jar if e[2].packaging() == "ear"]
         merged_src = [e for e in merged_jar if e[2].packaging() != "ear"]
         module_dirs = {d.split("/")[0] for _, d, _ in [*flat, *pom_mods]}
@@ -1312,7 +1313,7 @@ class Restructurer(LegacyContextMixin):
         root_tops = [t for t in self._source_roots(c, root) if t == "src" or t not in module_dirs]
         if any(c.ws.exists(c.p(t)) for t in root_tops):
             sources_of.append((".", "<root>", root_tops))
-        # 루트 <build>의 리소스 디렉토리는 모든 모듈이 상속하므로 모듈마다 그 디렉토리도 찾는다
+        # 루트 <build>의 리소스 디렉토리는 모든 모듈이 상속한다. 그래서 모듈마다 그 디렉토리도 찾는다
         inherited = self._source_roots(c, root)
         for label, mdir, ed in merged_src:
             sources_of.append((mdir, label, list(dict.fromkeys([*self._source_roots(c, ed), *inherited]))))
@@ -1321,7 +1322,7 @@ class Restructurer(LegacyContextMixin):
                  for found in [self._module_mains(c, mdir, ed)] if found]
         c.module_mains.update(f for _, found in mains for f in found)
 
-        # 2. fail 정책이면 아무것도 옮기기 전에 중단해야 하므로 이동 계획과 충돌 결정을 먼저 끝낸다
+        # 2. 이동 계획과 충돌 결정을 먼저 끝낸다. fail 정책이면 아무것도 옮기기 전에 중단해야 한다
         plan: list[tuple[str, str]] = []
         seen: dict[str, tuple[str, str]] = {}           # comp 대상 경로 -> (label, as-is 원본)
         conflicts: dict[str, MergeConflict] = {}
@@ -1342,8 +1343,8 @@ class Restructurer(LegacyContextMixin):
                     src = c.p(mdir, rel)
                     if dst in seen:
                         first_label, first_src = seen[dst]
-                        # META-INF/services, spring.factories, *.imports처럼 한 줄에 하나씩 등록하는 파일은
-                        # 한쪽만 남기면 다른 모듈의 등록이 사라지므로 양쪽 줄을 합친다
+                        # META-INF/services, spring.factories, *.imports처럼 한 줄에 하나씩 등록하는 파일은 양쪽 줄을 합친다
+                        # 한쪽만 남기면 다른 모듈의 등록이 사라진다
                         if UNION_RE.search(rel):
                             unions.setdefault(dst, [(first_label, first_src)]).append((label, src))
                             continue
@@ -1374,7 +1375,7 @@ class Restructurer(LegacyContextMixin):
                     to_save.append((s_, saved_path(lb, rel)))
                 union_texts[dst] = self._union_registry(rel, [t_.decode("utf-8", "replace") for t_ in texts])
             conflicts[dst] = mc
-        # pom 패키징 모듈의 src/는 Maven이 컴파일한 적이 없어 합치면 새 컴파일 오류만 생기므로 저장만 한다
+        # pom 패키징 모듈의 src/는 합치지 않고 저장만 한다. Maven이 컴파일한 적 없는 코드라 합치면 컴파일 오류만 생긴다
         for _label, mdir, ed in pom_mods:
             if c.ws.abs(c.p(mdir, "src")).is_dir():
                 for f in sorted(x for x in c.ws.abs(c.p(mdir, "src")).rglob("*") if x.is_file()):
@@ -1420,7 +1421,7 @@ class Restructurer(LegacyContextMixin):
             for top in tops:
                 # 분석 결과의 as-is 경로(web.xml 등)를 new_location으로 찾을 수 있도록 디렉토리 이동도 기록한다
                 c.moves.append((c.p(mdir, top), f"{comp}/{top}"))
-        # 모듈 밖에 있다가 comp로 합친 디렉토리는 이제 비었으므로 정리한다
+        # 모듈 밖에 있다가 comp로 합친 디렉토리는 이제 비었다. 빈 디렉토리를 지운다
         for tgt, rel in c.relocated.items():
             if tgt == rel and c.ws.abs(c.p(tgt)).is_dir():
                 self._prune_empty_dirs(c, c.p(tgt))
@@ -1439,8 +1440,8 @@ class Restructurer(LegacyContextMixin):
             fn = war_ed.text_of(war_ed.find("build"), "finalName") if war_ed.find("build") is not None else None
             ver = war_ed.effective_version()
             c.asis_war_name = fn or (f"{war_ed.artifact_id()}-{ver}" if ver else war_ed.artifact_id())
-        # comp pom은 웹 리소스가 빠진 상태를 기준으로 쓰고 JSP 여부(boot WAR)도 여기서 정해지므로 front를
-        # comp pom보다 먼저 처리한다
+        # front를 comp pom보다 먼저 처리한다. comp pom은 웹 리소스를 뺀 상태로 쓰고,
+        # boot를 WAR로 만들지(JSP가 있는지)도 front에서 정해진다
         self._populate_front(c, comp, boot, coords, [root, *(ed for _, _, ed in all_merged)])
         self._plan_overlays(c, [root, *(ed for _, _, ed in all_merged if ed.packaging() != "ear"),
                                 *([kept_ed] if kept_ed is not None else [])], internal)
@@ -1452,8 +1453,8 @@ class Restructurer(LegacyContextMixin):
             mdir = c.p(mdir_)
             if mdir != comp and c.ws.exists(mdir):
                 if any(x == mdir or x.startswith(mdir + "/") for x in (comp, boot)):
-                    # as-is 모듈 디렉토리가 회사 모듈 디렉토리와 같으면 방금 합친 파일이 사라지지 않도록
-                    # 디렉토리 대신 pom만 지운다
+                    # as-is 모듈 디렉토리가 회사 모듈 디렉토리와 겹치면 디렉토리 대신 pom만 지운다
+                    # 방금 합친 파일이 사라지지 않게 하기 위해서다
                     c.ws.delete(f"{mdir}/pom.xml")
                 else:
                     c.ws.delete(mdir)
@@ -1468,8 +1469,8 @@ class Restructurer(LegacyContextMixin):
                   version="${project.version}")
         if kept_ed is not None and kept is not None and kept_dir is not None:
             parent = kept_ed.get_parent()
-            # 역할 부모를 쓰지 않고 남긴 boot 모듈의 부모가 합쳐져 사라진 pom 모듈이면 빌드가 실패하므로
-            # 루트 pom을 부모로 다시 지정한다
+            # 역할 부모를 쓰지 않는데 남긴 boot 모듈의 부모가 합쳐져 사라진 pom 모듈이면 빌드가 실패한다
+            # 그래서 루트 pom을 부모로 다시 지정한다
             if not self._role(c) and parent is not None and any(parent.artifact_id == ed.artifact_id()
                                                                  for _, _, ed in pom_mods):
                 kept_ed.set_parent(GAV(group_id=coords.group_id, artifact_id=coords.artifact_id,
@@ -1509,8 +1510,7 @@ class Restructurer(LegacyContextMixin):
                        kept: PomEditor | None) -> tuple[set[str], set[str]]:
         """합쳐진 모듈을 가리키는 g:a 키 집합 두 개(merged_internal, internal)를 반환한다.
         internal에는 남긴 boot 모듈도 들어간다.
-        이 모듈들은 comp 안으로 들어왔으므로 의존성에서 빼야 한다.
-        남겨 두면 저장소에서 찾다가 빌드가 실패한다.
+        이 모듈들은 comp 안으로 들어왔으니 의존성에서 빼야 한다. 남겨 두면 저장소에서 찾다가 빌드가 실패한다.
 
         groupIds tried: the root's, `${project.groupId}`, every module's own and its parent's (a module
         without `<groupId>` inherits it). On top, every dependency of the root / module poms (managed or not)
@@ -1529,7 +1529,7 @@ class Restructurer(LegacyContextMixin):
             for managed in (False, True):
                 for el in ed.dependency_elements(managed):
                     g = ed.gav_of(el)
-                    # 리터럴 groupId는 위 groups 조합으로 이미 판단했으므로 빈 값이나 ${...}만 artifactId로 확인한다
+                    # groupId가 빈 값이나 ${...}일 때만 artifactId로 확인한다. 리터럴 groupId는 위 groups로 이미 판단했다
                     if g.group_id and "${" not in g.group_id:
                         continue
                     if g.artifact_id in merged_aids:
@@ -1542,13 +1542,10 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ EAR 모듈
     def _drop_ear(self, c: _Ctx, label: str, mdir: str, ed: PomEditor, boot: str, internal: set[str],
                   other_dirs: list[str]) -> list[tuple[str, str, str, bool]]:
-        """EAR 모듈은 합치지 않고 정리한다.
-        Spring Boot는 EAR을 만들지 않는다.
+        """EAR 모듈은 합치지 않고 정리한다. Spring Boot는 EAR을 만들지 않기 때문이다.
         - pom과 target을 뺀 파일(애플리케이션 서버 설정)은 참고용으로 ``<boot>/src/main/resources/asis-ear/<dir>/``에 둔다
-        - 이 프로젝트 모듈에 대한 의존성은 버리고, 나머지 라이브러리는 comp 모듈이 가져간다.
-          외부 WAR 의존성은 버린다
-        웹 모듈의 context root 목록을 반환한다.
-        ``_ear_followups``가 쓴다.
+        - 이 프로젝트 모듈에 대한 의존성과 외부 WAR 의존성은 버린다. 나머지 라이브러리는 comp 모듈이 가져간다
+        웹 모듈의 context root 목록을 반환한다. ``_ear_followups``가 이 목록을 쓴다.
 
         The other dependencies reach the comp module through `_write_comp_pom` (the EAR's lib/ was the shared
         runtime classpath). Returned tuples: (label, web module, context root, explicit)."""
@@ -1558,7 +1555,7 @@ class Restructurer(LegacyContextMixin):
         if c.ws.exists(stash):
             stash = f"{boot}/src/main/resources/{EAR_STASH}/{mdir.replace('/', '_')}"
         base = c.ws.abs(c.p(mdir))
-        # EAR 디렉토리 안의 다른 모듈은 따로 합쳐지므로 보관 폴더로 옮기지 않는다
+        # EAR 디렉토리 안의 다른 모듈은 보관 폴더로 옮기지 않는다. 그 모듈은 따로 합쳐진다
         nested = [d for d in other_dirs if d.startswith(mdir + "/") or mdir in (".", "")]
         moved: list[str] = []
         if base.is_dir():
@@ -1633,7 +1630,7 @@ class Restructurer(LegacyContextMixin):
 
     def _ear_followups(self, c: _Ctx, roots: list[tuple[str, str, str, bool]]) -> None:
         """as-is URL이 바뀌지 않도록 context root마다 후속 작업을 남긴다.
-        ``server.servlet.context-path``를 맞추라고 안내하고, boot가 WAR면 외부 Tomcat에 ``<root>.war``로 배포하는 방법도 쓴다."""
+        ``server.servlet.context-path``를 맞추라고 안내한다. boot가 WAR면 외부 Tomcat에 ``<root>.war``로 배포하는 방법도 알려 준다."""
         for label, web, root_, explicit in roots:
             cr = "/" + root_.strip().strip("/") if root_.strip().strip("/") else "/"
             how = "" if explicit else " (the maven-ear-plugin default)"
@@ -1648,7 +1645,7 @@ class Restructurer(LegacyContextMixin):
                            "same")
 
     def _strip_ear_plugin(self, c: _Ctx, ed: PomEditor) -> None:
-        """EAR 모듈이 없어졌으므로 생성 pom에서 maven-ear-plugin을 지운다."""
+        """생성한 pom에서 maven-ear-plugin을 지운다. EAR 모듈은 더 이상 없다."""
         if ed.find_plugins(*EAR_PLUGIN, where="all") and ed.remove_plugin(*EAR_PLUGIN):
             c.note(f"maven-ear-plugin dropped from {c.ws.rel(ed.path)} (the EAR module was not carried)")
 
@@ -1684,7 +1681,7 @@ class Restructurer(LegacyContextMixin):
                         break
         if not c.war_overlays:
             return
-        # overlay는 웹 콘텐츠라 WAR에만 담을 수 있으므로 overlay가 있으면 boot를 WAR로 만든다
+        # overlay는 웹 콘텐츠라 WAR에만 담을 수 있다. boot가 WAR이거나 jsp_boot_packaging이 war일 때만 옮긴다
         c.overlay_carry = c.boot_war or c.cfg.layout.jsp_boot_packaging == "war"
         c.boot_war = c.boot_war or c.overlay_carry
         for pom, g in c.war_overlays:
@@ -1703,8 +1700,7 @@ class Restructurer(LegacyContextMixin):
 
     def _apply_overlays(self, c: _Ctx, ed: PomEditor) -> None:
         """boot WAR pom에 overlay 의존성(type war, scope 유지)과 as-is <overlays> 블록을 넣는다.
-        maven-war-plugin을 새로 넣을 때 버전은 쓰지 않는다.
-        부모나 Maven 기본값을 따른다.
+        maven-war-plugin을 새로 넣을 때 버전은 쓰지 않는다. 부모나 Maven 기본값을 따른다.
 
         `_strip_war_web_config` keeps `<overlays>`."""
         if not c.overlay_carry:
@@ -1732,9 +1728,8 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ 모듈 밖 디렉토리
     @staticmethod
     def _climbing_dirs(ed: PomEditor) -> list[str]:
-        """pom 하나에서 자기 디렉토리 밖(``../``)을 가리키는 디렉토리 목록을 정규화해 반환한다.
-        web root(warSourceDirectory / webResources), source / script / test source, resources / testResources를
-        본다."""
+        """pom이 자기 디렉토리 밖(``../``)으로 가리키는 디렉토리 목록을 반환한다.
+        web root(warSourceDirectory, webResources), source 디렉토리, resources, testResources를 본다."""
         text = ed.to_string()
         out = [w.dir for w in pom_web_dirs(text, allow_parent=True)] + pom_build_dirs(text, allow_parent=True)
         build = ed.find("build")
@@ -1758,8 +1753,8 @@ class Restructurer(LegacyContextMixin):
 
     def _comp_dir(self, c: _Ctx, ed: PomEditor, d: str | None) -> str | None:
         """모듈 기준 pom 디렉토리를 comp 모듈 기준 경로로 바꾼다.
-        모듈 안 경로는 같은 상대 경로로 옮겨졌으므로 그대로 반환한다.
-        ``../`` 경로는 ``c.relocated``로 바꾸고, 옮기지 않은 경로면 None을 반환한다."""
+        모듈 안 경로는 같은 상대 경로로 옮겨졌다. 그래서 그대로 반환한다.
+        ``../`` 경로는 ``c.relocated``로 바꾼다. 옮기지 않은 경로면 None을 반환한다."""
         if not d or not d.startswith("../"):
             return d
         tgt = posixpath.normpath(posixpath.join(self._ed_dir(c, ed), d))
@@ -1771,9 +1766,9 @@ class Restructurer(LegacyContextMixin):
     def _plan_outside_dirs(self, c: _Ctx, root: PomEditor, merged_src: list[tuple[str, str, PomEditor]],
                            sources_of: list[tuple[str, str, list[str]]],
                            modules: list[tuple[str, str, PomEditor]]) -> None:
-        """합쳐질 모듈이 자기 밖, 프로젝트 안을 가리키는 디렉토리(``${basedir}/../../STATIC`` 등)를 comp 모듈의 같은 상대 경로로 한 번만 옮기도록 계획한다.
-        - 옮긴 위치는 ``c.relocated``에 기록한다.
-          front의 web root와 comp pom 경로를 고칠 때 쓴다
+        """합쳐질 모듈이 자기 밖을 가리키는 디렉토리(``${basedir}/../../STATIC`` 등)를 옮길 계획을 세운다.
+        프로젝트 안의 디렉토리만 comp 모듈의 같은 상대 경로로 한 번 옮긴다.
+        - 옮긴 위치는 ``c.relocated``에 기록한다. front의 web root와 comp pom 경로를 고칠 때 쓴다
         - 다른 합쳐질 모듈 안에 있는 디렉토리는 그 모듈과 함께 옮긴다
         - 프로젝트 밖, 루트 자체, 합치지 않는 모듈과 겹치는 디렉토리는 옮기지 않고 노트만 남긴다"""
         comp = c.comp_rel
@@ -1826,8 +1821,8 @@ class Restructurer(LegacyContextMixin):
                    f"moved to {comp}/{tgt} and used from there")
 
     def _module_mains(self, c: _Ctx, mdir: str, ed: PomEditor) -> list[str]:
-        """모듈의 main 소스에서 ``main(String...)``을 가진, Boot 앱이 아닌 클래스의 FQCN 목록을 반환한다.
-        합친 뒤에는 이런 클래스(배치 등)를 따로 실행하기 어려우므로 호출하는 쪽이 후속 작업으로 알린다."""
+        """모듈의 main 소스에서 ``main(String...)``이 있고 Boot 앱이 아닌 클래스의 FQCN 목록을 반환한다.
+        합친 뒤에는 이런 클래스(배치 등)를 따로 실행하기 어렵다. 그래서 호출하는 쪽이 후속 작업으로 알린다."""
         roots = ["src/main/java"]
         build = ed.find("build")
         sd = clean_pom_dir(ed.text_of(build, "sourceDirectory")) if build is not None else None
@@ -1867,7 +1862,7 @@ class Restructurer(LegacyContextMixin):
 
     def _skip_outside(self, c: _Ctx, declared_in: str, module: str, target: str) -> None:
         """프로젝트 밖 모듈은 합치지 않고 노트와 후속 작업을 남긴다.
-        그 모듈에 대한 의존성은 이제 저장소에서 받으므로 따로 이관해 Nexus에 올려야 한다."""
+        그 모듈에 대한 의존성은 이제 저장소에서 받는다. 그래서 그 모듈을 따로 이관해 Nexus에 올리라고 알린다."""
         c.note(f"module '{module}' declared in {declared_in} resolves outside the project root ({target}); "
                "not merged (nothing outside the workspace is read or changed)")
         c.followup(f"module {module} ({declared_in}) lives outside the project root and was not merged into "
@@ -1878,11 +1873,10 @@ class Restructurer(LegacyContextMixin):
                          internal: set[str], target: PomEditor | None = None) -> None:
         """합쳐진 모듈들의 dependencyManagement 항목을 대상 pom 하나로 모은다.
         - 대상 pom에서 합쳐진 모듈을 가리키는 항목(내부 BOM import, 내부 모듈 버전)은 지운다
-        - 각 모듈의 항목은 버전이 쓰는 ``${속성}``과 함께 옮긴다.
-          g:a가 겹치면 대상 pom, 먼저 나온 모듈 순으로 남는다
+        - 각 모듈의 항목은 버전에 쓰인 ``${속성}``과 함께 옮긴다.
+          g:a가 겹치면 대상 pom에 있던 것이 남고, 그다음은 먼저 나온 모듈의 것이 남는다
         - pom 패키징 모듈의 <properties>도 옮긴다
-        대상은 루트 pom이다.
-        역할 부모를 쓰면 모듈이 루트를 상속하지 않으므로 ``target``(comp pom)이 대상이다."""
+        대상은 루트 pom이다. 역할 부모를 쓰면 ``target``(comp pom)이 대상이다. 모듈이 루트를 상속하지 않기 때문이다."""
         drop = set(c.cfg.artifacts.remove_when_present)
         tgt = target if target is not None else root
         where = "the root pom" if target is None else c.ws.rel(target.path)
@@ -1923,8 +1917,8 @@ class Restructurer(LegacyContextMixin):
                        "(first wins)")
 
     def _shadowed_boot_resources(self, c: _Ctx, comp: str, boot: str) -> None:
-        """남긴 boot 모듈에 같은 이름의 리소스가 있어 런타임에 가려지는 comp 파일을 찾아 합치라는 후속 작업을 남긴다.
-        실행 jar에서는 BOOT-INF/classes가 BOOT-INF/lib보다 먼저 읽히고, Boot는 위치마다 파일 하나만 읽는다."""
+        """남긴 boot 모듈에 같은 이름의 리소스가 있으면, 가려지는 comp 파일을 합치라는 후속 작업을 남긴다.
+        실행 jar에서는 BOOT-INF/classes가 BOOT-INF/lib보다 먼저 읽힌다. Boot는 위치마다 파일 하나만 읽는다."""
         res = f"{comp}/src/main/resources"
         shadowed = [f[len(res) + 1:] for f in self._boot_resource_files(c, res)
                     if c.ws.exists(f"{boot}/src/main/resources/{f[len(res) + 1:]}")]
@@ -1936,8 +1930,8 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _union_registry(rel: str, texts: list[str]) -> str:
         """한 줄에 하나씩 등록하는 파일 여러 개를 합친 내용을 반환한다.
-        ``*.factories``는 키마다 쉼표로 구분된 값을 중복 없이 합치고 ``\\`` 줄 이음도 처리한다.
-        그 밖의 파일(META-INF/services, *.imports)은 첫 파일의 줄을 그대로 두고 다른 파일에만 있는 줄을 덧붙인다."""
+        ``*.factories``는 키마다 쉼표로 구분된 값을 중복 없이 합친다. ``\\`` 줄 이음도 처리한다.
+        그 밖의 파일(META-INF/services, *.imports)은 첫 파일의 줄을 그대로 둔다. 다른 파일에만 있는 줄을 뒤에 붙인다."""
         if rel.endswith(".factories"):
             merged: dict[str, list[str]] = {}
             for text in texts:
@@ -2048,7 +2042,7 @@ class Restructurer(LegacyContextMixin):
             for g in self._war_deps(c, {d.key for d in ed.dependencies()}):
                 ed.add_dependency(g)
             self._apply_overlays(c, ed)
-        # 회사 규칙상 JSP가 있을 때만 WAR이므로 JSP도 overlay도 없으면 as-is WAR boot 모듈을 실행 jar로 바꾼다
+        # JSP도 overlay도 없으면 as-is WAR boot 모듈을 실행 jar로 바꾼다. 회사 규칙상 WAR는 JSP가 있을 때만 쓴다
         elif ed.packaging() == "war":
             ed.set_packaging("jar")
             for p in ed.find_plugins(*WAR_PLUGIN, where="build"):
@@ -2067,7 +2061,7 @@ class Restructurer(LegacyContextMixin):
         c.save(ed)
         kept_rel = c.boot_rel
         c.result.kept_boot_module = kept_rel
-        # 남긴 boot 모듈은 자기 starter를 그대로 쓰므로 이름만 기록한다
+        # 남긴 boot 모듈은 자기 starter를 그대로 쓴다. 이름만 기록한다
         c.result.starter = c.result.starter or self._lc_asis_starters(c)
         c.result.web_evidence = c.result.web_evidence or self._lc_web_evidence(c)
         where = "" if posixpath.normpath(declared) == kept_rel else f" (moved from {declared})"
@@ -2087,15 +2081,15 @@ class Restructurer(LegacyContextMixin):
     def _write_comp_pom(self, c: _Ctx, sources: list[PomEditor], coords: GAV, comp: str, asis_packaging: str,
                         exclude: set[str] | None = None, copy_props_from: list[PomEditor] | None = None) -> None:
         """comp(back) 모듈 pom을 생성한다.
-        역할 부모를 쓰면 ``comp_parent``와 자기 좌표를 쓰고, 아니면 루트 pom을 부모로 둔다.
+        역할 부모를 쓰면 부모를 ``comp_parent``로 두고 좌표를 직접 쓴다. 아니면 루트 pom을 부모로 둔다.
         as-is pom의 의존성과 build 디렉토리 / 플러그인을 복사한다.
         필수 사내 아티팩트, remove_when_present 대상, 내부 모듈, war 타입 의존성, boot / war / ear 플러그인은 뺀다.
-        여러 모듈을 합쳤으면 리소스 디렉토리를 모두 모으고(``_union_resources``) 모듈 속성도 복사한다."""
+        여러 모듈을 합쳤으면 리소스 디렉토리를 모두 모은다(``_union_resources``). 모듈의 속성도 복사한다."""
         L = c.cfg.layout
         A = c.cfg.artifacts
         path = f"{comp}/pom.xml"
         role = self._role(c)
-        if role:            # 사내 comp 부모를 쓰고 루트에서 물려받지 않으므로 좌표를 직접 쓴다
+        if role:            # 사내 comp 부모를 쓴다. 루트에서 좌표를 물려받지 않으니 직접 쓴다
             parent = A.comp_parent.gav()                                               # type: ignore[union-attr]
             c.write(path, render("comp-pom.xml.j2", parent=parent, relative_path="", group_id=coords.group_id,
                                  version=coords.version, artifact_id=coords.artifact_id + L.comp_artifact_suffix,
@@ -2121,7 +2115,7 @@ class Restructurer(LegacyContextMixin):
                 # war 타입 의존성은 jar 모듈에 쓸 수 없다. overlay는 _plan_overlays가 boot로 옮긴다
                 if (g.type or "") == "war":
                     continue
-                # 컨테이너 의존성은 boot 모듈이 정하므로 comp에서는 뺀다
+                # 컨테이너 의존성은 comp에서 뺀다. boot 모듈이 정한다
                 if asis_packaging == "war" and g.key == f"{BOOT_GROUP}:spring-boot-starter-tomcat" \
                         and g.scope == "provided":
                     c.note(f"provided spring-boot-starter-tomcat dropped from {comp} (declared provided in the boot "
@@ -2131,7 +2125,7 @@ class Restructurer(LegacyContextMixin):
                 new_el = ed.copy_into(ed.ensure_path("dependencies"), d)
                 self._relocate_system_dep(c, ed, new_el, asis_dir, comp, src.properties())
             build = src.find("build")
-            # EAR의 build 설정(maven-ear-plugin 등)은 Boot jar에 의미가 없으므로 가져오지 않는다
+            # EAR의 build 설정(maven-ear-plugin 등)은 가져오지 않는다. Boot jar에는 의미가 없다
             if build is None or src.packaging() == "ear":
                 continue
             for name in BUILD_TO_COMP:
@@ -2186,7 +2180,7 @@ class Restructurer(LegacyContextMixin):
 
     def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
         """여러 모듈을 합친 comp pom의 <resources> / <testResources>를 쓴다.
-        모든 모듈의 리소스 디렉토리를 모으고, 디렉토리와 targetPath가 같으면 먼저 나온 것만 남긴다.
+        모든 모듈의 리소스 디렉토리를 모은다. 디렉토리와 targetPath가 같으면 먼저 나온 것만 남긴다.
         Maven 기본 디렉토리를 쓰던 jar 모듈이 있으면 기본 디렉토리도 넣는다.
         한 모듈의 ``src/main/config``가 다른 모듈의 ``src/main/resources``를 가리지 않게 하기 위해서다.
 
@@ -2232,11 +2226,9 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ system scope jar
     def _relocate_system_dep(self, c: _Ctx, ed: PomEditor, el: Any, asis_dir: str, module_dir: str,
                              props: dict[str, str] | None = None) -> None:
-        """``system`` scope jar를 ``<module>/lib/<name>``로 복사하고 systemPath를 ``${project.basedir}/lib/<name>``로
-        바꾼다.
-        지금 이 의존성을 선언한 모듈에서 jar를 찾을 수 있게 하기 위해서다.
-        jar가 없거나 프로젝트 밖에 있으면 선언을 그대로 둔다.
-        어느 경우든 Nexus에 올리라는 후속 작업을 남긴다."""
+        """``system`` scope jar를 이 의존성을 선언한 모듈의 ``lib/``로 복사한다.
+        systemPath는 ``${project.basedir}/lib/<name>``로 바꾼다. 모듈이 지금 위치에서 jar를 찾게 하기 위해서다.
+        jar가 없거나 프로젝트 밖에 있으면 선언을 그대로 둔다. 어느 경우든 Nexus에 올리라는 후속 작업을 남긴다."""
         from sbmig.analyze.edges import resolve_system_path
 
         g = ed.gav_of(el)
@@ -2327,7 +2319,7 @@ class Restructurer(LegacyContextMixin):
             for f in sorted(rabs.rglob("*.java")):
                 text = f.read_text(encoding="utf-8", errors="replace")
                 is_init = bool(SERVLET_INIT_RE.search(text))
-                # SpringBootServletInitializer 하위 클래스는 외부 Tomcat 배포의 진입점이므로 정책과 상관없이 옮긴다
+                # SpringBootServletInitializer 하위 클래스는 정책과 상관없이 옮긴다. 외부 Tomcat 배포의 진입점이다
                 is_web = split == "web-layer" and bool(WEB_LAYER_RE.search(text))
                 if is_init or is_web:
                     rel = f.relative_to(rabs).as_posix()
@@ -2338,8 +2330,8 @@ class Restructurer(LegacyContextMixin):
 
     def _boot_resource_files(self, c: _Ctx, res_dir: str) -> list[str]:
         """boot 모듈로 옮길 리소스 파일 목록을 반환한다.
-        resources 루트와 ``config/`` 바로 아래에서 ``layout.boot_resources_glob``에 맞는 파일이다 (application*.yml /
-        properties, bootstrap*, logback*.xml, banner.txt 등)."""
+        resources 루트와 ``config/`` 바로 아래에서 ``layout.boot_resources_glob``에 맞는 파일이다.
+        application*.yml과 .properties, bootstrap*, logback*.xml, banner.txt 같은 파일이다."""
         out: list[str] = []
         for sub in ("", "config"):
             d = c.ws.abs(f"{res_dir}/{sub}" if sub else res_dir)
@@ -2353,10 +2345,9 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ 외부 설정 플레이스홀더
     def _placeholder_entries(self, c: _Ctx, under: str | None = None, others: tuple[str, ...] = (),
                              service: tuple[str, ...] | None = None) -> list[tuple[str, str, str]]:
-        """외부 설정 플레이스홀더 목록 (boot 키, 값, 주석)을 키 순으로 만든다.
-        같은 키는 처음 찾은 것을 쓴다.
-        분석에서 ``external``로 분류한 키가 대상이다.
-        코드가 읽지만 패키징된 리소스에 정의가 없는 키로, as-is에서는 JNDI, context-param, -D가 값을 넣어 주던 것이다.
+        """외부 설정 플레이스홀더 목록(boot 키, 값, 주석)을 키 순서로 만든다. 같은 키는 처음 찾은 것을 쓴다.
+        대상은 분석에서 ``external``로 분류한 키다. 코드가 읽는데 패키징된 리소스에는 정의가 없는 키다.
+        as-is에서는 JNDI, context-param, -D가 이 값을 넣어 주었다.
 
         MSA: `service` (the names a service root answers to: `ServiceInfo.name`, its directory, the directory's
         basename) selects by `PropertyFinding.service` when the inventory is per service (that service's
@@ -2373,11 +2364,11 @@ class Restructurer(LegacyContextMixin):
             if f.status != "external" or not f.boot_keys:
                 continue
             refs = list(f.refs)
-            # 프로필 location만 쓰던 키는 legacy-config 복사본이 이제 glob으로 읽으므로 건너뛴다
+            # 프로필 location에만 쓰이던 키는 건너뛴다. 이제 legacy-config 복사본을 glob으로 읽는다
             if f.key in c.lc_glob_keys and refs and all(r.source == "xml-placeholder" and "${" + f.key in (r.raw or "")
                                                         for r in refs):
                 continue
-            # 테스트 컨텍스트가 뜨려면 값이 있어야 하므로 기본값에서는 테스트만 읽는 키도 넣는다
+            # include_test_refs가 켜져 있으면(기본값) 테스트만 읽는 키도 넣는다. 테스트 컨텍스트가 뜨려면 값이 있어야 한다
             if not X.include_test_refs and refs and all(r.scope == "test" for r in refs):
                 continue
             if per_service:
@@ -2391,7 +2382,7 @@ class Restructurer(LegacyContextMixin):
                     continue
             ref = refs[0] if refs else None
             value = X.sentinel
-            # web.xml context-param은 as-is 값이 있으므로 임시 값 대신 그 값을 그대로 쓴다
+            # web.xml context-param은 as-is 값이 있다. 임시 값 대신 그 값을 그대로 쓴다
             if ref is not None and ref.source == "context-param" and ref.default not in (None, ""):
                 value = str(ref.default)
             comment = "# from " + (self._ref_origin(ref) if ref is not None else f.key)
@@ -2416,11 +2407,10 @@ class Restructurer(LegacyContextMixin):
 
     def _write_placeholders(self, c: _Ctx, resources_dir: str, *, under: str | None = None,
                             others: tuple[str, ...] = (), service: tuple[str, ...] | None = None) -> list[str]:
-        """``<resources_dir>/<placeholder_file>``(기본 application.properties)에 sbmig 외부 설정 블록을 덧붙이거나 바꾸고, 기록한 키
-        목록을 반환한다.
-        꺼져 있거나 쓸 키가 없으면 빈 목록을 반환한다.
-        값은 임시 값(``__SET_ME__``)이고 운영자가 환경 변수, 외부 파일, -D로 채운다.
-        블록 밖의 내용과 줄 끝 문자는 바이트 그대로 두므로 다시 실행해도 결과가 같다."""
+        """``<resources_dir>/<placeholder_file>``(기본 application.properties)에 외부 설정 블록을 쓰고, 기록한 키를 반환한다.
+        블록이 이미 있으면 그 부분만 바꾼다. 기능이 꺼져 있거나 쓸 키가 없으면 빈 목록을 반환한다.
+        값은 임시 값(``__SET_ME__``)이다. 운영자가 환경 변수, 외부 파일, -D로 채운다.
+        블록 밖의 내용과 줄 끝 문자는 바이트 그대로 둔다. 그래서 다시 실행해도 결과가 같다."""
         X = c.cfg.externalized
         if not X.enabled or not X.write_placeholders:
             return []
@@ -2432,7 +2422,7 @@ class Restructurer(LegacyContextMixin):
         text = c.ws.read(rel) if existed else ""
         nl = "\r\n" if "\r\n" in text else "\n"
         lines = list(PLACEHOLDER_HEADER)
-        # Boot는 둘 다 읽으므로 application.yml만 있던 프로젝트는 yml을 고치지 않고 properties를 새로 만든다
+        # application.yml만 있던 프로젝트는 yml을 고치지 않고 properties를 새로 만든다. Boot는 둘 다 읽는다
         if not existed and X.placeholder_file == "application.properties" and \
                 c.ws.exists(posixpath.join(resources_dir, "application.yml")):
             lines.append("# --- application.yml exists; placeholders go to application.properties (Boot loads both)")
@@ -2474,8 +2464,7 @@ class Restructurer(LegacyContextMixin):
                    f"{', '.join(files)} — set them before running (see Handover 'Properties to set')")
 
     def _locate_class(self, c: _Ctx, fqcn: str, roots: list[str]) -> str | None:
-        """FQCN의 소스 파일 경로를 반환한다.
-        찾지 못하면 None을 반환한다.
+        """FQCN의 소스 파일 경로를 반환한다. 찾지 못하면 None이다.
         먼저 패키지 경로대로 찾고, 없으면 같은 이름의 파일 중 package 선언이 맞는 것을 고른다.
         디렉토리 구조가 패키지와 다른 레거시 소스가 있기 때문이다."""
         parts = fqcn.split(".")
@@ -2503,7 +2492,8 @@ class Restructurer(LegacyContextMixin):
         """boot 모듈의 pom과 내용을 생성한다.
         - pom에는 starter(``layout.starter_by_case``), boot WAR면 컨테이너 의존성, 옮긴 @SpringBootTest의 테스트 classpath,
           repackage 플러그인을 넣는다
-        - 역할 부모를 쓰면 부모를 ``boot_parent``로 두고 ``root``의 속성과 관리 항목, 필수 사내 아티팩트, BOM, java 버전을 이 pom에 넣는다
+        - 역할 부모를 쓰면 부모를 ``boot_parent``로 둔다. ``root``의 속성과 관리 항목, 필수 사내 아티팩트, BOM,
+          java 버전도 이 pom에 넣는다
         - 이어서 Application 클래스(옮긴 @SpringBootApplication이 없을 때), JSP 뷰 설정, web.xml 등록
           클래스, web.xml 후속 작업을 처리한다
 
@@ -2519,7 +2509,7 @@ class Restructurer(LegacyContextMixin):
             has_starter = any(d.group_id == BOOT_GROUP and d.artifact_id.startswith("spring-boot-starter")
                               and d.scope != "test" for d in asis_deps)
             starter = None if has_starter else "spring-boot-starter"
-        # CLI나 배치 프로그램에서 Tomcat이 뜨지 않도록 spring_legacy의 웹 starter는 웹을 쓰는 근거가 있을 때만 넣는다
+        # spring_legacy의 웹 starter는 웹을 쓰는 근거가 있을 때만 넣는다. CLI나 배치 프로그램에서 Tomcat이 뜨면 안 된다
         starter = self._lc_starter(c, starter, asis_deps)
         c.asis_final_name = final_name
         if starter:
@@ -2528,7 +2518,7 @@ class Restructurer(LegacyContextMixin):
         src = c.profile.source
         if c.boot_war:
             deps.extend(self._war_deps(c, {d.key for d in deps}))
-        # jsp_boot_packaging: jar면 jasper는 넣지만 실행 jar는 JSP를 서비스하지 못하므로 후속 작업으로 경고한다
+        # jsp_boot_packaging이 jar면 jasper는 넣고 후속 작업으로 경고한다. 실행 jar는 JSP를 서비스하지 못한다
         elif c.jsp_moved:
             deps.append(GAV(group_id="org.apache.tomcat.embed", artifact_id="tomcat-embed-jasper"))
             deps.extend(JSTL_DEPS if c.jstl else [])
@@ -2542,7 +2532,7 @@ class Restructurer(LegacyContextMixin):
             c.followup("JSPs under src/main/webapp require tomcat-embed-jasper and may need relocation to "
                        "src/main/resources/META-INF/resources to be served from an executable jar")
         if moved_tests:
-            # 옮긴 @SpringBootTest는 as-is 모듈과 같은 테스트 classpath가 필요하므로 test 의존성을 모두 가져온다
+            # as-is의 test 의존성을 모두 가져온다. 옮긴 @SpringBootTest는 as-is 모듈과 같은 테스트 classpath가 필요하다
             have = {d.key for d in deps}
             test_deps = [d for d in asis_deps if d.scope == "test" and d.key not in have]
             if not any(d.artifact_id == "spring-boot-starter-test" for d in test_deps) \
@@ -2563,7 +2553,7 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"moved @SpringBootTest classes use test classes of {comp_dir} ({', '.join(refs[:5])}"
                        f"{' …' if len(refs) > 5 else ''}) → {lib.artifact_id} test-jar dependency added to "
                        f"{posixpath.basename(c.boot_rel)} and maven-jar-plugin test-jar goal added to {comp_dir}")
-        # @SpringBootApplication이 여럿이면 repackage가 main 클래스를 고르지 못해 빌드가 실패하므로 첫 번째로 고정한다
+        # @SpringBootApplication이 여럿이면 repackage의 main 클래스를 첫 번째 것으로 고정한다. 못 고르면 빌드가 실패한다
         main_class = moved_main[0] if len(moved_main) > 1 else None
         if main_class:
             c.note(f"several @SpringBootApplication classes; repackage mainClass set to {main_class}")
@@ -2572,7 +2562,7 @@ class Restructurer(LegacyContextMixin):
             parent, rel_parent, gid, ver = A.boot_parent.gav(), "", coords.group_id, coords.version  # type: ignore
         else:
             parent, rel_parent, gid, ver = coords, posixpath.relpath(c.p("pom.xml"), boot), None, None
-        # 부모가 Boot를 관리하지 않으면 플러그인 버전에 부모 체인의 ${spring-boot.version} 같은 속성을 쓰고,
+        # 부모가 Boot를 관리하지 않으면 플러그인 버전에 부모 체인의 ${spring-boot.version} 같은 속성을 쓴다
         # 그런 속성이 없으면 대상 버전을 쓴다
         chain_parent = A.boot_parent.gav() if role else A.parent.gav()          # type: ignore[union-attr]
         plugin_version = None if self._manages_boot(c) else self._boot_version_value(c, None, parent=chain_parent)
@@ -2581,7 +2571,7 @@ class Restructurer(LegacyContextMixin):
             artifact_id=coords.artifact_id + L.boot_artifact_suffix, name=None, dependencies=deps,
             plugin_version=plugin_version, main_class=main_class, final_name=final_name,
             packaging="war" if c.boot_war else "jar"))
-        # overlay 버전이 쓰는 속성이 루트에서 함께 복사되도록 overlay를 역할 부모 처리보다 먼저 넣는다
+        # overlay를 역할 부모 처리보다 먼저 넣는다. 그래야 overlay 버전이 쓰는 속성도 루트에서 함께 복사된다
         if c.overlay_carry:
             ov_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
             self._apply_overlays(c, ov_ed)
@@ -2600,14 +2590,14 @@ class Restructurer(LegacyContextMixin):
             self._generate_application(c, boot, comp_dirs)
         elif c.boot_war:
             self._initializer_followup(c, boot, moved_main)
-        # Boot 앱을 나눌 때는 JSP의 웹 경로가 그대로이므로 앱의 뷰 설정을 고치지 않는다
+        # Boot 앱을 나눌 때는 앱의 뷰 설정을 고치지 않는다. JSP의 웹 경로가 그대로다
         if c.jsp_moved and not c.boot_split:
             self._jsp_view_props(c, boot)
         self._web_xml_registrations(c, boot, comp_dirs, moved_main)
         self._web_followups(c)
 
     def _test_helper_refs(self, c: _Ctx, comp_dir: str, boot: str) -> list[str]:
-        """boot 모듈로 옮긴 테스트가 참조하는, comp의 src/test/java에 남은 테스트 클래스 이름 목록을 반환한다.
+        """comp의 src/test/java에 남은 테스트 클래스 중 boot 모듈로 옮긴 테스트가 참조하는 것의 이름을 반환한다.
         주석을 뺀 뒤 단어 단위로 비교한다.
         목록이 있으면 호출하는 쪽이 comp test-jar 의존성을 추가한다."""
         helpers_root = c.ws.abs(f"{comp_dir}/src/test/java")
@@ -2646,12 +2636,12 @@ class Restructurer(LegacyContextMixin):
         c.save(ed)
 
     def _generate_application(self, c: _Ctx, boot: str, comp_dirs: list[str]) -> None:
-        """boot 모듈에 Application 클래스를 생성한다(``templates/Application.java.j2``). 패키지는 분석한 base package이고, 모르면
-        ``com.company.app``을 쓰고 경고를 남긴다.
+        """boot 모듈에 Application 클래스를 생성한다(``templates/Application.java.j2``).
+        패키지는 분석에서 찾은 base package다. 모르면 ``com.company.app``을 쓰고 경고를 남긴다.
         - comp에 같은 FQCN이 있으면 이름 앞에 ``Boot``를 붙인다
-        - servlet 케이스면 @ServletComponentScan을 붙이고, boot WAR면 SpringBootServletInitializer를 상속한다
-        - XML 빈 설정은 web.xml contextConfigLocation이 가리키는 시작 XML만 ``legacy-config/``에 복사하고 @ImportResource로
-          가져온다(``legacy_apply._lc_xml_imports``)
+        - servlet 케이스면 @ServletComponentScan을 붙인다. boot WAR면 SpringBootServletInitializer를 상속한다
+        - XML 빈 설정은 시작 XML(web.xml contextConfigLocation이 가리키는 것)만 ``legacy-config/``에 복사한다.
+          @ImportResource로 가져온다(``legacy_apply._lc_xml_imports``)
         - 기존 main 클래스는 comp에 남기고 후속 작업으로 알린다"""
         L = c.cfg.layout
         src = c.profile.source
@@ -2662,7 +2652,7 @@ class Restructurer(LegacyContextMixin):
             c.profile.warnings.append(f"restructure: base package unknown, used {FALLBACK_PACKAGE}")
         cls = sanitize_identifier(L.application_class_name, "Application")
         pkg_path = pkg.replace(".", "/")
-        # comp에 같은 FQCN이 있으면 boot jar와 comp jar에 같은 클래스가 생기므로 생성 클래스 이름을 바꾼다
+        # comp에 같은 FQCN이 있으면 생성하는 클래스 이름을 바꾼다. 그대로 두면 boot jar와 comp jar에 같은 클래스가 생긴다
         if any(c.ws.exists(f"{d}/src/main/java/{pkg_path}/{cls}.java") for d in comp_dirs):
             cls = "Boot" + cls
             c.note(f"class {pkg}.{L.application_class_name} already exists in comp-jar; generated {cls}")
@@ -2684,10 +2674,9 @@ class Restructurer(LegacyContextMixin):
                        "not invoked by the generated Spring Boot Application")
 
     def _web_followups(self, c: _Ctx) -> None:
-        """web.xml마다 후속 작업 하나를 남긴다.
-        문구는 실제로 생성한 것에 맞춘다.
+        """web.xml마다 후속 작업 하나를 남긴다. 문구는 실제로 생성한 것에 맞춘다.
         - WebXmlRegistrations를 만들었으면 매핑을 확인하라고 안내한다
-        - boot WAR면 web.xml이 참고용으로만 남고, 실행 jar면 내장 Tomcat이 읽지 않는다고 쓴다
+        - boot WAR면 web.xml이 참고용으로만 남는다고 쓴다. 실행 jar면 내장 Tomcat이 읽지 않는다고 쓴다
         - @ServletComponentScan 문구는 스캔에 맡긴 클래스가 있을 때만 붙인다.
           스캔은 web.xml을 읽지 않는다"""
         src = c.profile.source
@@ -2714,8 +2703,8 @@ class Restructurer(LegacyContextMixin):
 
     # ------------------------------------------------------------------ web.xml을 WebXmlRegistrations로
     def _web_xml_registrations(self, c: _Ctx, boot: str, comp_dirs: list[str], moved_main: list[str]) -> None:
-        """``layout.web_xml_registrations: generate``일 때 첫 web.xml의 servlet / filter / listener / error page
-        등록을 boot 모듈의 ``<pkg>.WebXmlRegistrations`` 클래스로 옮긴다.
+        """첫 web.xml의 servlet, filter, listener, error page 등록을 boot 모듈의 ``<pkg>.WebXmlRegistrations``로 옮긴다.
+        ``layout.web_xml_registrations: generate``일 때만 한다.
         - session-timeout은 boot application.properties의 ``server.servlet.session.timeout``으로 옮긴다
         - 빈으로 등록할 수 없는 항목은 후속 작업으로 남긴다
         - 모두 Boot나 스캔이 처리하면 클래스를 만들지 않는다
@@ -2776,7 +2765,7 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"web.xml {asis}: every servlet / filter / listener is provided by Spring Boot or "
                        "@ServletComponentScan; no WebXmlRegistrations generated")
             return
-        # 컴포넌트 스캔 범위 안에 있어야 이 @Configuration이 읽히므로 Application과 같은 패키지에 만든다
+        # Application과 같은 패키지에 만든다. 컴포넌트 스캔 범위 안에 있어야 이 @Configuration이 읽힌다
         pkg = sanitize_package(moved_main[0].rsplit(".", 1)[0]) if moved_main and "." in moved_main[0] else None
         pkg = pkg or sanitize_package(src.base_package) or FALLBACK_PACKAGE
         pkg_path = pkg.replace(".", "/")
@@ -2799,7 +2788,7 @@ class Restructurer(LegacyContextMixin):
         if "web-xml-registered" not in c.result.flags:
             c.result.flags.append("web-xml-registered")
         skipped = [f"{s['cls'].rsplit('.', 1)[-1]} ({s['reason']})" for s in plan.skipped]
-        # jsp-file servlet은 각자 후속 작업이 있으므로 요약에서 반복하지 않는다
+        # jsp-file servlet은 요약에서 반복하지 않는다. 각자 후속 작업이 따로 있다
         c.web_xml_summary = (
             f"web.xml ({model.spec or 'spec unknown'}) → {cls}: {len(plan.servlets)} servlet(s), "
             f"{len(plan.filters)} filter(s), {len(plan.listeners)} listener(s), {len(plan.error_pages)} error page(s)"
@@ -2817,8 +2806,7 @@ class Restructurer(LegacyContextMixin):
 
     def _class_info(self, c: _Ctx, fqcn: str, dirs: list[str]) -> ClassInfo | None:
         """web.xml에 있는 클래스의 프로젝트 소스를 ``dirs`` 아래에서 찾아 ClassInfo를 반환한다.
-        target/은 뺀다.
-        프로젝트 소스가 없으면(라이브러리 클래스) None을 반환한다."""
+        target/ 아래는 보지 않는다. 프로젝트 소스가 없으면(라이브러리 클래스) None을 반환한다."""
         outer = fqcn.split("$", 1)[0]
         pkg, _, simple = outer.rpartition(".")
         for d in dirs:
@@ -2839,9 +2827,8 @@ class Restructurer(LegacyContextMixin):
         return None
 
     def _session_timeout_prop(self, c: _Ctx, boot: str, minutes: int, asis: str) -> None:
-        """web.xml session-timeout(분)을 boot application.properties의 ``server.servlet.session.timeout=<n>m``으로
-        옮긴다.
-        boot 리소스에 이미 설정돼 있으면 그대로 둔다."""
+        """web.xml의 session-timeout(분)을 ``server.servlet.session.timeout=<n>m``으로 옮긴다.
+        값은 boot 모듈의 application.properties에 쓴다. boot 리소스에 이미 설정돼 있으면 그대로 둔다."""
         res = f"{boot}/src/main/resources"
         key = "server.servlet.session.timeout"
         for f in self._boot_resource_files(c, res):
@@ -2864,7 +2851,7 @@ class Restructurer(LegacyContextMixin):
 
     def _packaging_followups(self, c: _Ctx, asis_packaging: str) -> None:
         """패키징에 관한 후속 작업을 남긴다.
-        boot가 WAR인 이유(overlay / JSP)나 as-is WAR를 실행 jar로 바꾼 사실, 바뀌는 context path를 알린다."""
+        boot가 WAR인 이유(overlay, JSP), as-is WAR를 실행 jar로 바꾼 사실, 바뀌는 context path를 알린다."""
         if c.boot_war and not c.jsp_moved and c.overlay_carry:
             c.followup(f"boot module {c.boot_rel} packaged as an executable WAR (java -jar runs the embedded Tomcat; an external "
                        f"Tomcat works too): the WAR overlay(s) {', '.join(g.coordinates for _, g in c.war_overlays)} carry web content")
@@ -2873,7 +2860,7 @@ class Restructurer(LegacyContextMixin):
                        f"too); JSPs are served from the front jar (META-INF/resources) — {c.boot_rel}, {c.front_rel}")
         elif asis_packaging == "war":
             c.followup(f"WAR packaging converted to executable jar ({c.boot_rel})")
-        # as-is WAR가 배포되던 context path(/파일 이름)는 java -jar로 실행하면 /가 되므로 안내한다
+        # as-is WAR가 배포되던 context path(/파일 이름)는 java -jar로 실행하면 /가 된다. 그래서 안내한다
         if asis_packaging == "war" and not c.ear_roots and self._lc_switches(c).handover_sentences:
             name = c.asis_war_name or c.asis_final_name or (
                 f"{c.profile.root_pom.artifact_id}-{c.profile.root_pom.version}"
@@ -2902,13 +2889,13 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _module_tops(c: _Ctx) -> list[str]:
         """회사 모듈 경로의 최상위 디렉토리 목록을 반환한다.
-        이 디렉토리를 소스 루트로 보고 옮기지 않기 위해 쓴다."""
+        소스 루트를 고를 때 이 디렉토리는 뺀다. 회사 모듈 디렉토리를 다시 옮기지 않기 위해서다."""
         return [p.split("/")[0] for p in (c.boot_rel, c.comp_rel, c.front_rel) if p]
 
     @staticmethod
     def _layout_modules(c: _Ctx) -> list[str]:
         """루트 <modules> 목록을 반환한다.
-        boot가 back과 front에 의존하므로 back, front(있을 때), boot 순서다."""
+        순서는 back, front(있을 때), boot다. boot가 back과 front에 의존하기 때문이다."""
         return [c.comp_rel, *([c.front_rel] if c.front_made and c.front_rel else []), c.boot_rel]
 
     @staticmethod
@@ -2923,7 +2910,7 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _mandatory_in_root(c: _Ctx) -> bool:
         """필수 사내 아티팩트를 루트 pom에 두면 True를 반환한다.
-        ``artifacts.mandatory_target: root``(회사 기본값)면 참이고, 아니면 각 모듈 pom에 둔다."""
+        ``artifacts.mandatory_target: root``(회사 기본값)면 참이다. 아니면 각 모듈 pom에 둔다."""
         return getattr(c.cfg.artifacts, "mandatory_target", "root") == "root"
 
     def _record_modules(self, c: _Ctx, existing: bool = False) -> None:
@@ -2976,8 +2963,8 @@ class Restructurer(LegacyContextMixin):
         - WEB-INF 밖 JSP는 URL이 유지되도록 front jar의 ``META-INF/resources/`` 루트로 옮긴다
         - web root 안의 <resource> / sourceDirectory 파일은 comp에 남긴다.
           ``layout.front_copy_resource_dirs``면 front static에도 복사한다
-        - 나머지는 ``<front_static_dir>/<웹 경로>``로, ``src/main/resources``의 static, public, templates는 front의 같은
-          경로로 옮긴다
+        - 나머지는 ``<front_static_dir>/<웹 경로>``로 옮긴다. ``src/main/resources``의 static, public, templates는
+          front의 같은 경로로 옮긴다
         대상 경로에 이미 파일이 있으면 옮기지 않고 후속 작업으로 남긴다.
         ``c.front_made`` / ``c.jsp_moved`` / ``c.jstl`` / ``c.boot_war``를 정하고 front pom을 쓴다.
 
@@ -2998,7 +2985,7 @@ class Restructurer(LegacyContextMixin):
         jsp_dir = L.front_jsp_dir.strip("/")
         jsp_dst = f"{front}/{jsp_dir}"
         i = jsp_dir.find("META-INF/resources")
-        # Servlet 3에서는 jar의 META-INF/resources가 웹 루트처럼 서비스되므로 JSP 디렉토리 설정에서 그 위치를 뽑아낸다
+        # JSP 디렉토리 설정에서 META-INF/resources 위치를 뽑아낸다. Servlet 3에서는 jar의 이 폴더가 웹 루트처럼 서비스된다
         meta_dst = f"{front}/{jsp_dir[:i + len('META-INF/resources')]}" if i >= 0 else static_dst
         stash = f"{boot}/src/main/resources/{WEBINF_STASH}"
         plan: list[tuple[str, str, str, str]] = []      # (src, dst, 종류 static | jsp | webinf | copy, 웹 경로)
@@ -3022,7 +3009,7 @@ class Restructurer(LegacyContextMixin):
                 top, _, sub = web.partition("/")
                 src = f"{webapp}/{rel}"
                 if top == "WEB-INF" and sub:
-                    # Boot 앱은 spring.mvc.view.prefix를 이미 갖고 있으므로 JSP의 웹 경로를 바꾸지 않는다
+                    # Boot 앱을 나눌 때는 JSP의 웹 경로를 바꾸지 않는다. 앱의 spring.mvc.view.prefix가 그 경로를 쓴다
                     if sub.lower().endswith(JSP_EXTS) and c.boot_split and i >= 0:
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
                     elif sub.lower().endswith(JSP_EXTS):
@@ -3030,10 +3017,10 @@ class Restructurer(LegacyContextMixin):
                         plan.append((src, f"{jsp_dst}/{under}", "jsp", web))
                     elif sub.startswith("tags/") or sub.lower().endswith(".tld"):
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
-                    # WEB-INF/lib의 jar와 classes는 Maven 의존성이나 소스로 바꿔야 하므로 옮기지 않는다
+                    # WEB-INF/lib의 jar와 classes는 옮기지 않는다. Maven 의존성이나 소스로 바꿔야 한다
                     elif sub.startswith(("lib/", "classes/")):
                         left.append(src)
-                    # 설정이 아닌 WEB-INF 파일은 include / forward 경로가 유지되도록 같은 웹 경로로 옮기고
+                    # 설정이 아닌 WEB-INF 파일은 같은 웹 경로로 옮긴다. 그래야 include / forward 경로가 유지된다
                     # 설정 파일만 boot 보관 폴더로 보낸다
                     elif posixpath.splitext(sub)[1].lower() not in WEBINF_CONFIG_EXTS:
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "static", web))
@@ -3043,8 +3030,8 @@ class Restructurer(LegacyContextMixin):
                     left.append(src)
                 elif web.lower().endswith(JSP_EXTS):
                     plan.append((src, f"{meta_dst}/{web}", "jsp", web))
-                # web root 안의 <resource> 디렉토리(예: STATIC/resources)는 classpath로 읽는 코드가 있을 수
-                # 있으므로 확장자와 상관없이 comp에 남긴다
+                # web root 안의 <resource> 디렉토리(예: STATIC/resources)는 확장자와 상관없이 comp에 남긴다
+                # classpath로 읽는 코드가 있을 수 있다
                 elif any(f"{wdir}/{rel}".startswith(k + "/") for k in inner):
                     kept_res += 1
                     if posixpath.splitext(rel)[1].lstrip(".").lower() in WEB_STATIC_EXTENSIONS:
@@ -3081,7 +3068,7 @@ class Restructurer(LegacyContextMixin):
                 text = c.ws.abs(src).read_text(encoding="utf-8", errors="replace")
                 c.jstl = c.jstl or bool(JSTL_URI_RE.search(text))
                 web_old = "/" + web
-                # WEB-INF/jsp 밖에 있던 JSP는 웹 경로가 바뀌므로 include / forward 경로를 고치라는 후속 작업에 쓴다
+                # WEB-INF/jsp 밖에 있던 JSP는 웹 경로가 바뀐다. include / forward 경로를 고치라는 후속 작업에 넣는다
                 if not web_old.startswith("/WEB-INF/jsp/"):
                     jsp_relocated.append(web_old)
             elif kind == "jsp" and src.lower().endswith(JSP_EXTS):
@@ -3099,8 +3086,8 @@ class Restructurer(LegacyContextMixin):
         c.front_made = True
         c.jsp_moved = jsp_files
         c.result.front_files = moved["static"] + moved["jsp"] + moved["copy"]
-        # Spring Boot는 실행 jar에서 JSP를 지원하지 않으므로 JSP가 있으면 boot 모듈을 실행 WAR로 만든다
-        # WAR overlay가 이미 참으로 정했을 수도 있다
+        # JSP가 있고 jsp_boot_packaging이 war면 boot 모듈을 실행형 WAR로 만든다. 실행 jar는 JSP를 서비스하지 못한다
+        # WAR overlay 때문에 이미 참일 수도 있다
         c.boot_war = c.boot_war or (c.jsp_moved > 0 and L.jsp_boot_packaging == "war")
         self._write_front_pom(c, coords, front)
         custom = [d for d, _ in roots
@@ -3126,7 +3113,7 @@ class Restructurer(LegacyContextMixin):
             c.followup(f"{len(jsp_relocated)} JSP(s) outside /WEB-INF/jsp/ now live under /WEB-INF/jsp/ in "
                        f"{front} ({', '.join(jsp_relocated[:3])}{' …' if len(jsp_relocated) > 3 else ''}): update "
                        "jsp:include / forward paths and view-resolver prefixes that name the old location")
-        # META-INF/context.xml은 Tomcat 설정이라서 jar를 의존성으로 바꾸라는 안내가 맞지 않는다
+        # META-INF/context.xml은 Tomcat 설정이다. jar를 의존성으로 바꾸라는 안내 대신 따로 안내한다
         ctx_xml = [x for x in left if x.endswith("/META-INF/context.xml")]
         left = [x for x in left if x not in ctx_xml]
         for x in ctx_xml:
@@ -3134,8 +3121,8 @@ class Restructurer(LegacyContextMixin):
                        "(java -jar) — its <Resource> / <Environment> entries are listed under 'Properties to set'")
         if left:
             where = ", ".join(sorted({d for d in web_dirs if any(x.startswith(d + "/") for x in left)}))
-            # 번들 jar 연결이 켜져 있으면 연결한 jar를 빼고 안내하도록 후속 작업을 _wire_bundled_jars 뒤로 미룬다
-            # 이 시점에는 comp / boot pom이 아직 없어 여기서 연결할 수 없다
+            # 번들 jar 연결이 켜져 있으면 후속 작업을 _wire_bundled_jars 뒤로 미룬다. 연결한 jar는 안내에서 뺀다
+            # 이 시점에는 comp / boot pom이 아직 없어서 여기서 연결할 수 없다
             if self._bundled_wiring_on(c):
                 c.webinf_left.append((left, where))
             else:
@@ -3152,8 +3139,7 @@ class Restructurer(LegacyContextMixin):
             getattr(c.profile, "bundled_jars", None))
 
     def _repo_lookup(self, c: _Ctx) -> Any:
-        """재구성 한 번 동안 공유하는 ``RepositoryLookup``을 반환한다.
-        만들지 못하면 None을 반환한다.
+        """재구성 한 번 동안 공유하는 ``RepositoryLookup``을 반환한다. 만들지 못하면 None이다.
         ``_repository_release``도 같은 객체를 쓴다."""
         if not c.repo_lookup_made:
             c.repo_lookup_made = True
@@ -3174,13 +3160,14 @@ class Restructurer(LegacyContextMixin):
 
     def _bundled_boot_poms(self, c: _Ctx, module_pom: str, poms: list[str], layout_boot: str) -> list[str]:
         """``module_pom``의 jar를 함께 패키징할 boot pom 목록을 반환한다.
-        spring-boot-maven-plugin을 가진 pom과 분석에서 찾은 boot 모듈 중, 그 모듈 자신이거나 그 모듈에 의존하는 것이다.
+        후보는 spring-boot-maven-plugin이 있는 pom과 분석에서 찾은 boot 모듈이다.
+        그중 그 모듈 자신이거나 그 모듈에 의존하는 pom을 고른다.
         맞는 것이 없으면 ``layout_boot``(생성한 boot pom)를 쓴다."""
         try:
             aid = PomEditor(c.ws.abs(module_pom)).artifact_id() or ""
         except PomEditError:
             aid = ""
-        # 역할 부모가 플러그인을 물려주면 pom에 플러그인 선언이 없을 수 있으므로 분석에서 찾은 boot 모듈도 후보에 넣는다
+        # 분석에서 찾은 boot 모듈도 후보에 넣는다. 역할 부모가 플러그인을 물려주면 pom에 플러그인 선언이 없을 수 있다
         boot_dirs = {(m.strip("/") + "/pom.xml") if m and m not in (".", "") else "pom.xml"
                      for m in (getattr(c.profile, "boot_modules", None) or [])}
         out: list[str] = []
@@ -3199,7 +3186,7 @@ class Restructurer(LegacyContextMixin):
 
     def _wire_bundled_jars(self, c: _Ctx, *, layout: bool) -> None:
         """어느 pom도 선언하지 않은 프로젝트 안 jar(``profile.bundled_jars``)를 지금 jar가 있는 모듈의 pom에 연결한다.
-        - 연결 여부는 ``bundled_jars.plan_bundled_jars``가 정하고, pom 수정은 ``apply_bundled_jars``가 한다
+        - 연결할지는 ``bundled_jars.plan_bundled_jars``가 정한다. pom 수정은 ``apply_bundled_jars``가 한다
         - layout 모드에서는 WEB-INF/lib jar와 루트 jar를 comp pom에 연결한다
         - 미뤄 둔 WEB-INF 후속 작업은 연결하지 못한 jar만 남긴다
         실패해도 재구성은 중단하지 않고 노트만 남긴다.
@@ -3256,7 +3243,7 @@ class Restructurer(LegacyContextMixin):
         if not groups and not skipped:
             return set()
         managed = self._target_managed_keys(c)
-        # 원격 저장소가 응답하지 않은 jar는 system으로 연결하지 않도록 세 가지 답을 받는다
+        # 저장소 조회 결과를 있음, 없음, 응답 없음 셋으로 받는다. 응답이 없던 jar는 system으로 연결하지 않는다
         has = repository_state_fn(self._repo_lookup(c))
         try:
             group = PomEditor(c.ws.abs(c.p("pom.xml"))).effective_group_id() or ""
@@ -3313,8 +3300,8 @@ class Restructurer(LegacyContextMixin):
 
     def _strip_war_web_config(self, c: _Ctx, ed: PomEditor) -> None:
         """생성하거나 다시 쓴 pom에서 maven-war-plugin의 warSourceDirectory / webResources를 지운다.
-        web root는 front 모듈로 옮겨졌고 boot WAR에는 webapp 디렉토리가 없다.
-        루트 pluginManagement를 거쳐 boot pom에도 들어가므로 모든 생성 pom에서 지운다."""
+        web root는 front 모듈로 옮겨졌다. boot WAR에는 webapp 디렉토리가 없다.
+        이 설정은 루트 pluginManagement를 거쳐 boot pom에도 들어간다. 그래서 생성한 pom마다 지운다."""
         removed: list[str] = []
         for p in ed.find_plugins(*WAR_PLUGIN, where="all"):
             conf = ed.child(p, "configuration")
@@ -3352,7 +3339,8 @@ class Restructurer(LegacyContextMixin):
 
     def _write_front_pom(self, c: _Ctx, coords: GAV, front: str) -> None:
         """front 모듈 pom(``<root>-front``)을 생성한다.
-        역할 부모를 쓰면 ``comp_parent``, 명시 좌표, 필수 사내 아티팩트, BOM, java 버전을 넣고, 아니면 루트 pom을 부모로 둔다."""
+        역할 부모를 쓰면 부모를 ``comp_parent``로 두고 좌표, 필수 사내 아티팩트, BOM, java 버전을 직접 넣는다.
+        아니면 루트 pom을 부모로 둔다."""
         A = c.cfg.artifacts
         path = f"{front}/pom.xml"
         aid = coords.artifact_id + FRONT_ARTIFACT_SUFFIX
@@ -3374,7 +3362,7 @@ class Restructurer(LegacyContextMixin):
 
     def _war_deps(self, c: _Ctx, have: set[str]) -> list[GAV]:
         """boot WAR에 넣을 컨테이너 의존성 목록을 반환한다.
-        버전은 Spring Boot 4.1 BOM이 관리하므로 쓰지 않는다.
+        버전은 쓰지 않는다. Spring Boot 4.1 BOM이 관리한다.
         - spring-boot-starter-tomcat / tomcat-embed-jasper는 provided다.
           java -jar로 실행하면 WEB-INF/lib-provided에서 읽고, 외부 Tomcat에서는 그 Tomcat이 제공한다
         - @ServletComponentScan을 쓰면 spring-boot-web-server를 compile로 넣는다
@@ -3382,8 +3370,8 @@ class Restructurer(LegacyContextMixin):
         out = [GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-starter-tomcat", scope="provided"),
                GAV(group_id="org.apache.tomcat.embed", artifact_id="tomcat-embed-jasper", scope="provided")]
         if self._servlet_scan(c):
-            # Boot 4.1은 spring-boot-web-server를 Tomcat starter로만 가져오므로 provided로 두면 WEB-INF/lib에서 빠진다
-            # WAR 빌드로 확인한 사실이다
+            # spring-boot-web-server는 compile로 넣는다. Boot 4.1은 이 jar를 Tomcat starter로만 가져온다
+            # provided로 두면 WEB-INF/lib에서 빠진다(WAR 빌드로 확인한 사실)
             out.append(GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-web-server"))
         if c.jstl:
             out += JSTL_DEPS
@@ -3414,7 +3402,7 @@ class Restructurer(LegacyContextMixin):
                    "configure(SpringApplicationBuilder)")
 
     def _view_resolver(self, c: _Ctx) -> tuple[str | None, str | None, str | None]:
-        """as-is 설정에서 JSP 뷰의 prefix / suffix를 찾아 처음 찾은 파일의 (prefix, suffix, 파일)을 반환한다.
+        """as-is 설정에서 JSP 뷰의 prefix와 suffix를 찾는다. 처음 찾은 파일의 (prefix, suffix, 파일)을 반환한다.
         XML의 InternalResourceViewResolver 빈과 ``<mvc:jsp>``, Java의 ``registry.jsp(...)``와 setPrefix /
         setSuffix를 본다.
         찾지 못하면 (None, None, None)을 반환한다."""
@@ -3473,11 +3461,12 @@ class Restructurer(LegacyContextMixin):
         return web                                      # WEB-INF 밖은 META-INF/resources 루트의 같은 경로다
 
     def _jsp_view_props(self, c: _Ctx, boot: str) -> None:
-        """as-is 뷰 리졸버의 prefix / suffix를 옮긴 JSP 위치에 맞게 바꿔 boot application.properties의
-        ``spring.mvc.view.prefix`` / ``spring.mvc.view.suffix``에 넣는다.
+        """as-is 뷰 리졸버의 prefix와 suffix를 옮긴 JSP 위치에 맞게 바꾼다.
+        바꾼 값은 boot application.properties의 ``spring.mvc.view.prefix`` / ``spring.mvc.view.suffix``에 넣는다.
         - 이미 설정돼 있으면 그대로 둔다
         - 찾지 못하면 컨트롤러나 spring-webmvc가 있는 프로젝트에만 후속 작업을 남긴다
-        - @EnableWebMvc가 Boot MVC 자동 설정을 끄면 ``spring.mvc.view.*``가 무시되므로 쓰지 않고 인수인계로 남긴다
+        - @EnableWebMvc가 Boot MVC 자동 설정을 끄면 인수인계로 남긴다. ``spring.mvc.view.*``가 무시되기 때문이다.
+          ``layout.legacy_context.detect_enable_web_mvc``가 켜져 있으면 값도 쓰지 않는다
         - prefix가 바뀌면 Java 리졸버는 직접 고치라고 안내한다.
           XML 리졸버는 legacy-config 복사본에서 이미 고쳤다"""
         res = f"{boot}/src/main/resources"
@@ -3532,10 +3521,10 @@ class Restructurer(LegacyContextMixin):
     def _rewrite_root(self, c: _Ctx, root: PomEditor, modules: list[str], *, keep_deps: bool,
                       keep_build_plugins: bool, aggregator: bool = False) -> None:
         """루트 pom을 aggregator로 바꾼다.
-        좌표를 명시하고 부모를 ``artifacts.parent``, packaging을 pom, <modules>를 회사 모듈로 바꾼 뒤 의존성과 build를 정리한다.
-        wrap 방식(``keep_deps`` / ``keep_build_plugins``)이면 의존성과 build를 유지한다.
-        - ``aggregator``(역할 부모)면 모듈이 루트를 상속하지 않으므로 이미 모듈 pom에 복사한 관리 항목과 쓰지 않는 속성을 지운다.
-          필수 사내 아티팩트는 ``mandatory_target: root``일 때만 남긴다
+        좌표를 명시하고, 부모를 ``artifacts.parent``로, packaging을 pom으로, <modules>를 회사 모듈로 바꾼다.
+        그다음 의존성과 build를 정리한다. wrap 방식(``keep_deps`` / ``keep_build_plugins``)이면 둘 다 유지한다.
+        - ``aggregator``(역할 부모)면 모듈 pom에 이미 복사한 관리 항목과 쓰지 않는 속성을 지운다.
+          모듈이 루트를 상속하지 않기 때문이다. 필수 사내 아티팩트는 ``mandatory_target: root``일 때만 남긴다
         - 아니면 필수 사내 아티팩트, BOM, java 버전을 루트에 둔다"""
         A = c.cfg.artifacts
         g, v = root.effective_group_id(), root.effective_version()
@@ -3552,7 +3541,7 @@ class Restructurer(LegacyContextMixin):
                 root.remove_property(NAME_PROP)
                 root.remove_if_empty(root.find("properties"))
         old_parent = root.get_parent()
-        # 루트는 항상 사내 부모 pom(base-parent)과 빈 <relativePath/>를 써서 부모를 저장소(Nexus)에서 받는다
+        # 루트의 부모는 항상 사내 부모 pom(base-parent)이다. 빈 <relativePath/>를 써서 저장소(Nexus)에서 받는다
         root.set_parent(A.parent.gav(), None)
         self._record_parent(c, c.ws.rel(root.path), old_parent, A.parent.gav())
         root.set_packaging("pom")
@@ -3593,8 +3582,7 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _prune_root_properties(root: PomEditor) -> None:
         """aggregator 루트 pom에서 나머지 내용이 참조하지 않는 속성을 지운다.
-        속성끼리의 참조도 따라간다.
-        속성은 이미 모듈 pom으로 복사됐고 모듈은 더 이상 루트를 상속하지 않는다."""
+        속성끼리의 참조도 따라간다. 속성은 이미 모듈 pom으로 복사됐고, 모듈은 더 이상 루트를 상속하지 않는다."""
         props = root.properties()
         if not props:
             return
@@ -3616,8 +3604,7 @@ class Restructurer(LegacyContextMixin):
     # ------------------------------------------------------------------ 역할 부모
     @staticmethod
     def _role(c: _Ctx) -> bool:
-        """역할 부모 방식이면 True를 반환한다.
-        boot_parent와 comp_parent가 둘 다 설정된 경우다.
+        """역할 부모 방식이면 True를 반환한다. boot_parent와 comp_parent가 둘 다 설정된 경우다.
         이때 모듈은 루트 대신 사내 부모 pom(boot-jar / comp-jar)을 직접 상속한다."""
         return bool(c.cfg.artifacts.role_parents)
 
@@ -3637,8 +3624,8 @@ class Restructurer(LegacyContextMixin):
 
     def _role_module(self, c: _Ctx, ed: PomEditor, root: PomEditor | None, *, exclude: set[str],
                      all_props: bool = False) -> None:
-        """역할 부모를 상속하게 된 모듈 pom에 루트에서 물려받던 내용을 넣는다(``_inherit_root_content``). ``root``가 None이면 원래 루트를 상속하지 않던
-        모듈이므로 이 단계는 건너뛴다.
+        """역할 부모를 상속하게 된 모듈 pom에 루트에서 물려받던 내용을 넣는다(``_inherit_root_content``).
+        ``root``가 None이면 원래 루트를 상속하지 않던 모듈이다. 이 단계는 건너뛴다.
         이어서 필수 사내 아티팩트(``mandatory_target: modules``일 때만), remove_when_present, Spring Boot BOM을 처리한다.
         java 버전은 호출하는 쪽이 ``_fix_java(top=True)``로 맞춘다.
 
@@ -3653,10 +3640,9 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _inherit_root_content(c: _Ctx, ed: PomEditor, root: PomEditor, *, exclude: set[str],
                               all_props: bool = False) -> None:
-        """``root``에서 물려받던 관리 항목을 ``ed``로 복사한다.
-        ``ed``에 이미 있는 것은 덮어쓰지 않는다.
+        """``root``에서 물려받던 관리 항목을 ``ed``로 복사한다. ``ed``에 이미 있는 것은 덮어쓰지 않는다.
         dependencyManagement(``exclude`` 제외), pluginManagement, repositories / pluginRepositories, 속성이 대상이다.
-        ``all_props``면 속성을 모두 복사하고, 아니면 이 pom이 참조하는 것과 project.* / maven.*만 복사한다."""
+        ``all_props``면 속성을 모두 복사한다. 아니면 이 pom이 참조하는 속성과 project.* / maven.*만 복사한다."""
         for el in root.dependency_elements(True):
             g = root.gav_of(el)
             if g.key in exclude or ed.has_managed_dependency(g.group_id, g.artifact_id):
@@ -3687,8 +3673,8 @@ class Restructurer(LegacyContextMixin):
 
     @staticmethod
     def _inherit_build(c: _Ctx, ed: PomEditor, anc: PomEditor, *, boot: bool) -> list[str]:
-        """프로젝트 안의 부모 pom을 더 이상 상속하지 않게 되는 모듈에 그 pom의 <dependencies>와 <build><plugins>를 복사하고, 복사한 키 목록을 반환한다.
-        Boot as-is / MSA 모드에서 쓴다.
+        """프로젝트 안의 부모 pom을 더 이상 상속하지 않게 되는 모듈에 그 부모의 의존성과 플러그인을 복사한다.
+        <dependencies>와 <build><plugins>가 대상이고, 복사한 키 목록을 반환한다. Boot as-is, MSA 모드에서 쓴다.
         부모만 바꾸면 물려받던 의존성이 사라져 컴파일이 깨지기 때문이다.
         이미 선언된 것, <inherited>false</inherited> 플러그인, boot가 아닌 모듈의 spring-boot-maven-plugin은 뺀다."""
         copied: list[str] = []
@@ -3713,8 +3699,7 @@ class Restructurer(LegacyContextMixin):
         return copied
 
     def _role_for(self, c: _Ctx, pom: str, parent: GAV) -> Any:
-        """as-is <parent>와 groupId:artifactId가 같은 역할 부모 설정(boot_parent / comp_parent)을 반환한다.
-        없으면 None을 반환한다.
+        """as-is <parent>와 groupId:artifactId가 같은 역할 부모 설정(boot_parent / comp_parent)을 반환한다. 없으면 None이다.
         두 설정의 키가 같으면 boot 모듈 디렉토리인지로 정한다."""
         A = c.cfg.artifacts
         hits = [r for r in (A.boot_parent, A.comp_parent) if r is not None and r.key == parent.key]
@@ -3726,8 +3711,8 @@ class Restructurer(LegacyContextMixin):
         return A.boot_parent if posixpath.dirname(pom) == boot_dir else A.comp_parent
 
     def _align_role_parents(self, c: _Ctx, *, report_modules: bool = False, skip: set[str] | None = None) -> None:
-        """루트를 뺀 프로젝트 pom 중 <parent>가 boot_parent / comp_parent의 groupId:artifactId인 것을 버전과 상관없이 설정된 GAV와
-        <relativePath/>로 맞춘다.
+        """루트를 뺀 프로젝트 pom 중 <parent>가 boot_parent나 comp_parent의 groupId:artifactId인 것을 맞춘다.
+        버전과 상관없이 설정된 GAV와 <relativePath/>로 바꾼다.
         ``report_modules``가 참이면(이미 재구성된 경우) 회사 모듈 pom이 다른 부모를 쓸 때 바꾸지 않고 노트만 남긴다."""
         A = c.cfg.artifacts
         if A.boot_parent is None and A.comp_parent is None:
@@ -3768,14 +3753,13 @@ class Restructurer(LegacyContextMixin):
     @staticmethod
     def _mandatory_managed(spec) -> bool:
         """필수 사내 아티팩트가 BOM 형태(``scope: import``)면 True를 반환한다.
-        BOM은 <dependencyManagement>에만 둔다.
-        Maven은 <dependencies>의 import scope를 거부한다."""
+        BOM은 <dependencyManagement>에만 둔다. Maven은 <dependencies>의 import scope를 거부한다."""
         return (getattr(spec, "scope", None) or "").strip().lower() == "import"
 
     def _mandatory_align_existing(self, c: _Ctx, ed: PomEditor, spec, managed: bool, where: str) -> None:
-        """이미 선언된 필수 사내 아티팩트의 버전을 설정에 맞추고, 설정에 있으면 <type> / <scope>도 맞춘다.
-        버전이 None이면 부모가 관리한다는 뜻이다.
-        pom 패키징 아티팩트를 <type>pom</type> 없이 선언하면 없는 jar를 찾다가 빌드가 실패하기 때문이다."""
+        """이미 선언된 필수 사내 아티팩트의 버전을 설정에 맞춘다. 버전이 None이면 부모가 관리한다는 뜻이다.
+        설정에 <type> / <scope>가 있으면 그것도 맞춘다.
+        pom 패키징 아티팩트를 <type>pom</type> 없이 선언하면 없는 jar를 찾다가 빌드가 실패한다."""
         for e in ed.dependency_elements(managed):
             g = ed.gav_of(e)
             if g.key != spec.key:
@@ -3795,9 +3779,8 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"mandatory {spec.key} {where} {c.ws.rel(ed.path)}; {', '.join(aligned)} aligned")
 
     def _add_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
-        """필수 사내 아티팩트를 이 pom에 추가한다.
-        BOM 형태면 dependencyManagement에 넣는다.
-        이미 있으면 설정의 버전 / type / scope로 맞추고, 새로 넣은 것은 결과의 mandatory_added에 기록한다."""
+        """필수 사내 아티팩트를 이 pom에 추가한다. BOM 형태면 dependencyManagement에 넣는다.
+        이미 있으면 설정의 버전 / type / scope로 맞춘다. 새로 넣은 것은 결과의 mandatory_added에 기록한다."""
         for spec in c.cfg.artifacts.mandatory:
             managed = self._mandatory_managed(spec)
             gav = spec.gav().model_copy(update={"version": self._spec_version(c, spec, ed, "mandatory")})
@@ -3811,7 +3794,7 @@ class Restructurer(LegacyContextMixin):
 
     def _align_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
         """모듈 pom에 따로 남아 있는 필수 사내 아티팩트 선언을 설정의 버전 / type / scope로 맞춘다.
-        ``mandatory_target: root``에서 쓰며 새로 추가하지는 않는다."""
+        ``mandatory_target: root``일 때 쓴다. 새로 추가하지는 않는다."""
         for spec in c.cfg.artifacts.mandatory:
             self._mandatory_align_existing(c, ed, spec, self._mandatory_managed(spec), "declared in")
 
@@ -3828,17 +3811,17 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"removed {key} from {c.ws.rel(ed.path)} (remove_when_present)")
 
     def _boot_bom(self, c: _Ctx, ed: PomEditor) -> None:
-        """이 pom의 Spring Boot BOM import를 정리하고 이어서 Spring Cloud BOM을 처리한다(``_cloud_bom``).
-        - 사내 부모가 Boot를 관리하면 두 관리가 충돌하지 않도록 as-is ``spring-boot-dependencies`` import를 지운다
+        """이 pom의 Spring Boot BOM import를 정리한다. 이어서 Spring Cloud BOM을 처리한다(``_cloud_bom``).
+        - 사내 부모가 Boot를 관리하면 as-is ``spring-boot-dependencies`` import를 지운다. 두 관리가 충돌하면 안 된다
         - 아니면 BOM을 dependencyManagement 맨 앞에 넣거나 기존 import의 버전을 고친다
-        버전은 부모 체인이 정의한 ``${spring-boot.version}`` 같은 속성이고, 없으면 대상 버전 값을 쓴다.
+        버전은 부모 체인이 정의한 ``${spring-boot.version}`` 같은 속성을 쓴다. 없으면 대상 버전 값을 쓴다.
 
         The property names come from `layout.bom_version_properties.spring_boot`; each import is recorded
         (`_record_bom_import`: row / note / journal `bom_imports`)."""
         bom_aid = "spring-boot-dependencies"
         key = f"{BOOT_GROUP}:{bom_aid}"
         rel = c.ws.rel(ed.path)
-        # 사내 부모가 Boot 버전을 관리하므로 두 관리가 충돌하지 않도록 as-is BOM import를 지운다
+        # 사내 부모가 Boot 버전을 관리하면 as-is BOM import를 지운다. 두 관리가 충돌하면 안 된다
         if self._manages_boot(c):
             if ed.remove_managed_dependency(BOOT_GROUP, bom_aid):
                 c.note(f"as-is {key} import removed from {rel} (the in-house parent manages Spring Boot)")
@@ -3861,9 +3844,8 @@ class Restructurer(LegacyContextMixin):
 
     def _cloud_bom(self, c: _Ctx, ed: PomEditor, rel: str) -> None:
         """프로젝트가 Spring Cloud를 쓰는데 부모 체인도 프로젝트도 관리하지 않으면 ``spring-cloud-dependencies``를 import한다.
-        버전은 체인의 ``${spring-cloud.version}`` 같은 속성을 쓰고, 없으면 ``knowledge/config/spring_cloud_bom.yml``에서 대상
-        Boot에 맞는 버전을 쓴다.
-        그것도 없으면 후속 작업만 남긴다.
+        버전은 체인의 ``${spring-cloud.version}`` 같은 속성을 쓴다. 없으면 ``knowledge/config/spring_cloud_bom.yml``에서
+        대상 Boot에 맞는 버전을 고른다. 그것도 없으면 후속 작업만 남긴다.
 
         "Uses Spring Cloud" = the analyzer found library `spring-cloud`; "the chain manages" = its own managed
         entries hold an `org.springframework.cloud:*`. Property names:
@@ -3922,9 +3904,8 @@ class Restructurer(LegacyContextMixin):
         """pom의 Java 버전 설정을 정리한다.
         - 사내 부모가 java 버전을 관리하면(``parent_manages_java_version``) java 속성과 compiler 플러그인의 source / target /
           release를 지운다
-        - 아니면 source / target을 지우고 ``maven.compiler.release``를 대상 버전으로 둔다.
-          ``top``이거나 이미 있을 때만이다
-        - ``java.version``이 있으면 대상 버전으로, compiler 플러그인의 source / target은 release로 바꾼다"""
+        - 아니면 source / target을 지운다. ``maven.compiler.release``는 ``top``이거나 이미 있을 때만 대상 버전으로 둔다
+        - ``java.version``이 있으면 대상 버전으로 바꾼다. compiler 플러그인의 source / target은 release로 바꾼다"""
         target = c.cfg.target.java_version
         manages = c.cfg.artifacts.parent_manages_java_version
         props = ed.properties()
@@ -3962,7 +3943,7 @@ class Restructurer(LegacyContextMixin):
     # ================================================================== 선택 아티팩트 버전 맞춤과 pom 정리
     def _project_poms(self, c: _Ctx) -> list[str]:
         """루트 pom을 먼저, 그다음 프로젝트의 나머지 pom을 모두 반환한다.
-        src/ 아래 pom은 테스트 데이터이므로 뺀다."""
+        src/ 아래 pom은 뺀다. 테스트 데이터다."""
         root_rel = c.p("pom.xml")
         poms = [p for p in c.ws.pom_files()
                 if "/src/" not in f"/{p}" and (not c.base or p.startswith(c.base + "/")) and p != root_rel]
@@ -3973,7 +3954,7 @@ class Restructurer(LegacyContextMixin):
         """모든 프로젝트 pom(또는 ``only``의 pom)에 아래 정리를 적용한다.
         - remove_when_present, 필요하면 java 버전과 boot 플러그인 버전 정리
         - 조건이 맞는 선택 사내 아티팩트 추가와 선택 사내 아티팩트 버전 맞춤
-        속성은 어느 pom에든 정의돼 있을 수 있으므로 pom은 모두 읽는다.
+        속성은 어느 pom에든 정의돼 있을 수 있다. 그래서 pom은 모두 읽는다.
 
         Every mode runs this before `_pin_asis_versions`, so an optional added here is a protected key
         there."""
@@ -3992,7 +3973,7 @@ class Restructurer(LegacyContextMixin):
                 self._fix_java(c, ed, top=False)
             if boot_plugin_fix:
                 self._fix_boot_plugin(c, ed)
-        # 조건 의존성이 있으면 선택 사내 아티팩트를 먼저 선언해서 뒤의 버전 맞춤이 같이 다루게 한다
+        # 조건 의존성이 있으면 선택 사내 아티팩트를 먼저 선언한다. 그래야 뒤의 버전 맞춤이 같이 다룬다
         self._apply_optional_triggers(c, eds, editable=only)
         self._bump_optionals(c, eds, editable=only)
         for ed in eds.values():
@@ -4003,7 +3984,7 @@ class Restructurer(LegacyContextMixin):
         """``optional_bump`` 모드에서 선택 사내 아티팩트 버전 맞춤과 remove_when_present 처리만 한다.
         파일 이동이나 부모 변경은 하지 않는다.
         ``params['target']``이 있으면 그 디렉토리 아래 pom과 그 pom이 상속하는 프로젝트 안 부모만 다룬다.
-        지금 계획은 이 모드를 쓰지 않고 다른 모드 안에서 함께 맞춘다."""
+        지금 계획은 이 모드를 쓰지 않는다. 다른 모드 안에서 함께 맞춘다."""
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
         c.base = posixpath.dirname(root_rel) if c.ws.exists(root_rel) else ""
         target = c.params.get("target")
@@ -4030,7 +4011,7 @@ class Restructurer(LegacyContextMixin):
 
     def _fix_boot_plugin(self, c: _Ctx, ed: PomEditor) -> None:
         """spring-boot-maven-plugin 버전을 정리한다.
-        사내 부모가 Boot를 관리하면 버전을 지우고, 아니면 리터럴 버전을 대상 Boot 버전으로 바꾼다.
+        사내 부모가 Boot를 관리하면 버전을 지운다. 아니면 리터럴 버전을 대상 Boot 버전으로 바꾼다.
         ``${...}`` 참조는 그대로 둔다."""
         manages = self._manages_boot(c)
         want = None if manages else self._boot_version_value(c, ed)
@@ -4044,11 +4025,10 @@ class Restructurer(LegacyContextMixin):
     def _apply_optional_triggers(self, c: _Ctx, eds: dict[str, PomEditor],
                                  editable: set[str] | None = None) -> None:
         """``when_present`` 조건이 있는 선택 사내 아티팩트를 조건 의존성을 선언한 pom에 추가한다.
-        ``_bump_optionals`` 바로 전에 실행하고, 다시 실행해도 결과가 같다.
+        ``_bump_optionals`` 바로 전에 실행한다. 다시 실행해도 결과가 같다.
         - 그 pom이나 프로젝트 안 조상 pom이 이미 선언했으면 넣지 않는다
         - dependencyManagement에만 있는 의존성은 조건으로 보지 않는다
-        - 버전, scope, type은 설정을 따른다.
-          scope가 없으면 처음 맞은 조건 의존성의 scope를 쓴다
+        - 버전, scope, type은 설정을 따른다. scope가 없으면 처음 맞은 조건 의존성의 scope를 쓴다
         - ``replaces: true``면 맞은 조건 의존성과 더 이상 쓰지 않는 버전 속성을 지운다
 
         Triggers: `ArtifactSpec.triggered_by`; own modules and `${...}` coordinates never match; an inherited
@@ -4116,9 +4096,8 @@ class Restructurer(LegacyContextMixin):
             log.debug("optional_triggers journal skipped: %s", e)
 
     def _ancestor_dependency_keys(self, c: _Ctx, pom: str, eds: dict[str, PomEditor]) -> set[str]:
-        """프로젝트 안 조상 pom들의 ``<dependencies>``에 있는 g:a 집합을 반환한다.
-        자식이 물려받는 선언이다.
-        이번 패스에서 바뀐 내용을 보도록 ``eds``의 편집기를 먼저 쓴다."""
+        """프로젝트 안 조상 pom들의 ``<dependencies>``에 있는 g:a 집합을 반환한다. 자식이 물려받는 선언이다.
+        ``eds``의 편집기를 먼저 쓴다. 이번 패스에서 바뀐 내용을 보기 위해서다."""
         out: set[str] = set()
         for q in self._chain(c, pom)[1:]:
             ed = eds.get(q)
@@ -4177,19 +4156,19 @@ class Restructurer(LegacyContextMixin):
         done_props: set[tuple[str, str]] = set()
 
         def owner_of(prop: str, here: str) -> tuple[str, PomEditor] | None:
-            # 모듈이 실제로 상속하는 pom에서만 찾는다. 형제 pom의 같은 이름 속성을 바꾸면 버전은 그대로인데
-            # 올린 것으로 보고되기 때문이다
+            # 모듈이 실제로 상속하는 pom에서만 찾는다
+            # 형제 pom의 같은 이름 속성을 바꾸면 버전은 그대로인데 올린 것으로 보고된다
             for cand in self._chain(c, here):
                 if cand in eds and eds[cand].has_property(prop):
                     return cand, eds[cand]
             return None
 
-        # floor(기본값)는 as-is가 더 새 버전이면 내리지 않고, pin은 설정 버전으로 정확히 맞춘다
+        # floor(기본값)는 as-is가 더 새 버전이면 내리지 않는다. pin은 설정 버전으로 정확히 맞춘다
         policy = getattr(c.cfg.artifacts, "optional_version_policy", "floor")
 
         def needs(cur: str | None, target: str) -> bool:
             """버전을 바꿔야 하면 True를 반환한다.
-            pin은 다르면 바꾸고, floor는 모르거나 더 낮을 때만 바꾼다."""
+            pin은 다르면 바꾼다. floor는 버전을 모르거나 더 낮을 때만 바꾼다."""
             if cur == target:
                 return False
             if policy != "floor" or cur is None or property_ref(cur):
@@ -4209,7 +4188,7 @@ class Restructurer(LegacyContextMixin):
         def to_property(p: str, ed: PomEditor, ref: Any, spec: Any, prop: str, src: str) -> None:
             """버전을 부모 체인의 버전 속성 참조(``${prop}``)로 바꾼다.
             부모에서 버전이 바뀌어도 따라가게 된다.
-            프로젝트가 같은 이름의 속성을 정의하면 체인 값을 가리므로 지운다.
+            프로젝트가 같은 이름의 속성을 정의했으면 지운다. 체인 값을 가리기 때문이다.
             floor 정책에서 리터럴이 더 새 버전이면 리터럴을 남긴다."""
             want = f"${{{prop}}}"
             old = ref.version
@@ -4240,7 +4219,7 @@ class Restructurer(LegacyContextMixin):
                 spec = keys.get(ref.key)
                 if not spec:
                     continue
-                # 부모 체인의 속성(property_name, artifactId 이름 규칙 순)을 먼저 찾고, 없으면 리터럴 버전을 쓴다
+                # 부모 체인의 속성(property_name, artifactId 이름 규칙 순)을 먼저 찾는다. 없으면 리터럴 버전을 쓴다
                 hit = self._spec_property(c, spec, ed, p)
                 if hit is not None:
                     to_property(p, ed, ref, spec, *hit)
@@ -4309,9 +4288,8 @@ class Restructurer(LegacyContextMixin):
 
     @staticmethod
     def _own_keys(eds: dict[str, PomEditor]) -> set[str]:
-        """프로젝트 자신의 모듈 g:a 집합을 반환한다.
-        ``${project.groupId}:a`` 표기도 넣는다.
-        모듈끼리의 버전은 reactor가 정하므로 버전 처리에서 뺄 때 쓴다."""
+        """프로젝트 자신의 모듈 g:a 집합을 반환한다. ``${project.groupId}:a`` 표기도 넣는다.
+        버전 처리에서 이 g:a를 뺄 때 쓴다. 모듈끼리의 버전은 reactor가 정한다."""
         own: set[str] = set()
         for ed in eds.values():
             a = ed.artifact_id()
@@ -4355,8 +4333,7 @@ class Restructurer(LegacyContextMixin):
 
     def _asis_version(self, data: dict[str, Any], mkey: str | None, mod: dict[str, Any] | None,
                       key: str) -> tuple[str, str] | None:
-        """g:a의 as-is 버전을 (버전, 출처)로 반환한다.
-        as-is 빌드가 정하지 못했으면 None을 반환한다.
+        """g:a의 as-is 버전을 (버전, 출처)로 반환한다. as-is 빌드가 정하지 못했으면 None이다.
         모듈의 direct, 모듈의 managed, 전체 managed, 전체 direct 순으로 본다.
         출처는 ``managed by <as-is 부모>`` 또는 ``declared``다.
 
@@ -4385,8 +4362,8 @@ class Restructurer(LegacyContextMixin):
                                  key: str, chain_own: set[str] | dict[str, str], boot_managed: dict[str, str],
                                  boot_source: str) -> tuple[str, str, str] | None:
         """의존성 버전 단계가 이 pom의 g:a에 넣을 버전을 (버전, 출처 문구, 종류)로 반환한다.
-        새 부모 체인이 관리하지 않으면 대상 Boot BOM 버전을 쓰고, as-is가 더 새 버전이면 as-is 버전을 쓴다.
-        종류는 'asis' | 'boot-bom'이고, 둘 다 모르면 None이다.
+        새 부모 체인이 관리하지 않으면 대상 Boot BOM 버전을 쓴다. as-is가 더 새 버전이면 as-is 버전을 쓴다.
+        종류는 'asis' 또는 'boot-bom'이다. 둘 다 모르면 None이다.
         저장소 단계는 호출하는 쪽이 한다.
 
         `chain_own` = what the pom's company parent manages itself; `data` None = no as-is capture."""
@@ -4405,7 +4382,7 @@ class Restructurer(LegacyContextMixin):
         """필터링되는 리소스 아래 바이너리 파일의 확장자를 ``<nonFilteredFileExtensions>``에 넣는다.
         maven-resources-plugin에 넣고, webResources면 maven-war-plugin에도 넣는다.
         모듈 pom이 정해진 뒤에 호출한다.
-        확장자 없는 바이너리는 후속 작업으로 남기고, 실패해도 재구성은 중단하지 않는다.
+        확장자 없는 바이너리는 후속 작업으로 남긴다. 실패해도 재구성은 중단하지 않는다.
 
         A binary file under `<filtering>true</filtering>` fails the copy with `MalformedInputException: Input
         length = 1`. Fills `result.non_filtered_extensions` ("<pom>: ext1, ext2 -> maven-resources-plugin[,
@@ -4441,8 +4418,7 @@ class Restructurer(LegacyContextMixin):
 
     def _pin_asis_versions(self, c: _Ctx) -> None:
         """새 부모로 바꾸면서 버전이 빠진 의존성에 as-is 빌드가 쓰던 버전을 넣는다.
-        ``params['asis_effective']``는 접수 때 캡처한 as-is 정보를 반환하는 함수다.
-        없으면 노트만 남긴다.
+        ``params['asis_effective']``는 접수 때 캡처한 as-is 정보를 반환하는 함수다. 캡처가 없으면 노트만 남긴다.
         - as-is도 모르면 저장소의 최신 릴리스를 넣는다.
           버전이 하나라도 비면 effective pom을 만들 수 없기 때문이다
         - 새 부모 체인이 관리하는 버전은 바로 뒤 ``_drop_managed_versions``가 다시 비운다
@@ -4505,8 +4481,8 @@ class Restructurer(LegacyContextMixin):
                 found: tuple[str, str] | None = (step[0], step[1]) if step is not None else None
                 kind = step[2] if step is not None else "asis"
                 if found is None:
-                    # 버전이 하나라도 비면 effective pom 캡처가 모델 검증에서 실패해 모든 버전이 되돌려진다
-                    # 그래서 저장소 버전으로 채우고, 새 체인이 관리하면 drop 단계가 비운다
+                    # 버전이 하나라도 비면 effective pom 캡처가 모델 검증에서 실패한다. 그러면 넣은 버전이 모두 되돌려진다
+                    # 그래서 저장소 버전으로 채운다. 새 체인이 관리하면 drop 단계가 다시 비운다
                     rel = self._repository_release(c, g.group_id, g.artifact_id)
                     if rel is None:
                         if g.key in asis_keys and (p, g.key) not in c.asis_unknown:
@@ -4515,7 +4491,7 @@ class Restructurer(LegacyContextMixin):
                     found, kind = (rel, REPO_PIN_SOURCE), "repository"
                 v, how = found
                 if p not in c.asis_before:
-                    # 버전을 다시 비워 pom이 원래대로 돌아오면 바뀐 파일 목록에서 빼기 위해 원래 내용을 둔다
+                    # 원래 내용을 기억해 둔다. 버전을 다시 비워 pom이 원래대로 돌아오면 바뀐 파일 목록에서 뺀다
                     c.asis_before[p] = (c.ws.abs(p).read_bytes(), p in c.changed)
                 ed.set_ref_version(el, v)
                 c.asis_pins[(p, g.key)] = (v, f"{g.key}: {v} ← {how} ({p})", kind)
@@ -4529,7 +4505,7 @@ class Restructurer(LegacyContextMixin):
     def _asis_capture(c: _Ctx) -> dict[str, Any] | None:
         """접수 때 캡처한 as-is 정보(``params['asis_effective']()``)를 재구성마다 한 번만 읽어 반환한다.
         없거나 읽지 못했거나 비어 있으면 None을 반환한다.
-        버전 이어 쓰기와 레시피가 올린 버전 판단이 같은 값을 보게 하기 위해서다."""
+        버전 이어 쓰기와, 레시피가 올린 버전인지 판단하는 쪽이 같은 값을 보게 하기 위해서다."""
         if c.asis_data_loaded:
             return c.asis_data
         c.asis_data_loaded = True
@@ -4548,9 +4524,8 @@ class Restructurer(LegacyContextMixin):
         return data
 
     def _repository_release(self, c: _Ctx, group_id: str, artifact_id: str) -> str | None:
-        """저장소에서 g:a의 최신 정식 릴리스를 찾아 반환한다.
-        프리릴리스는 뺀다.
-        찾지 못하거나 조회가 실패하면 None을 반환하고 예외를 던지지 않는다.
+        """저장소에서 g:a의 최신 정식 릴리스를 찾아 반환한다. 프리릴리스는 뺀다.
+        찾지 못하거나 조회가 실패하면 None을 반환한다. 예외는 던지지 않는다.
 
         Repository order is `RepositoryLookup`'s (`build.repository_url`, settings mirrors, Central); the
         lookup is made once per restructure call, on first use."""
@@ -4574,7 +4549,7 @@ class Restructurer(LegacyContextMixin):
         by_pom: dict[str, dict[str, str]] = {}
         for (p, k), (v, _e, kind) in c.asis_pins.items():
             if kind == "boot-bom":
-                continue                     # 대상 Boot BOM의 버전은 추측이 아니므로 되돌리지 않는다
+                continue                     # 대상 Boot BOM의 버전은 되돌리지 않는다. 추측한 값이 아니다
             by_pom.setdefault(p, {})[k] = v
         undone: list[tuple[str, str]] = []
         for p, keys in by_pom.items():
@@ -4593,9 +4568,8 @@ class Restructurer(LegacyContextMixin):
 
     def _settle_asis_versions(self, c: _Ctx, managed_of: dict[str, dict[str, str]] | None,
                               unpinned: list[tuple[str, str, str]]) -> None:
-        """as-is 버전 이어 쓰기를 마무리한다.
-        ``_drop_managed_versions`` 끝에서 호출한다.
-        - 새 체인이 다시 비운 버전(``unpinned``)은 결과에서 빼고, 남은 것은 노트와 저널에 기록한다
+        """as-is 버전 이어 쓰기를 마무리한다. ``_drop_managed_versions`` 끝에서 호출한다.
+        - 새 체인이 다시 비운 버전(``unpinned``)은 결과에서 뺀다. 남은 것은 노트와 저널에 기록한다
         - 저장소에서 가져와 남긴 버전은 담당자가 확인하도록 후속 작업을 남긴다
         - 버전을 모르는데 새 체인도 관리하지 않는 의존성은 ``versions_unknown``과 후속 작업으로 남긴다
         - 새 체인의 effective pom이 없으면(``managed_of``가 None) 넣은 버전을 모두 되돌린다
@@ -4649,7 +4623,7 @@ class Restructurer(LegacyContextMixin):
             c.note(f"{len(kept_asis)} dependency version(s) carried over from the as-is build (not managed "
                    f"by the new parent chain): {few([e.split(': ')[0] for e in kept_asis])}")
         if kept_boot:
-            # 인수인계가 이 노트에서 Boot BOM으로 고정한 버전을 찾으므로 전부 기록한다
+            # Boot BOM으로 고정한 버전은 전부 기록한다. 인수인계가 이 노트에서 찾는다
             listed = list(dict.fromkeys(e.split(" ← ")[0].replace(": ", " ", 1) for e in kept_boot))
             c.note(f"{BOOT_PIN_NOTE_PREFIX} {', '.join(listed)}")
         if kept_repo:
@@ -4657,7 +4631,7 @@ class Restructurer(LegacyContextMixin):
             c.note(f"{len(kept_repo)} dependency version(s) taken from the repository (newest release; the "
                    f"as-is build did not resolve them): {few(named)}")
         if unpinned_asis:
-            # 다시 비운 저장소 버전은 캡처를 위한 임시 값이었으므로 여기서는 as-is 버전만 알린다
+            # 여기서는 as-is 버전만 알린다. 다시 비운 저장소 버전은 캡처를 위한 임시 값이었다
             c.note(f"{len(unpinned_asis)} as-is version(s) not carried over: managed by the new parent chain "
                    f"({few([f'{k} {m}' for _p, k, m in unpinned_asis])})")
         if undone:
@@ -4678,8 +4652,8 @@ class Restructurer(LegacyContextMixin):
     # ================================================================== 관리 버전 정리
     def _drop_managed_versions(self, c: _Ctx) -> None:
         """새 부모 체인이 관리하는 버전을 <dependencies>에서 지운다(``layout.drop_managed_versions``).
-        - gte는 관리 버전이 같거나 더 새 버전일 때만 지우고, any는 항상 지우고, off는 지우지 않는다
-        - 관리 버전은 ``params['effective_pom']``에서 얻고, 없으면 사내 부모 체인 정보로 대신한다
+        - gte는 관리 버전이 같거나 더 새 버전일 때만 지운다. any는 항상 지우고, off는 지우지 않는다
+        - 관리 버전은 ``params['effective_pom']``에서 얻는다. 없으면 사내 부모 체인 정보로 대신한다
         - 둘 다 없으면 정리를 건너뛰고 앞에서 넣은 as-is 버전을 되돌린다
         - config가 정하는 아티팩트, 자기 모듈, system scope, jar가 아닌 type / classifier, 플러그인은 건드리지 않는다
 
@@ -4700,8 +4674,8 @@ class Restructurer(LegacyContextMixin):
         pins = c.asis_pins
         c.drop_managed_of, c.drop_managed_exact = None, False
         exact = False
-        # off여도 이번 패스가 넣은 버전은 확인해야 하므로 넣은 것이 없을 때만 캡처를 건너뛴다
-        # 버전 모름만 남았다면 그 빈 버전 때문에 Maven 캡처는 어차피 실패한다
+        # off여도 이번 패스가 넣은 버전은 확인해야 한다. 그래서 넣은 것이 없을 때만 캡처를 건너뛴다
+        # 버전을 모르는 의존성만 남았으면 그 빈 버전 때문에 Maven 캡처는 어차피 실패한다
         if mode == "off" and not pins:
             self._settle_asis_versions(c, None, [])
             return
@@ -4715,7 +4689,7 @@ class Restructurer(LegacyContextMixin):
                 data = None
         per_pom: dict[str, dict[str, str]] | None = None
         if not isinstance(data, dict) or not (data.get("managed") or data.get("by_module")):
-            # 캡처가 없으면 사내 부모 체인 정보를 쓰고, 그것도 없으면 정리를 건너뛰고 넣은 버전을 되돌린다
+            # 캡처가 없으면 사내 부모 체인 정보를 쓴다. 그것도 없으면 정리를 건너뛰고 넣은 버전을 되돌린다
             fallback = self._fallback_capture(c)
             if fallback is None:
                 if mode != "off":
@@ -4760,7 +4734,7 @@ class Restructurer(LegacyContextMixin):
                 managed = per_pom[p]             # 이 pom은 Boot BOM을 import한다. 부모가 Boot를 관리하지 않는 경우다
             managed_of[p] = managed
             props: dict[str, str] = {}
-            # Maven 상속과 같은 우선순위가 되도록 조상 pom의 속성부터 쌓고 자기 pom의 속성이 마지막에 덮어쓴다
+            # 조상 pom의 속성부터 쌓고 자기 pom의 속성으로 마지막에 덮어쓴다. Maven 상속과 같은 우선순위다
             for q in reversed(self._chain(c, p)):
                 q_ed = eds.get(q)
                 if q_ed is None:
@@ -4785,7 +4759,7 @@ class Restructurer(LegacyContextMixin):
                 if explicit is None or not m:
                     continue
                 if is_pin and pin is not None and pin[2] == "boot-bom" and c.managed_source != "effective pom":
-                    continue    # 체인 정보로는 관리하지 않는다고 했으므로 실제 캡처만 이 판단을 바꿀 수 있다
+                    continue    # 체인 정보로는 관리하지 않는다고 봤다. 이 판단은 실제 캡처만 바꿀 수 있다
                 if is_pin and pin is not None and pin[2] in ("repository", "boot-bom"):
                     pass        # 새 체인이 관리하면 버전과 상관없이 비운다
                 # gte에서는 관리 버전이 더 낮으면 지우지 않는다. 버전이 내려가 쓰던 API가 사라질 수 있다
@@ -4794,15 +4768,15 @@ class Restructurer(LegacyContextMixin):
                     if cmp is None and not is_pin:
                         continue
                     if cmp is not None and cmp < 0:
-                        # 관리 버전보다 새 명시 버전이라도 as-is 빌드에서 관리 버전 이하였거나 없었다면
-                        # 담당자가 고정한 것이 아니라 레시피가 올린 것이므로 지운다
+                        # 관리 버전보다 새 명시 버전이라도, as-is 빌드에서 관리 버전 이하였거나 없었으면 지운다
+                        # 담당자가 고정한 것이 아니라 레시피가 올린 버전이다
                         asis_v = self._recipe_raised(asis, amkey, amod, g.key, m) if not is_pin else False
                         if asis_v is not False:
                             ed.remove_version(el)
                             recipe_dropped.append(f"{g.key} {explicit} (as-is {asis_v or '-'}, managed {m}, {p})")
                             dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
                             continue
-                        # sbmig가 기록한 as-is 버전은 as-is pom에 명시된 버전이 아니므로 따로 보고한다
+                        # sbmig가 넣은 as-is 버전은 따로 보고한다. as-is pom에 명시된 버전이 아니다
                         kept_as = kept_pin_newer if is_pin else kept_newer
                         kept_as.append(f"{g.key} {explicit} (managed {m}, {p})")
                         continue
@@ -4812,8 +4786,8 @@ class Restructurer(LegacyContextMixin):
                 else:
                     dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
                     dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
-        # 자기 <dependencyManagement> 항목은 import한 BOM보다 우선하므로 남기면 `spring-security-*` 4.2.7이 7.x를 덮는다
-        # 체인이나 import한 BOM이 같거나 더 새 버전으로 관리하는 항목은 지운다
+        # 자기 <dependencyManagement> 항목은 import한 BOM보다 우선한다. 남기면 `spring-security-*` 4.2.7이 7.x를 덮는다
+        # 그래서 체인이나 import한 BOM이 같거나 더 새 버전으로 관리하는 항목은 지운다
         if mode != "off":
             dropped_mgmt = self._drop_managed_management_entries(c, eds, props_of, protected, own, dropped_refs)
             if dropped_mgmt:
@@ -4822,7 +4796,7 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"{len(dropped_mgmt)} as-is dependencyManagement entr(ies) removed: the parent chain / the imported Boot "
                        f"BOM manages them at an equal or newer line and an own entry would win over the BOM: "
                        f"{', '.join(d.split(': ')[0] for d in dropped_mgmt[:5])}{' …' if len(dropped_mgmt) > 5 else ''}")
-        # 지운 명시 버전만 쓰던 버전 속성(spring.version=5.3.31 등)은 이제 쓰는 곳이 없으므로 함께 지운다
+        # 지운 명시 버전만 쓰던 버전 속성(spring.version=5.3.31 등)도 지운다. 이제 쓰는 곳이 없다
         self._drop_dead_version_properties(c, eds, dropped_refs)
         for ed in eds.values():
             c.save(ed)
@@ -4846,10 +4820,9 @@ class Restructurer(LegacyContextMixin):
     # ================================================================== annotation processor paths
     def _processor_path_versions(self, c: _Ctx) -> None:
         """maven-compiler-plugin의 annotation processor path 중 버전이 없는 것에 버전을 넣는다.
-        ``_drop_managed_versions`` 다음에 호출한다.
-        관리되는 g:a는 그대로 둔다.
+        ``_drop_managed_versions`` 다음에 호출한다. 관리되는 g:a는 그대로 둔다.
         버전은 이 pom의 의존성, 의존성 단계가 넣을 버전, 다른 프로젝트 pom의 버전 하나 순으로 정한다.
-        정하지 못하면 노트 한 줄을 남기고, 넣은 버전은 ``versions_pinned``에 기록한다.
+        넣은 버전은 ``versions_pinned``에 기록한다. 정하지 못하면 노트 한 줄을 남긴다.
 
         maven-compiler-plugin resolves a version-less `<path>` only from dependency management (`Cannot find
         version for annotation processor path`). For each such path (build / plugin management / profiles /
@@ -4906,7 +4879,7 @@ class Restructurer(LegacyContextMixin):
             pin = c.asis_pins.get((q, key))
             return pin is not None and pin[2] == "repository" and pin[0] == version
 
-        # 대신 정한 관리 버전에 들어 있는 Boot BOM import는 무엇을 관리하는지 알고 있으므로 이유로 보지 않는다
+        # 대신 정한 관리 버전에 이미 들어 있는 Boot BOM import는 이유로 보지 않는다. 무엇을 관리하는지 알고 있다
         known_boot: set[str] = set()
         if not exact and not self._manages_boot(c):
             bf = self._boot_bom_facts(c)
@@ -4944,7 +4917,7 @@ class Restructurer(LegacyContextMixin):
             maybe_of[p] = why
             return why
 
-        # 4단계 후보는 이번 단계가 쓰기 전의 선언으로 정해 pom 순서에 따라 답이 바뀌지 않게 한다
+        # 4단계 후보는 이번 단계가 쓰기 전의 선언으로 정한다. 그래야 pom 순서에 따라 답이 바뀌지 않는다
         # 의존성 단계가 저장소에서 고른 버전은 선언된 버전이 아니므로 뺀다
         declared: dict[str, dict[str, set[str]]] = {}
         for q, q_ed in eds.items():
@@ -4989,7 +4962,7 @@ class Restructurer(LegacyContextMixin):
                 local |= {(d.key, d.classifier or "", d.type or "jar")
                           for d in (ed.gav_of(e) for e in ed.children(ed.find_in(prof, "dependencyManagement/dependencies"),
                                                                         "dependency")) if d.version}
-            # 1단계: Maven이 dependencyManagement에서 버전을 찾으므로 그대로 둔다
+            # 1단계: 관리되는 path는 그대로 둔다. Maven이 dependencyManagement에서 버전을 찾는다
             # 새 체인의 관리 버전은 g:a 기준이라 classifier나 다른 type이 없는 path에만 쓴다
             if (key, cls, typ) in local or (plain and managed_of is not None and (managed_of.get(p) or {}).get(key)):
                 continue
@@ -4999,7 +4972,7 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"annotation processor path {label} in {p} left without a version: it may be managed by "
                        f"{maybe} (no effective pom of the new parent chain to tell)")
                 continue
-            # 2단계: 같은 pom의 같은 의존성 버전을 그대로 써서 processor와 라이브러리 버전을 맞춘다
+            # 2단계: 같은 pom에 있는 같은 의존성의 버전을 쓴다. processor와 라이브러리 버전이 같아진다
             dep_els = ed.children(ed.child(prof, "dependencies"), "dependency") if prof is not None else []
             dep_els += ed.dependency_elements(False)
             own_v = next((d.version for d in (ed.gav_of(e) for e in dep_els)
@@ -5017,7 +4990,7 @@ class Restructurer(LegacyContextMixin):
             elif found is None:
                 mkey, mod = self._capture_module(by_module, ed) if data is not None else (None, None)
                 chain_own = set(self._parent_managed(c, ed, p, own=True))
-                # as-is 캡처가 없으면 의존성 단계는 아무것도 넣지 않으므로 3단계도 건너뛴다
+                # as-is 캡처가 없으면 3단계도 건너뛴다. 의존성 단계가 아무것도 넣지 않는다
                 step = (self._dependency_step_version(data, mkey, mod, key, chain_own, boot_managed, boot_source)
                         if data is not None else None)
                 if step is not None:
@@ -5062,9 +5035,8 @@ class Restructurer(LegacyContextMixin):
     # ================================================================== 부모 체인이 정하는 값과 속성 이름
     def _manages_boot(self, c: _Ctx) -> bool:
         """``artifacts.parent_manages_spring_boot``의 실제 적용 값을 재구성마다 한 번 정해 반환한다.
-        true / false는 그대로 쓰고, auto면 부모 체인이 spring-boot-dependencies를 상속이나 import로 포함할 때 true다.
-        체인을 읽지 못하면 true를 반환한다.
-        auto로 정했으면 노트를 남긴다.
+        true / false는 그대로 쓴다. auto면 부모 체인이 spring-boot-dependencies를 상속하거나 import할 때 true다.
+        체인을 읽지 못하면 true를 반환한다. auto로 정했으면 노트를 남긴다.
 
         auto reads `ParentChainFacts.reaches_boot_bom`, else `not boot_bom_added`."""
         if c.manages_boot is None:
@@ -5088,11 +5060,11 @@ class Restructurer(LegacyContextMixin):
                          parent: GAV | None = None) -> dict[str, str]:
         """이 pom이 상속으로 볼 수 있는 부모 체인의 회사 속성을 {이름: 정의한 pom}으로 반환한다.
         이 pom이나 프로젝트 안 최상위 조상의 ``<parent>``가 가리키는 체인에서 회사 pom이 정의한 이름만 담는다.
-        루트별 정보가 없으면 회사 속성 전체를, 어느 루트인지 모르면 빈 dict를 반환한다."""
+        루트별 정보가 없으면 회사 속성 전체를 반환한다. 어느 루트인지 모르면 빈 dict다."""
         chain = self._chain_facts(c)
         if chain is None or getattr(chain, "empty", True):
             return {}
-        # Boot BOM(org.springframework.*)의 lombok.version 같은 속성은 참조하지 않도록 회사 pom이 정의한 속성만 쓴다
+        # 회사 pom이 정의한 속성만 쓴다. Boot BOM(org.springframework.*)의 lombok.version 같은 속성은 참조하지 않는다
         sources: dict[str, str] = dict(getattr(chain, "company_property_sources", None) or {})
         by_root: dict[str, list[str]] = dict(getattr(chain, "root_properties", None) or {})
         if not by_root:
@@ -5116,7 +5088,7 @@ class Restructurer(LegacyContextMixin):
                      parent: GAV | None = None) -> tuple[str | None, str | None, str | None]:
         """BOM import에 쓸 버전을 (값, 속성 이름, 정의한 pom)으로 반환한다.
         ``layout.bom_version_properties[family]`` 중 이 pom의 부모 체인이 정의한 첫 이름을 ``${이름}``으로 쓴다.
-        없으면 ``literal``과 None 두 개를 반환한다."""
+        없으면 (``literal``, None, None)을 반환한다."""
         names = self._chain_names_for(c, ed, c.ws.rel(ed.path) if ed is not None else None, parent=parent)
         for n in (getattr(c.cfg.layout, "bom_version_properties", None) or {}).get(family, []) or []:
             if n in names:
@@ -5125,16 +5097,15 @@ class Restructurer(LegacyContextMixin):
 
     def _boot_version_value(self, c: _Ctx, ed: PomEditor | None, *, parent: GAV | None = None) -> str:
         """부모가 Boot를 관리하지 않을 때 spring-boot-maven-plugin 등에 쓸 Boot 버전을 반환한다.
-        부모 체인 속성이 있으면 그 참조를, 없으면 대상 버전을 쓴다."""
+        부모 체인 속성이 있으면 그 참조를 쓴다. 없으면 대상 버전이다."""
         value, _prop, _src = self._bom_version(c, ed, "spring_boot", c.cfg.target.spring_boot_version, parent=parent)
         return value or c.cfg.target.spring_boot_version
 
     def _spec_property(self, c: _Ctx, spec: Any, ed: PomEditor, rel: str | None) -> tuple[str, str] | None:
-        """사내 아티팩트(필수 / 선택) 버전에 쓸 부모 체인 속성을 (이름, 정의한 pom)으로 반환한다.
-        없으면 None이다.
-        spec의 ``property_name``, ``<artifactId>.version``, ``<artifactId>-version``, ``<stem>.version`` 중 이
-        pom의 체인이 정의한 첫 이름이다.
-        stem은 artifactId 끝의 -starter / -bom / -parent를 뗀 이름이다."""
+        """사내 아티팩트(필수 / 선택) 버전에 쓸 부모 체인 속성을 (이름, 정의한 pom)으로 반환한다. 없으면 None이다.
+        후보는 spec의 ``property_name``, ``<artifactId>.version``, ``<artifactId>-version``, ``<stem>.version``
+        순이다.
+        그중 이 pom의 체인이 정의한 첫 이름을 고른다. stem은 artifactId 끝의 -starter / -bom / -parent를 뗀 이름이다."""
         names = self._chain_names_for(c, ed, rel)
         if not names:
             return None
@@ -5151,7 +5122,7 @@ class Restructurer(LegacyContextMixin):
     def _spec_version(self, c: _Ctx, spec: Any, ed: PomEditor, what: str) -> str | None:
         """사내 아티팩트에 쓸 버전을 반환한다.
         부모 체인 속성이 있으면 ``${속성}``을 반환하고 노트를 남긴다.
-        없으면 spec의 버전이고, None이면 관리 버전을 따른다."""
+        없으면 spec의 버전을 반환한다. 그 값이 None이면 관리 버전을 따른다는 뜻이다."""
         rel = c.ws.rel(ed.path)
         hit = self._spec_property(c, spec, ed, rel)
         if hit is None:
@@ -5162,9 +5133,8 @@ class Restructurer(LegacyContextMixin):
 
     # ================================================================== Boot BOM 정보와 부모 체인 정보
     def _boot_bom_facts(self, c: _Ctx) -> Any:
-        """``sbmig.build.boot_bom``에서 Boot BOM 정보를 재구성마다 한 번만 읽어 반환한다.
-        읽지 못하면 None이다.
-        모듈 속성으로 호출하므로 테스트에서 가짜 구현으로 바꿀 수 있다(tests/conftest.py)."""
+        """``sbmig.build.boot_bom``에서 Boot BOM 정보를 재구성마다 한 번만 읽어 반환한다. 읽지 못하면 None이다.
+        모듈 속성으로 호출한다. 그래서 테스트에서 가짜 구현으로 바꿀 수 있다(tests/conftest.py)."""
         if not c.bom_facts_loaded:
             c.bom_facts_loaded = True
             try:
@@ -5191,10 +5161,9 @@ class Restructurer(LegacyContextMixin):
         return {p for p in poms if importing & set(self._chain(c, p))} if importing else set()
 
     def _chain_facts(self, c: _Ctx) -> Any:
-        """사내 부모 체인 정보(``sbmig.build.parent_chain``)를 재구성마다 한 번만 읽어 반환한다.
-        읽지 못하면 None이다.
-        읽으면 저널 ``parent_chain_facts``를 남기고 Boot BOM이 없는지 확인한다(``_warn_no_boot_bom``). 모듈 속성으로 호출하므로 테스트에서 가짜
-        구현으로 바꿀 수 있다."""
+        """사내 부모 체인 정보(``sbmig.build.parent_chain``)를 재구성마다 한 번만 읽어 반환한다. 읽지 못하면 None이다.
+        읽으면 저널 ``parent_chain_facts``를 남기고 Boot BOM이 없는지 확인한다(``_warn_no_boot_bom``).
+        모듈 속성으로 호출한다. 그래서 테스트에서 가짜 구현으로 바꿀 수 있다."""
         if not c.chain_facts_loaded:
             c.chain_facts_loaded = True
             try:
@@ -5248,7 +5217,7 @@ class Restructurer(LegacyContextMixin):
     def _warn_no_boot_bom(self, c: _Ctx, facts: Any) -> None:
         """``parent_manages_spring_boot: true``인데 사내 부모 체인에 Boot BOM이 없으면(``boot_bom_added``) 알린다.
         플래그 ``parent-chain-no-boot-bom``, 노트, 저널 ``parent_chain_no_boot_bom``, 인수인계 첫 줄을 남긴다."""
-        # auto는 체인을 보고 스스로 false가 되어 BOM을 직접 import하므로, 명시적으로 true일 때만 경고한다
+        # 명시적으로 true일 때만 경고한다. auto는 체인을 보고 스스로 false가 되어 BOM을 직접 import한다
         if c.cfg.artifacts.parent_manages_spring_boot is not True or not getattr(facts, "boot_bom_added", False):
             return
         roots = ", ".join(getattr(facts, "roots", None) or []) or "-"
@@ -5266,11 +5235,11 @@ class Restructurer(LegacyContextMixin):
 
     def _fallback_capture(self, c: _Ctx) -> tuple[dict[str, Any], dict[str, dict[str, str]] | None, str] | None:
         """재구성 뒤 effective pom 캡처가 없을 때 대신 쓸 관리 버전을 만든다.
-        사내 부모 체인 정보를 모든 pom에 적용하고, 부모가 Boot를 관리하지 않으면 BOM을 import하는 pom에 Boot BOM도 적용한다.
+        사내 부모 체인 정보를 모든 pom에 적용한다. 부모가 Boot를 관리하지 않으면 BOM을 import하는 pom에 Boot BOM도 적용한다.
         겹치면 Maven처럼 체인 선언이 이긴다.
-        ``(캡처 형태, pom별 관리 버전 | None, 출처 문구)``를 반환하고, 쓸 정보가 없으면 None을 반환한다."""
+        ``(캡처 형태, pom별 관리 버전 | None, 출처 문구)``를 반환한다. 쓸 정보가 없으면 None이다."""
         chain = self._chain_facts(c)
-        # Boot BOM 추가분으로 명시 버전을 지우면 버전 없는 의존성이 남으므로 체인이 직접 관리하는 것만 쓴다
+        # 체인이 직접 관리하는 것만 쓴다. Boot BOM 추가분으로 명시 버전을 지우면 버전 없는 의존성이 남는다
         chain_managed: dict[str, str] = dict(chain.own_managed) if chain is not None and not chain.empty else {}
         per_pom: dict[str, dict[str, str]] | None = None
         # 부모별 관리 버전이 있으면 pom마다 실제로 상속하는 부모의 것을 쓴다. 다른 부모가 관리하는 버전을 지우지 않기 위해서다
@@ -5306,7 +5275,7 @@ class Restructurer(LegacyContextMixin):
     def _override_name_sets(self, c: _Ctx) -> tuple[set[str], set[str]]:
         """``_drop_bom_property_overrides``가 다룰 속성 이름 두 집합을 반환한다.
         첫째는 사내 부모 체인이 정의한 ``*.version`` 속성, 둘째는 체인 정보 없이 쓰는 ``layout.parent_property_names``다.
-        재구성이 직접 넣는 Java 수준 속성은 지우면 안 되므로 뺀다.
+        재구성이 직접 넣는 Java 수준 속성은 뺀다. 지우면 안 되는 속성이다.
         ``layout.drop_bom_property_overrides``가 꺼져 있으면 둘 다 빈 집합이다."""
         L = c.cfg.layout
         if not getattr(L, "drop_bom_property_overrides", True):
@@ -5314,7 +5283,7 @@ class Restructurer(LegacyContextMixin):
         parent_names = {str(n).strip() for n in (getattr(L, "parent_property_names", None) or []) if str(n).strip()}
         chain = self._chain_facts(c)
         names = set(getattr(chain, "properties", None) or {}) if chain is not None else set()
-        # 재구성이 Boot BOM을 직접 import하면 그 BOM의 속성은 상속되지 않으므로 덮어쓰기로 보지 않는다
+        # 재구성이 Boot BOM을 직접 import하면 그 BOM의 속성은 덮어쓰기로 보지 않는다. 상속되는 속성이 아니다
         if chain is not None and getattr(chain, "boot_bom_added", False) and not self._manages_boot(c):
             boot_src = f"{BOOT_GROUP}:spring-boot-dependencies:"
             names = {n for n in names if not str((chain.property_sources or {}).get(n, "")).startswith(boot_src)}
@@ -5331,11 +5300,10 @@ class Restructurer(LegacyContextMixin):
                                          protected: set[str], own: set[str],
                                          dropped_refs: list[tuple[str, str]]) -> list[str]:
         """프로젝트 pom의 ``<dependencyManagement>`` 항목 중 새 부모 체인이 같거나 더 새 버전으로 관리하는 것을 지운다.
-        자기 항목이 import한 BOM보다 우선하므로 남기면 as-is 버전이 체인 버전을 덮어쓴다.
+        자기 항목은 import한 BOM보다 우선한다. 남기면 as-is 버전이 체인 버전을 덮어쓴다.
         - BOM import, 자기 모듈, 보호 대상, system, 풀 수 없는 ``${...}``, 관리 버전보다 새 버전은 그대로 둔다
         - 지운 항목이 참조하던 속성은 ``dropped_refs``에 넣는다
-        지운 항목 목록을 반환한다.
-        예외를 던지지 않고, 실패하면 경고 로그만 남긴다."""
+        지운 항목 목록을 반환한다. 실패해도 예외를 던지지 않고 경고 로그만 남긴다."""
         out: list[str] = []
         try:
             chain = self._chain_facts(c)
@@ -5378,7 +5346,7 @@ class Restructurer(LegacyContextMixin):
                                       refs: list[tuple[str, str]]) -> None:
         """지운 명시 버전이 참조하던 속성(``${spring.version}`` 등) 중 이제 아무도 참조하지 않는 것을 정의한 pom에서 지운다.
         남겨 두면 이전 버전 값이 사람과 구조 검토를 헷갈리게 한다.
-        부모 체인 속성 이름은 ``_drop_bom_property_overrides``가 따로 처리하고, pom 밖에서 참조하는 속성은 남긴다.
+        부모 체인 속성 이름은 ``_drop_bom_property_overrides``가 따로 처리한다. pom 밖에서 참조하는 속성은 남긴다.
 
         `refs` = (pom, name) of every `${name}` in a dropped version. Fills
         `result.version_properties_removed`
@@ -5389,7 +5357,7 @@ class Restructurer(LegacyContextMixin):
         removed: list[str] = []
         cands = [(p, prop) for p, prop in dict.fromkeys(refs)
                  if prop not in skip and not self._referencing_poms(eds, prop)]
-        # pom 밖(필터링되는 리소스, assembly descriptor)에서 참조하는 속성은 Maven이 치환하므로 남긴다
+        # pom 밖(필터링되는 리소스, assembly descriptor)에서 참조하는 속성은 남긴다. Maven이 그 값을 치환한다
         used = names_referenced_outside_poms(c.ws, [prop for _p, prop in cands], eds.keys()) if cands else set()
         for p, prop in cands:
             if prop in used:
@@ -5414,11 +5382,11 @@ class Restructurer(LegacyContextMixin):
     def _drop_orphan_version_properties(self, c: _Ctx) -> None:
         """값이 버전이나 Java 수준처럼 생겼는데 어느 프로젝트 pom도 참조하지 않는 속성을 이름과 상관없이 지운다.
         이름 규칙이 놓치는 표기(``java-version``, ``org.springSecurity-version``)를 잡기 위해서다.
-        체인 속성 이름과 Java 속성(``JAVA_PROPS``)은 다른 단계가 처리하므로 건너뛴다.
+        체인 속성 이름과 Java 속성(``JAVA_PROPS``)은 건너뛴다. 다른 단계가 처리한다.
         예외를 던지지 않는다.
 
         Fills `result.version_properties_removed`, one note."""
-        # 체인을 모르면 체인이 어떤 이름을 쓰는지 알 수 없으므로 부모 체인 정보를 읽었을 때만 실행한다
+        # 부모 체인 정보를 읽었을 때만 실행한다. 체인을 모르면 체인이 어떤 이름을 쓰는지 알 수 없다
         if not getattr(c.cfg.layout, "drop_bom_property_overrides", True):
             return
         facts = self._chain_facts(c)
@@ -5431,10 +5399,10 @@ class Restructurer(LegacyContextMixin):
                     eds[p] = PomEditor(c.ws.abs(p))
                 except PomEditError:
                     continue
-            # 체인이 ``${이름}``으로 참조하는 속성은 프로젝트 값이 체인에 반영되므로 남긴다
+            # 체인이 ``${이름}``으로 참조하는 속성은 남긴다. 프로젝트 값이 체인에 반영된다
             chain_refs = set(getattr(facts, "referenced_properties", None) or ())
             skip = set(self._override_names(c)) | set(JAVA_PROPS) | set(getattr(facts, "properties", None) or {}) | chain_refs
-            # 필터링되는 리소스나 assembly descriptor가 참조하는 속성은 Maven이 치환하므로 남긴다
+            # 필터링되는 리소스나 assembly descriptor가 참조하는 속성은 남긴다. Maven이 그 값을 치환한다
             removed = orphan_version_properties(
                 eds, skip, outside=lambda names: names_referenced_outside_poms(c.ws, names, eds.keys()))
             if not removed:
@@ -5457,7 +5425,7 @@ class Restructurer(LegacyContextMixin):
         as-is 값(``spring-boot.version=2.5.15``)이 상속에서 부모 값을 이겨 이전 버전을 끌어오지 않게 하기 위해서다.
         - 체인이 Boot 부모를 상속하면 Boot BOM의 속성 이름도 대상이다
         - ``layout.parent_property_names``는 체인에 없어도 지울 이름이다
-        - 어느 pom이 ``${이름}``을 아직 참조하면 남기고 노트를 남긴다
+        - 어느 pom이 ``${이름}``을 아직 참조하면 그 속성은 두고 노트를 남긴다
         ``layout.drop_bom_property_overrides``로 이 단계를 끌 수 있다.
 
         Repeated until nothing changes (a removed property may have been the last reference of another). Fills
@@ -5506,7 +5474,8 @@ class Restructurer(LegacyContextMixin):
         for x in removed:
             if name_of(x) in chain_names and defined_by.get(name_of(x)):
                 res.bom_property_sources[name_of(x)] = defined_by[name_of(x)]
-        # 이름의 출처에 따라 문구를 나눈다. 설정 목록에도 있는 이름은 체인 쪽 설명이 더 정확하므로 체인으로 분류한다
+        # 이름의 출처에 따라 문구를 나눈다
+        # 설정 목록에도 있는 이름은 체인으로 분류한다. 체인 쪽 설명이 더 정확하다
         by_chain = [x for x in removed if name_of(x) in chain_names]
         by_parent = [x for x in removed if name_of(x) not in chain_names]
 
@@ -5523,7 +5492,7 @@ class Restructurer(LegacyContextMixin):
             log.info("parent property overrides removed: %s", "; ".join(removed))
         if not removed and not kept:
             return
-        # 설정 목록이 있다고 항상 두 출처를 표시하지 않도록 실제로 맞은 이름의 출처만 표시한다
+        # 실제로 맞은 이름의 출처만 표시한다. 설정 목록이 있다고 항상 두 출처를 표시하지 않는다
         matched = {name_of(x) for x in removed + kept}
         source = " + ".join(x for x, on in (("parent chain", bool(matched & chain_names)),
                                              ("parent_property_names", bool(matched - chain_names))) if on)
@@ -5551,7 +5520,7 @@ class Restructurer(LegacyContextMixin):
     def _resolve_version(ed: PomEditor, version: str, props: dict[str, str]) -> str | None:
         """리터럴 버전은 그대로, ``${prop}``는 pom 체인의 속성으로 풀어서 반환한다.
         중첩은 5단계까지 푼다.
-        풀지 못하면 None을 반환하고, 호출하는 쪽은 그 의존성을 그대로 둔다."""
+        풀지 못하면 None을 반환한다. 호출하는 쪽은 그 의존성을 그대로 둔다."""
         builtins = {"project.version": ed.effective_version() or "", "project.groupId": ed.effective_group_id() or "",
                     "project.artifactId": ed.artifact_id() or ""}
         cur = version.strip()
@@ -5643,8 +5612,8 @@ class Restructurer(LegacyContextMixin):
 
     def _boot_dirs(self, c: _Ctx, root: PomEditor) -> list[str]:
         """boot 모듈 디렉토리 목록을 반환한다.
-        분석의 ``profile.boot_modules``를 쓰고, 없으면 <build><plugins>에 spring-boot-maven-plugin이 있거나 src/main/java에
-        @SpringBootApplication이 있는 모듈을 찾는다."""
+        분석의 ``profile.boot_modules``를 쓴다. 없으면 spring-boot-maven-plugin이 <build><plugins>에 있거나
+        src/main/java에 @SpringBootApplication이 있는 모듈을 찾는다."""
         if c.profile.boot_modules:
             return [c.p(posixpath.normpath(d.rstrip("/"))) for d in c.profile.boot_modules]
         out: list[str] = []
@@ -5717,8 +5686,8 @@ class Restructurer(LegacyContextMixin):
 
     def _boot_in_place(self, c: _Ctx, root: PomEditor, coords: GAV,
                        boot_dirs: list[str]) -> tuple[list[str], list[str]]:
-        """모든 모듈 pom과 루트의 부모, 좌표, 필수 사내 아티팩트, BOM, java 버전을 맞춘다(``_boot_pom`` 참고). 프로젝트 안 부모 pom을 더 이상 상속하지 않게
-        되는 모듈은 그 pom의 의존성, build 플러그인, 관리 항목을 복사받는다.
+        """모든 모듈 pom과 루트의 부모, 좌표, 필수 사내 아티팩트, BOM, java 버전을 맞춘다(``_boot_pom`` 참고).
+        프로젝트 안 부모 pom을 더 이상 상속하지 않게 되는 모듈에는 그 pom의 의존성, build 플러그인, 관리 항목을 복사한다.
         처리한 (boot 모듈 목록, 나머지 모듈 목록)을 반환한다."""
         A = c.cfg.artifacts
         role = self._role(c)
@@ -5744,7 +5713,7 @@ class Restructurer(LegacyContextMixin):
                 continue
             chain = self._chain(c, pom)
             is_boot = d in boot_dirs
-            # 루트가 아닌 프로젝트 안 중간 pom을 상속하는 모듈은 그 중간 pom을 처리할 때 부모가 바뀌므로 건너뛴다
+            # 루트가 아닌 프로젝트 안 중간 pom을 상속하는 모듈은 건너뛴다. 그 중간 pom을 처리할 때 부모가 바뀐다
             if len(chain) > 1 and chain[1] != root_rel and not is_boot:
                 continue
             if not role:
@@ -5794,7 +5763,7 @@ class Restructurer(LegacyContextMixin):
         if root.modules():
             root.set_packaging("pom")
         if role:
-            # 역할 부모를 쓰면 모듈이 루트를 상속하지 않으므로 루트에는 필수 사내 아티팩트(루트에 두는 설정일 때)만 남긴다
+            # 역할 부모를 쓰면 루트에는 필수 사내 아티팩트(루트에 두는 설정일 때)만 남긴다. 모듈이 루트를 상속하지 않는다
             keep = {s.key for s in A.mandatory} if in_root else set()
             for el in root.dependency_elements(False):
                 if root.gav_of(el).key not in keep:
@@ -5825,9 +5794,9 @@ class Restructurer(LegacyContextMixin):
         """``msa_pom`` 모드에서 MSA 프로젝트의 디렉토리는 그대로 두고 서비스 루트마다 pom만 바꾼다.
         - 서비스 루트의 부모는 역할 부모를 쓰면 ``boot_parent``, 아니면 ``artifacts.parent``다
         - 공유 라이브러리 루트(``params['library_roots']``)는 ``comp_parent``를 쓰고 필수 사내 아티팩트를 넣지 않는다
-        - 서비스가 프로젝트 안 pom을 상속하면 그 꼭대기 pom의 부모를 바꾼다.
-          역할 부모와 ``per-service-root``면 최상위 aggregator가 ``artifacts.parent``를 받고, 그 아래 루트는 aggregator에서 물려받던
-          내용을 복사받는다
+        - 서비스가 프로젝트 안 pom을 상속하면 그 꼭대기 pom의 부모를 바꾼다
+        - 역할 부모와 ``per-service-root``면 최상위 aggregator가 ``artifacts.parent``를 받는다.
+          그 아래 루트에는 aggregator에서 물려받던 내용을 복사한다
         - 마지막으로 서비스마다 외부 설정 플레이스홀더를 쓴다"""
         L = c.cfg.layout
         A = c.cfg.artifacts
@@ -5854,8 +5823,8 @@ class Restructurer(LegacyContextMixin):
                       ([] if lib_poms else [root_rel])
         role = self._role(c)
         top_agg = L.msa_parent_policy == "top-aggregator"
-        # 역할 부모와 per-service-root면 최상위 aggregator가 artifacts.parent를 받고, 그 아래 루트는
-        # 자기 역할 부모와 aggregator에서 물려받던 내용을 받는다
+        # 역할 부모와 per-service-root면 최상위 aggregator가 artifacts.parent를 받는다
+        # 그 아래 루트는 자기 역할 부모를 받고, aggregator에서 물려받던 내용을 복사한다
         agg: str | None = None
         if role and not top_agg and c.ws.exists(root_rel) and root_rel not in targets and root_rel not in lib_poms:
             try:
@@ -5980,7 +5949,7 @@ class Restructurer(LegacyContextMixin):
     def _msa_placeholders(self, c: _Ctx, svc_entries: list[Any]) -> None:
         """서비스 루트의 src/main/resources에 그 서비스 코드가 읽는 키와 공유 코드만 읽는 키를 플레이스홀더로 넣는다.
         resources나 src/main/java가 있는 서비스만 대상이다.
-        서비스별 목록(``PropertyFinding.service``)이 있으면 서비스 이름으로, 없으면 참조 위치로 키를 고른다."""
+        서비스별 목록(``PropertyFinding.service``)이 있으면 서비스 이름으로 키를 고른다. 없으면 참조 위치로 고른다."""
         dirs: list[str] = []
         names: dict[str, list[str]] = {}
         for s in svc_entries:
@@ -6007,7 +5976,8 @@ class Restructurer(LegacyContextMixin):
 
     def _chain(self, c: _Ctx, pom: str) -> list[str]:
         """pom에서 프로젝트 안 부모를 따라 올라간 목록 [pom, 부모, ..., 최상위 조상]을 반환한다.
-        빈 <relativePath/>, 대상 pom 없음, 프로젝트 밖, artifactId 불일치에서 멈추고, 순환을 막으려고 20단계까지만 본다."""
+        빈 <relativePath/>, 대상 pom이 없을 때, 프로젝트 밖일 때, artifactId가 다를 때 멈춘다.
+        순환을 막으려고 20단계까지만 본다."""
         out = [pom]
         cur = pom
         for _ in range(20):

@@ -1,12 +1,15 @@
 """소스가 MS949나 EUC-KR인 모듈 pom에 ``project.build.sourceEncoding``을 기록하는 모듈.
-JDK 18부터 javac 기본 인코딩이 UTF-8이라 선언 없이 한글 소스를 쓰던 모듈은 JDK 21에서 깨진다.
-- 재구성(``LegacyContextMixin._lc_source_encodings``)과 축소 범위 실행의 오케스트레이터가 호출한다
-- UTF-8과 섞인 모듈, compiler 플러그인의 ``<encoding>``이 다른 모듈은 인수인계 문장만 남긴다
-- ``layout.legacy_context.write_source_encoding``이 꺼져 있으면 인수인계 문장만 남긴다
-- 프로젝트 밖 부모 pom이 정한 값은 as-is effective pom 캡처가 있을 때만 확인한다
+선언 없이 한글 소스를 쓰던 모듈이 JDK 21에서 깨지지 않게 한다.
 
 Callable with or without the restructure context. Idempotent: a module whose pom declares the matching
 encoding is no longer a mismatch. Reduced runs write it BEFORE OpenRewrite (it skips a file it cannot decode).
+
+javac's default encoding is UTF-8 since JDK 18, so such a module without a declaration breaks on JDK 21.
+Callers: the restructure (``LegacyContextMixin._lc_source_encodings``) and the orchestrator of a reduced run.
+A module that mixes UTF-8 with another encoding, a module whose compiler-plugin ``<encoding>`` says
+otherwise, and every module while ``layout.legacy_context.write_source_encoding`` is off get a hand-over
+sentence only. A value set by a parent pom outside the project is checked only when the as-is effective
+pom capture is given.
 """
 from __future__ import annotations
 

@@ -1,10 +1,12 @@
 """레시피가 바꾼 as-is ``provided`` scope를 되돌리는 모듈.
-OpenRewrite의 jakarta 레시피가 ``javax.servlet-api`` provided를 ``jakarta.servlet-api`` compile로 바꾸므로,
-as-is에서 provided였던 의존성과 그 jakarta 후속 좌표를 다시 provided로 되돌린다.
-- 재구성(``LegacyContextMixin._lc_restore_scopes``)은 작업 끝에, 축소 범위 실행은 ``transform.rewrite``마다 호출한다
-- 이미 provided인 의존성은 건드리지 않으므로 여러 번 호출해도 결과가 같다
+as-is에서 provided였던 의존성과 그 jakarta 후속 좌표를 다시 provided로 바꾼다.
 
 Works without the restructure context: a reduced run (scope jdk-jakarta) has none and calls it from the orchestrator.
+
+The OpenRewrite jakarta recipe turns ``javax.servlet-api`` provided into ``jakarta.servlet-api`` compile.
+The restructure calls this at the end of its work (``LegacyContextMixin._lc_restore_scopes``), a reduced run
+after every ``transform.rewrite``. A dependency that is already provided is left alone, so repeated calls
+give the same result.
 """
 from __future__ import annotations
 
@@ -29,8 +31,8 @@ class ScopeRestore:
 
 
 def asis_provided_keys(poms: Iterable[Any], successors: Mapping[str, str]) -> dict[str, str]:
-    """as-is pom에서 provided로 선언된 g:a와 그 jakarta 후속 g:a를 선언한 pom 경로와 함께 반환한다.
-    다른 as-is pom이 compile이나 runtime으로 선언한 g:a는 그쪽 scope를 따르므로 뺀다.
+    """as-is pom에서 provided로 선언된 g:a와 그 jakarta 후속 g:a를, 선언한 pom 경로와 함께 반환한다.
+    다른 as-is pom이 compile이나 runtime으로 선언한 g:a는 뺀다. 그쪽 scope를 따른다.
 
     ``successors`` maps an as-is g:a to its jakarta g:a (``scope_successors``); both keys get the same pom."""
     provided: dict[str, str] = {}
@@ -50,7 +52,7 @@ def asis_provided_keys(poms: Iterable[Any], successors: Mapping[str, str]) -> di
 
 def restore_asis_scopes(ws: Any, asis_poms: Iterable[Any], pom_paths: Iterable[str], successors: Mapping[str, str],
                         *, on: bool = True) -> ScopeRestore:
-    """``pom_paths``의 pom에서 as-is provided였는데 지금 compile이나 runtime인 의존성을 provided로 되돌린다.
+    """as-is에서 provided였는데 지금 compile이나 runtime인 의존성을 ``pom_paths``의 pom에서 provided로 되돌린다.
     ``on``이 False면 pom은 고치지 않고 인수인계 문장만 만든다. 읽을 수 없는 pom은 건너뛴다.
 
     Scopes in ``_KEEP_SCOPES`` (provided / test / system / import) are never touched. Raises OSError / PomEditError
