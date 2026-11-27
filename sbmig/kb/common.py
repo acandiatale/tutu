@@ -1,8 +1,8 @@
-"""KB 기록에 쓰는 공통 함수를 모은 모듈.
-- ``project_name``: 기록에 남길 프로젝트 이름. 수정 루프가 저장 스크립트의 프로젝트 이름으로 쓴다
-- ``rel_posix``: KB에 남길 경로. 운영자 PC의 절대 경로가 KB에 남지 않도록 항상 프로젝트 기준 상대 경로로 바꾼다
-- ``changes_as_diff``: ``FileChange`` 목록을 diff 텍스트로 만든다
-- ``RAW_LIMIT``: 기록에 남기는 빌드 오류 원문의 최대 길이
+"""KB 기록에 쓰는 공통 함수를 모은 모듈. 프로젝트 이름, 상대 경로, diff 텍스트를 만든다.
+
+``project_name`` is also the project name of a stored script (fix loop). ``rel_posix`` always makes a path
+relative to the project, so no absolute path of the operator's PC lands in the KB. ``RAW_LIMIT`` caps the
+raw build-error text kept in a record.
 
 * :func:`changes_as_diff` is the error tracker's fallback when an attempt has no git diff;
   :mod:`sbmig.kb.changes` reads this format too.
@@ -30,7 +30,7 @@ def _basename(p: str) -> str:
 
 def project_name(profile: Optional[ProjectProfile], ws: Optional["Workspace"] = None) -> str:
     """KB 기록에 남길 프로젝트 이름을 반환한다.
-    작업 복사본 폴더 이름은 항상 'project'이므로 프로필 이름을 먼저 쓴다. 둘 다 없으면 빈 문자열을 반환한다."""
+    프로필 이름을 먼저 쓴다. 작업 복사본 폴더 이름은 항상 'project'이기 때문이다. 둘 다 없으면 빈 문자열이다."""
     if profile is not None and profile.name:
         return _basename(profile.name)
     if ws is not None:
@@ -53,12 +53,12 @@ def rel_posix(path: Optional[str], ws: Optional["Workspace"]) -> Optional[str]:
     return p
 
 
-_rel_posix = rel_posix          # 이전 이름으로 import하는 코드를 위해 남겨 둔다
+_rel_posix = rel_posix          # 이전 이름이다. 이 이름으로 import하는 코드가 있어서 남겨 둔다
 
 
 def changes_as_diff(changes: list[FileChange]) -> str:
     """FileChange 목록을 diff 형식 텍스트로 만든다.
-    수정은 unified diff로 쓰고, 생성, 삭제, 이름 변경은 ``=== CREATE / DELETE / RENAME`` 블록으로 쓴다.
+    수정은 unified diff로 쓴다. 생성, 삭제, 이름 변경은 ``=== CREATE / DELETE / RENAME`` 블록으로 쓴다.
 
     A modify is diffed search vs replace (2 context lines)."""
     parts: list[str] = []

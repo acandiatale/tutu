@@ -1,10 +1,10 @@
 """실행 한 번의 LLM 호출 수와 실행 시간 예산을 관리하는 모듈.
-오케스트레이터가 ``LoopBudget.from_config``로 만들어 ``BuildFixLoop``와 구조 검토(``_BudgetedLLM``)에
-전달하므로 두 단계가 같은 예산을 함께 쓴다.
-- ``loop.max_llm_calls``가 0이면 무제한(기본값), 양수면 프로젝트당 상한, -1이면 LLM을 호출하지 않는다
-- -1은 플릿 전체 총량 ``fleet.max_llm_calls_total``을 다 쓴 경우다.
-  저장된 스크립트는 재사용하고, LLM이 필요한 케이스는 ``budget_exhausted``로 차단한다
-- ``loop.max_total_minutes``를 넘으면 수정 루프는 멈추지만 최종 빌드는 반드시 실행한다
+
+The orchestrator builds one ``LoopBudget.from_config`` and hands it to ``BuildFixLoop`` and the structure
+review (``_BudgetedLLM``), so both share one budget. ``loop.max_llm_calls``: 0 = unlimited (default), a
+positive number = the cap per project, -1 = no LLM call (the fleet's ``fleet.max_llm_calls_total`` is used
+up): stored scripts are still reused, cases that need the LLM are blocked as ``budget_exhausted``. Past
+``loop.max_total_minutes`` the fix loop stops, but the final build always runs.
 
 The fleet's -1 blocks every step that needs the LLM as `budget_exhausted` "LLM budget exhausted (fleet)"."""
 from __future__ import annotations
@@ -43,12 +43,13 @@ class LoopBudget:
 
     @property
     def llm_off(self) -> bool:
-        """이 프로젝트에서 LLM 호출이 꺼져 있는지 반환한다. 플릿 전체 총량을 다 써서 ``loop.max_llm_calls``가 -1이면 True다."""
+        """이 프로젝트에서 LLM 호출이 꺼져 있는지 반환한다. ``loop.max_llm_calls``가 -1이면 True다.
+        플릿 전체 총량을 다 쓰면 -1이 된다."""
         return self.max_llm_calls < 0
 
     def llm_allowed(self) -> bool:
         """지금 LLM을 한 번 더 호출해도 되는지 반환한다.
-        호출이 꺼져 있지 않고 상한이 없거나 남아 있으면 참이다."""
+        호출이 꺼져 있지 않고, 상한이 없거나 아직 남아 있으면 참이다."""
         if self.llm_off:
             return False
         return not self.llm_limited or self.llm_calls < self.max_llm_calls
@@ -67,7 +68,7 @@ class LoopBudget:
                 else f"{self.llm_calls} calls (no limit)")
 
     def charge_llm(self, calls: int = 1) -> None:
-        """LLM 호출 수를 더한다. 실패한 호출도 호출한 것이므로 세고, 음수는 0으로 본다."""
+        """LLM 호출 수를 더한다. 실패한 호출도 센다. 음수는 0으로 본다."""
         self.llm_calls += max(0, calls)
 
     # 시간 ----------------------------------------------------------------

@@ -1,11 +1,11 @@
-"""수정 루프와 오케스트레이터가 실행의 오류 목록과 KB 케이스 저장소를 다룰 때 거치는 어댑터 모듈.
-- ``RunErrors``: 빌드 오류, 재구성의 pom 수정, 구조 검토 결과, 수정 시도를 errors.jsonl / errors.md에 기록한다
-- ``CaseScripts``: 저장된 수정 스크립트를 조회하고 저장하며 실행 결과를 기록한다
-두 대상 중 하나가 깨져도 수정 루프는 똑같이 동작한다. 예외는 경고 한 줄을 남기고 빈 값을 반환한다.
-대상이 받지 않는 새 키워드 인자는 호출 전에 뺀다.
+"""실행의 오류 목록(errors.jsonl)과 KB의 수정 스크립트를 수정 루프가 다룰 때 거치는 모듈.
+오류 목록이나 KB가 깨져도 수정 루프는 똑같이 동작한다.
 
 The ONE place the loop and the orchestrator talk to `sbmig.errors.entries.ErrorList` and to `kb.cases`, so a
 rename on the other side costs one line here.
+
+An exception on the other side leaves one warning and returns an empty value. A newer keyword the other side
+does not take is dropped before the call.
 
 `RunErrors` wraps the run's error list (None = off: dry run, or `sbmig.errors` not importable):
     add_build(build, seen, round=, void=) → new entries (count) every build of the run (compile, build, fix rN)
@@ -31,7 +31,7 @@ log = logging.getLogger("sbmig.loop")
 
 
 def _count(x: Any) -> int:
-    """호출 대상이 정수, 항목 목록, None 중 무엇을 반환하든 개수로 바꿔 반환한다."""
+    """호출 대상이 반환한 값(정수, 항목 목록, None)을 개수로 바꿔 반환한다."""
     if isinstance(x, bool):
         return int(x)
     if isinstance(x, int):
@@ -44,12 +44,12 @@ def _count(x: Any) -> int:
 def _accepted(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any],
               opt: dict[str, Any]) -> dict[str, Any] | None:
     """``opt``의 선택 키워드 중 ``fn``이 받을 수 있는 것만 남겨 반환한다. 시그니처를 알 수 없으면 None을 반환한다.
-    ``fn``이 가변 키워드 인자를 받으면 모두 남기고, 위치 인자로 이미 채운 이름과 위치 전용 인자는 뺀다.
+    ``fn``이 가변 키워드 인자를 받으면 모두 남긴다. 위치 인자로 이미 채운 이름과 위치 전용 인자는 뺀다.
 
     None (some builtins / C callables) makes the caller fall back to the TypeError retry."""
     try:
         sig = inspect.signature(fn)
-    except Exception:  # noqa: BLE001 - 내장 함수나 깨진 __signature__면 TypeError 재시도 방식으로 간다
+    except Exception:  # noqa: BLE001 - 내장 함수나 깨진 __signature__다. TypeError를 보고 다시 시도하는 방식으로 간다
         return None
     params = list(sig.parameters.values())
     if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
@@ -64,7 +64,7 @@ def _accepted(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, A
 
 class _Guarded:
     """어댑터의 공통 기반 클래스.
-    호출 대상(``_target``)이 없으면 아무 일도 하지 않고, 있으면 ``_call``로 예외 없이 호출한다."""
+    호출 대상(``_target``)이 없으면 아무 일도 하지 않는다. 있으면 ``_call``로 호출하고 예외는 밖으로 내지 않는다."""
     _target: Any = None
     _what = "?"
 
@@ -76,7 +76,7 @@ class _Guarded:
     def _call(self, name: str, *args: Any, optional: Optional[dict[str, Any]] = None, default: Any = None,
               **kwargs: Any) -> Any:
         """``target.name(...)``을 호출한다. 실패하면 경고를 남기고 ``default``를 반환한다. 예외를 던지지 않는다.
-        대상이 받지 않는 ``optional`` 키워드는 호출 전에 뺀다. 대상 안에서 난 TypeError로 다시 호출하지 않기 위해서다.
+        대상이 받지 않는 ``optional`` 키워드는 호출 전에 뺀다. 대상 안에서 난 TypeError 때문에 다시 호출하지 않는다.
 
         Only a callable whose signature does not inspect keeps the retry: a keyword is dropped when the
         TypeError names it in quotes."""
@@ -89,11 +89,11 @@ class _Guarded:
             ok = _accepted(fn, args, kwargs, opt)
             if ok is not None:
                 return fn(*args, **kwargs, **ok)
-            # 시그니처를 알 수 없는 함수는 TypeError 메시지를 보고 받지 않는 키워드만 빼고 다시 시도한다
+            # 시그니처를 모르는 함수다. TypeError 메시지를 보고 받지 않는 키워드만 빼서 다시 시도한다
             while True:
                 try:
                     return fn(*args, **kwargs, **opt)
-                # 메시지에 키워드 이름이 따옴표로 들어간 TypeError만 재시도하고 나머지는 실패로 처리한다
+                # 메시지에 키워드 이름이 따옴표로 들어간 TypeError만 다시 시도한다. 나머지는 실패다
                 except TypeError as e:
                     named = [k for k in opt if f"'{k}'" in str(e)]
                     if not named:
@@ -123,7 +123,7 @@ class RunErrors(_Guarded):
     @classmethod
     def create(cls, ws: Any, cfg: Any, project: str, factory: Optional[Callable[..., Any]] = None) -> "RunErrors":
         """실행의 오류 목록을 만든다. 테스트는 ``factory``로 목록을 바꿔 넣는다.
-        만들지 못하면 경고 한 줄을 남기고 비활성 목록을 반환한다. 그 실행은 errors.jsonl 없이 진행된다.
+        만들지 못하면 경고 한 줄을 남기고 비활성 목록을 반환한다. 그 실행에는 errors.jsonl이 없다.
 
         Default: `ErrorList.for_workspace(ws, cfg, project)`."""
         try:
@@ -138,9 +138,9 @@ class RunErrors(_Guarded):
     # ---------------------------------------------------------------- 빌드
     def add_build(self, build: Any, seen: str, *, round: Optional[int] = None, void: bool = False,
                   scope: Optional[str] = None) -> int:
-        """빌드 한 번의 결과를 오류 목록에 반영하고 새로 추가한 항목 수를 반환한다.
-        새 오류는 추가하고, 더 이상 나오지 않는 열린 항목은 해결(``build``)로 닫는다.
-        이번 라운드의 시도가 걸린 항목은 수정 루프의 ``resolve``가 처리하므로 그보다 먼저 호출해야 한다.
+        """빌드 한 번의 결과를 오류 목록에 반영하고, 새로 추가한 항목 수를 반환한다.
+        새 오류는 추가한다. 더 이상 나오지 않는 열린 항목은 해결(``build``)로 닫는다.
+        이번 라운드에 시도한 항목은 수정 루프의 ``resolve``가 처리한다. 그래서 ``resolve``보다 먼저 호출해야 한다.
         ``void``는 타임아웃처럼 결과를 판단할 근거가 없는 빌드라는 뜻이다.
 
         `round` = the fix round this build scores."""
@@ -174,7 +174,7 @@ class RunErrors(_Guarded):
 
     def review_fixed(self, file: str, text: str, **try_fields: Any) -> Any:
         """구조 검토가 직접 고친 critical 문제 하나를 기록하고 항목을 반환한다.
-        케이스 ``REVIEW_L2``의 항목과 출처가 ``review``인 시도 하나를 만들고 바로 해결로 닫는다.
+        케이스 ``REVIEW_L2``의 항목 하나와 ``review`` 시도 하나를 만들고, 바로 해결로 닫는다.
 
         The try is round 0."""
         if self._target is None:
@@ -196,8 +196,8 @@ class RunErrors(_Guarded):
         return self._call("begin_try", case_id, round, source, script_version=script_version)
 
     def finish_try(self, case_id: str, n: int, *, optional: Optional[dict[str, Any]] = None, **fields: Any) -> None:
-        """시도의 원인, 해결 방법, 적용 여부, 수정 파일, diff, 커밋, 결과, LLM 호출 수, 소요 시간 같은 필드를 채운다.
-        적용 직후에 한 번 호출하고, 시도 결과를 평가하거나 되돌린 뒤에 다시 호출한다.
+        """시도 기록을 채운다. 원인, 해결 방법, 적용했는지, 수정 파일, diff, 커밋, 결과, LLM 호출 수, 걸린 시간 등이다.
+        적용 직후에 한 번 호출한다. 시도 결과를 평가하거나 되돌린 뒤에 다시 호출한다.
         목록이 받지 않는 선택 필드는 뺀다.
 
         Optional fields: `OPTIONAL_TRY_FIELDS` (edits = the 수정 notes, major_upgrades / verify / verify_source)
@@ -209,7 +209,7 @@ class RunErrors(_Guarded):
         self._call("finish_try", case_id, n, optional=opt, **fields)
 
     def resolve(self, case_id: str, round: int, n: int) -> None:
-        """그 시도로 오류가 사라진 케이스 항목을 ``r<round> try <n>``으로 해결 처리한다.
+        """그 시도로 오류가 사라진 케이스 항목을 해결로 닫는다. 해결 표시는 ``r<round> try <n>``이다.
         시도 결과가 개선, 성공, 부분 해결일 때 호출한다."""
         self._call("resolve", case_id, round, n)
 
@@ -246,7 +246,7 @@ class RunErrors(_Guarded):
         return out
 
     def open_count(self) -> Optional[int]:
-        """아직 열린 항목 수를 반환한다. 오류 목록이 없으면 None을 반환하고, 이때 로그에는 빌드의 오류 수를 쓴다."""
+        """아직 열린 항목 수를 반환한다. 오류 목록이 없으면 None이다. 그때 로그에는 빌드의 오류 수를 쓴다."""
         return self.counts().get("open", 0) if self.active else None
 
     def note_open(self, text: str) -> int:
@@ -303,14 +303,14 @@ class RunErrors(_Guarded):
 
     def to_report(self) -> list:
         """보고서에 넣을 항목 목록을 만든다.
-        report.json이 너무 커지지 않도록 diff를 자르고 as-is / to-be 변경 조각은 뺀다."""
+        diff는 자르고 as-is / to-be 변경 조각은 뺀다. report.json이 너무 커지지 않게 한다."""
         return list(self._call("to_report", default=[]) or [])
 
 
 class CaseScripts(_Guarded):
     """KB 케이스 저장소(``kb.cases``)를 다루는 어댑터 클래스.
-    재사용할 스크립트를 고르고, 코드와 케이스를 조회하고, 스크립트와 실행 결과를 저장한다.
-    KB가 없으면 재사용할 스크립트가 없고, LLM이 만든 스크립트는 저장하지 않고 v0로 실행한다."""
+    재사용할 스크립트를 고르고, 스크립트와 실행 결과를 저장한다.
+    KB가 없으면 재사용할 스크립트가 없다. LLM이 만든 스크립트는 저장하지 않고 v0로 실행한다."""
     _what = "kb.cases"
 
     def __init__(self, target: Any = None):
@@ -328,7 +328,7 @@ class CaseScripts(_Guarded):
     def best(self, case_id: str) -> Optional[tuple[Any, str]]:
         """재사용할 스크립트 버전의 (CaseScript, 코드)를 반환한다.
         검증된(proven) 최신 버전을, 없으면 미검증(unverified) 최신 버전을 고른다.
-        저장된 스크립트가 없으면 None을 반환하고, 수정 루프는 LLM에 새 스크립트를 요청하는 단계로 넘어간다."""
+        저장된 스크립트가 없으면 None을 반환한다. 그러면 수정 루프는 LLM에 새 스크립트를 요청한다."""
         got = self._call("best", case_id)
         if not got:
             return None
@@ -354,7 +354,7 @@ class CaseScripts(_Guarded):
 
     def add_script(self, case_id: str, l2: str, code: str, *, source: str, run_id: str, project: str,
                    analysis: str = "", solution: str = "", **optional: Any) -> Any:
-        """스크립트를 케이스 폴더에 ``fix_v<N>.py``로 저장하고 CaseScript(버전, 파일, 상태)를 반환한다.
+        """스크립트를 케이스 폴더에 ``fix_v<N>.py``로 저장하고, CaseScript(버전, 파일, 상태)를 반환한다.
         저장에 실패하면 None을 반환한다. 같은 코드는 한 번만 저장한다.
         저장소가 받지 않는 이력 필드(``parent``, ``reason``)는 빼고 저장한다."""
         return self._call("add_script", case_id, l2, code, source=source, run_id=run_id, project=project,
@@ -373,7 +373,7 @@ class CaseScripts(_Guarded):
 
 
     def mark_non_idempotent(self, case_id: str, version: int, note: str = "") -> bool:
-        """다시 실행할 때마다 트리를 또 바꾸는 스크립트 버전을 비멱등으로 표시해 재사용 대상에서 뺀다.
+        """실행할 때마다 프로젝트를 또 바꾸는 스크립트 버전을 비멱등으로 표시한다. 그 버전은 재사용하지 않는다.
         KB가 없거나 저장소에 이 기능이 없으면 False를 반환한다.
 
         `CaseStore.mark_non_idempotent`."""

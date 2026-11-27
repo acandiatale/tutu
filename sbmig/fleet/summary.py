@@ -1,10 +1,10 @@
-"""일괄 실행의 요약 파일(``fleet/summary.md`` / ``.csv`` / ``.json``, ``fleet/learning.md``)을 프로젝트가
-끝날 때마다 다시 쓰는 모듈.
-러너가 프로젝트마다 :func:`write_summaries`를 호출하고, ``sbmig fleet status``가 :func:`render_table` /
-:func:`render_attention` / :func:`totals`를 사용한다.
-- ``summary.csv``는 엑셀이 한글 경로를 바로 열도록 BOM을 붙인 UTF-8이고 사람이 봐야 하는
-  이유(``attention``)와 입력 경로 열이 있다
-- 파일은 하나씩 따로 쓰므로 엑셀이 열어 둔 ``summary.csv``는 경고만 남기고 건너뛴다
+"""일괄 실행의 요약 파일(summary.md / .csv / .json, learning.md)을 만드는 모듈.
+프로젝트가 하나 끝날 때마다 다시 쓴다.
+
+The runner calls :func:`write_summaries` after every project; ``sbmig fleet status`` uses :func:`render_table`
+/ :func:`render_attention` / :func:`totals`. ``summary.csv`` is UTF-8 with a BOM (Excel opens Korean paths
+as is) and has the ``attention`` and input-path columns. Each file is written on its own, so a
+``summary.csv`` held open by Excel is skipped with a warning.
 
 ``summary.json`` is the state itself. ``attention`` codes come from :mod:`sbmig.report.result_line`
 (``;``-separated, most important first); ``summary.md`` groups "Needs attention" by the first code.
@@ -49,14 +49,14 @@ COLUMNS = [
     "attention",
     "input",
 ]
-# 화면과 summary.md 표는 짧게 보여 주려고 일부 열을 빼고 attention만 붙인다
+# 화면과 summary.md의 표는 짧게 보여 준다. 일부 열을 빼고 attention만 붙인다
 TABLE_COLUMNS = COLUMNS[:13] + ["attention"]     # error와 input은 표 아래에 따로 나열한다
 ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`에서 코드마다 보여 줄 프로젝트 수
 
 
 def error_columns(p: FleetProjectResult) -> tuple[int, int, int]:
     """프로젝트 오류 목록의 (열림, 해결, 차단) 개수를 반환한다.
-    개수가 없는 상태(이전 형식, 보고서 없이 끝난 실행)면 ``unresolved`` / ``blocked`` 필드로 대신한다."""
+    개수가 없으면 ``unresolved`` / ``blocked`` 필드로 대신한다. 이전 형식의 상태나 보고서 없이 끝난 실행이 그렇다."""
     counts = dict(getattr(p, "error_counts", None) or {})
     if not counts:
         return p.unresolved, 0, p.blocked
@@ -65,7 +65,7 @@ def error_columns(p: FleetProjectResult) -> tuple[int, int, int]:
 
 
 def rows(state: FleetState) -> list[dict[str, Any]]:
-    """상태의 프로젝트마다 ``COLUMNS`` 열을 가진 행(dict)을 만든다.
+    """프로젝트마다 ``COLUMNS`` 열을 가진 행(dict)을 만든다.
     csv, 표, status가 모두 이 결과를 사용한다."""
     out = []
     for i, p in enumerate(state.projects, 1):
@@ -97,7 +97,7 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
 
 def attention_groups(state: FleetState) -> dict[str, list[FleetProjectResult]]:
     """프로젝트를 첫 번째 주의 코드별로 묶어 반환한다.
-    코드는 중요한 것부터 나열한다(infra, skipped, crash, aborted, blocked, unresolved, 그 밖의 플래그).
+    묶음은 중요한 코드부터 나온다(infra, skipped, crash, aborted, blocked, unresolved, 그 밖의 플래그).
     ``unresolved:<n>``은 개수를 떼고 ``unresolved``로 묶는다.
 
     Projects keep state order inside a group; flag codes rank by their position in ``ATTENTION_FLAGS``."""
@@ -134,8 +134,8 @@ def render_attention(state: FleetState, limit: int = ATTENTION_GROUP_LIMIT) -> l
 
 
 def totals(state: FleetState) -> dict[str, Any]:
-    """일괄 실행 합계를 계산한다.
-    상태별 개수, LLM 호출 수와 비용, 시간, 오류 목록 개수, 끝난 수, 지금 실행 중인 프로젝트를 담는다."""
+    """일괄 실행 전체의 합계를 dict로 반환한다.
+    상태별 개수, LLM 호출 수와 비용, 걸린 시간, 오류 목록 개수, 끝난 수, 지금 실행 중인 프로젝트가 들어 있다."""
     ps = state.projects
     by: dict[str, int] = {}
     for p in ps:
@@ -163,7 +163,7 @@ def _cell(v: Any) -> str:
 
 
 def render_table(state: FleetState) -> str:
-    """``summary.md``와 ``fleet run`` / ``fleet status`` 화면에 쓸 진행 표(Markdown, ``TABLE_COLUMNS``)를 만든다."""
+    """진행 표를 Markdown으로 만든다. ``summary.md``와 ``fleet run`` / ``fleet status`` 화면에 쓴다."""
     rs = rows(state)
     cols = TABLE_COLUMNS
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
@@ -237,7 +237,7 @@ def advisory_rows(state: FleetState) -> list[dict[str, Any]]:
 
 
 def advisory_section(state: FleetState) -> list[str]:
-    """``summary.md``의 권고 절을 만든다. EOL 라이브러리 안내만 담고, 권고가 없으면 빈 목록을 반환한다."""
+    """``summary.md``의 라이브러리 권고 절을 만든다. 권고가 없으면 빈 목록을 반환한다."""
     rs = advisory_rows(state)
     if not rs:
         return []
@@ -280,16 +280,16 @@ def _md_cell(v: Any, limit: int = 160) -> str:
 
 
 def _scripts_cell(c: CaseInfo) -> str:
-    """저장된 스크립트 버전별 상태와 성공 / 실패 횟수를 표 한 칸에 들어갈 문자열로 만든다.
+    """저장된 스크립트의 버전별 상태와 성공 / 실패 횟수를 표 한 칸에 넣을 문자열로 만든다.
 
     ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures)."""
     return ", ".join(f"v{s.version} {s.status} {s.successes}/{s.failures}" for s in c.scripts) or "-"
 
 
 def read_cases(kb: Any = None, kb_dir: Optional[Path] = None) -> list[tuple[CaseInfo, dict[str, Any]]]:
-    """KB의 모든 케이스를 (CaseInfo, 나머지 키)로 읽어 많은 프로젝트가 만난 것부터 반환한다.
+    """KB의 모든 케이스를 (CaseInfo, 나머지 키)로 읽어 반환한다. 많은 프로젝트가 만난 케이스가 앞에 온다.
     KB 객체가 없으면 ``<kb_dir>/cases/*/case.json``을 직접 읽는다.
-    일괄 실행이 멈추지 않도록 깨진 파일은 건너뛴다.
+    깨진 파일은 건너뛴다. 일괄 실행이 멈추면 안 된다.
 
     Extra keys = everything outside ``CaseInfo.model_fields`` (e.g. ``pin``).
     With a KB: ``kb.cases.cases()``."""
@@ -315,7 +315,7 @@ def read_cases(kb: Any = None, kb_dir: Optional[Path] = None) -> list[tuple[Case
     return out
 
 
-# 요약은 프로젝트마다 다시 쓰므로 끝난 실행의 errors.jsonl을 매번 읽지 않도록 mtime으로 캐시한다
+# 끝난 실행의 errors.jsonl을 mtime 기준으로 캐시한다. 요약은 프로젝트마다 다시 쓰므로 매번 읽지 않게 한다
 _RUN_CASES: dict[str, tuple[float, frozenset[str]]] = {}     # errors.jsonl 경로별 (mtime, 케이스 ID)
 
 
@@ -348,7 +348,7 @@ def _run_case_ids(run_dir: Optional[str]) -> frozenset[str]:
 
 def fleet_case_projects(state: FleetState, cases: list[tuple[CaseInfo, dict[str, Any]]]) -> dict[str, list[str]]:
     """케이스 ID마다 이번 일괄 실행에서 그 케이스를 만난 프로젝트를 모아 반환한다.
-    각 실행의 errors.jsonl에서 모으고, 케이스의 ``CaseInfo.projects``에 있는 이번 프로젝트 이름도 더한다.
+    각 실행의 errors.jsonl에서 모은다. 케이스의 ``CaseInfo.projects``에 있는 이번 프로젝트 이름도 더한다.
 
     ``CaseInfo.projects`` holds the profile name, usually the fleet's project name too."""
     out: dict[str, list[str]] = {}
@@ -365,7 +365,7 @@ def fleet_case_projects(state: FleetState, cases: list[tuple[CaseInfo, dict[str,
 
 def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = None) -> str:
     """``learning.md``를 만든다.
-    오류 목록 개수 다음에 이번 프로젝트들이 만난 KB 케이스를 많이 만난 순으로 ``TOP_CASES``개까지 보여 준다.
+    이번 프로젝트들이 만난 KB 케이스를 많이 만난 순으로 ``TOP_CASES``개까지 보여 준다.
     만난 케이스를 모르면 KB 전체를 보여 준다. 케이스마다 저장된 스크립트의 상태와 성공 / 실패 횟수를 붙인다."""
     ps = state.projects
     t = totals(state)
@@ -402,8 +402,8 @@ def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = 
 def write_summaries(
     state: Optional[FleetState], fleet_dir: Path, cfg: Optional[Config] = None, kb: Any = None
 ) -> dict[str, Path]:
-    """요약 파일을 하나씩 따로 쓰고 쓴 파일만 반환한다.
-    엑셀이 열어 둔 파일(PermissionError)은 경고 후 건너뛰고 나머지는 쓴다.
+    """요약 파일을 하나씩 따로 쓰고, 쓴 파일만 반환한다.
+    엑셀이 열어 둔 파일(PermissionError)은 경고만 남기고 건너뛴다. 나머지 파일은 그대로 쓴다.
     learning.md는 ``fleet.summary_formats``와 관계없이 항상 쓴다."""
     from sbmig.kb.store import atomic_write          # Windows가 파일을 잡고 있으면 교체를 다시 시도한다
 

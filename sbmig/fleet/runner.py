@@ -1,15 +1,10 @@
-"""에이전트 하나가 프로젝트 N개를 차례로 이관하면서 KB 하나를 함께 채우는 일괄 실행 러너 모듈.
-``sbmig fleet run|resume``이 :meth:`FleetRunner.run`을 호출하고, 프로젝트마다 ``sbmig run``과 같은
-오케스트레이터를 실행한다.
-- 프로젝트 k의 오류 목록과 수정 스크립트가 다음 프로젝트 전에 KB에
-  들어가므로 k+1은 같은 케이스에서 저장된 스크립트부터 사용한다
-- ``<out>/fleet/state.json``을 프로젝트마다 원자적으로 다시 쓰므로 프로세스가 죽어도 멈춘 곳부터 이어서 실행한다
-- 이름이 바뀐 폴더가 다른 프로젝트의 성공을 물려받지 않도록 프로젝트는 입력 경로(``input_key``)로 찾는다
-- 인프라 원인으로 끝난 프로젝트는 실패가 아니라 ``pending``으로 되돌린다. ``infra_failure_limit``개가 연달아
-  나오면 기다렸다가 다시 점검하고, 그래도 안 되면 ``fleet stopped: …`` 한 줄을 남기고 중단한다(exit 3)
-- 상태 행의 ``llm_calls`` / 토큰 / ``llm_cost``는 그 프로젝트의 모든 시도 합계이고, 나머지 숫자는 마지막 시도의 값이다
+"""프로젝트 여러 개를 차례로 이관하면서 KB 하나를 함께 채우는 일괄 실행 모듈.
+앞 프로젝트에서 만든 수정 스크립트를 다음 프로젝트가 이어받아 쓴다.
 
 Sequential fleet runner: ONE agent migrates N projects one after the other, feeding one shared KB.
+
+``sbmig fleet run|resume`` calls :meth:`FleetRunner.run`; each project runs the same orchestrator as
+``sbmig run``.
 
 Every project's error list and fix scripts (``errors.jsonl``, ``cases/<case>/case.json`` + ``fix_v<N>.py``)
 are in the KB before the next project starts, so project k+1 runs the stored script for the same case first
@@ -72,8 +67,8 @@ EXIT_STOPPED_ON_ABORT = 3
 EXIT_STOPPED_ON_INFRA = 3          # 인프라 점검으로 중단한 경우. 상태는 저장되고 다시 실행하면 이어서 한다
 INFRA_PREFIX = "infra:"
 MAX_INFRA_REQUEUES = 2             # 인프라로 미룬 프로젝트는 프로세스 하나에서 최대 이만큼만 다시 실행한다
-NO_CONSOLE = {"sbmig_console": False}   # 콘솔에는 `echo`로 이미 찍었으므로 fleet/sbmig.log에만 남긴다
-# 뒤의 어려운 프로젝트가 KB를 더 많이 물려받도록 ``fleet.order: simple-first``는 쉬운 종류부터 실행한다
+NO_CONSOLE = {"sbmig_console": False}   # 콘솔에는 `echo`가 이미 출력했다. fleet/sbmig.log에만 남긴다
+# ``fleet.order: simple-first``는 쉬운 종류부터 실행한다. 뒤의 어려운 프로젝트가 KB를 더 많이 물려받는다
 CASE_RANK = {
     CaseType.PURE_JAVA: 0,
     CaseType.SERVLET_TOMCAT: 1,
@@ -88,7 +83,7 @@ RunProject = Callable[[FleetProject, Config, Path, str], RunReport]
 
 def new_fleet_id() -> str:
     """일괄 실행 ID ``fleet-YYYYmmdd-HHMMSS``를 만든다.
-    이 ID는 실행 ID의 앞부분이 되고, ``sbmig clean --fleet``이 이 접두어로 해당 일괄 실행의 폴더를 고른다."""
+    이 ID는 실행 ID의 앞부분이 된다. ``sbmig clean --fleet``은 이 접두어로 그 일괄 실행의 폴더를 고른다."""
     return "fleet-" + datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
@@ -108,14 +103,15 @@ UNSUPPORTED_FLAG = "unsupported-build-tool:"
 
 
 def unsupported_build_tool(report: RunReport) -> Optional[str]:
-    """접수에서 Maven 프로젝트가 아니라고 거부했으면 플래그 ``unsupported-build-tool:<tool>``의 도구 이름을 반환한다.
+    """접수에서 Maven 프로젝트가 아니라서 거부됐으면 그 빌드 도구 이름을 반환한다.
+    도구 이름은 플래그 ``unsupported-build-tool:<tool>``에서 읽는다.
     일괄 실행에서는 실패가 아니라 건너뜀이다. 다시 시도하지 않고 ``--stop-on-abort``의 이유도 되지 않는다."""
     return next((f[len(UNSUPPORTED_FLAG):] for f in report.flags if f.startswith(UNSUPPORTED_FLAG)), None)
 
 
 def infra_kind_for_exception(exc: BaseException) -> Optional[str]:
-    """예외로 끝난 실행의 인프라 종류를 반환한다.
-    디스크 가득 참은 ``disk``, requests / LLM 전송 오류는 ``llm``, mvn 실행 파일이 없으면 ``maven``이다.
+    """예외로 끝난 실행이 인프라 문제였는지 보고, 그 종류를 반환한다.
+    디스크가 가득 찼으면 ``disk``, requests나 LLM 전송 오류면 ``llm``, mvn 실행 파일이 없으면 ``maven``이다.
     그 밖에는 실제 실패로 보고 None을 반환한다.
 
     Windows ``winerror`` 39 / 112 also mean a full disk."""
@@ -144,7 +140,8 @@ def report_infra_kind(report: RunReport, code: int) -> Optional[str]:
 
 
 def _env_over_yml(yml: dict) -> dict:
-    """프로젝트 yml 값 가운데 ``SBMIG_<섹션>__<키>`` 환경 변수가 있는 키만 환경 변수 값으로 바꾼 복사본을 반환한다.
+    """프로젝트 yml에서 ``SBMIG_<섹션>__<키>`` 환경 변수가 있는 키만 환경 변수 값으로 바꿔서 반환한다.
+    원본 yml은 바꾸지 않는다.
 
     Environment beats the project's yml. Keys the yml does not set are left out, so they keep the fleet
     configuration's value (which already holds the environment and the fleet's explicit options)."""
@@ -159,8 +156,8 @@ def _env_over_yml(yml: dict) -> dict:
 
 class FleetRunner:
     """매니페스트의 프로젝트를 차례로 실행하는 클래스.
-    기본 동작은 프로젝트를 ``<out>/<run_id>/project``로 복사하고 공유 KB로 오케스트레이터 전체를 실행하는 것이다.
-    ``run_project`` / ``kb`` / ``analyze`` / ``preflight`` / ``disk_check`` / ``sleep``은 테스트에서 교체할 수 있다.
+    기본으로는 프로젝트를 ``<out>/<run_id>/project``로 복사하고, 공유 KB로 오케스트레이터 전체를 실행한다.
+    테스트에서는 ``run_project``, ``kb``, ``analyze``, ``preflight``, ``disk_check``, ``sleep``을 바꿔 넣을 수 있다.
 
     ``run_project(project, cfg, out_dir, run_id) -> RunReport``; the default runs
     :class:`sbmig.loop.Orchestrator`. ``analyze(project, cfg) -> CaseType`` is used by ``fleet.order:
@@ -191,7 +188,7 @@ class FleetRunner:
         self._kb = kb
         self._analyze = analyze
         self.echo = echo or (lambda msg: log.info("%s", msg))
-        self._echo_logs = echo is None             # 기본 echo는 곧 로그이고, CLI echo면 로그에도 따로 남긴다
+        self._echo_logs = echo is None             # 기본 echo는 로그에 남긴다. CLI echo면 로그에도 따로 남긴다
         self.dry_run = dry_run
         self.stopped_on_abort = False
         self.stopped_on_infra: Optional[str] = None   # 일괄 실행을 멈추게 한 인프라 종류
@@ -199,7 +196,7 @@ class FleetRunner:
         self.planned: list[
             tuple[int, FleetProjectResult, str]
         ] = []  # 마지막 실행의 (순번, 결과, 동작)
-        # 직접 넘긴 run_project는 인프라를 스스로 갖추므로, 점검 함수를 따로 넘기지 않으면 사전 점검을 하지 않는다
+        # run_project를 직접 넘기면 인프라는 그쪽 몫이다. 점검 함수도 넘기지 않으면 사전 점검을 하지 않는다
         self._preflight = preflight
         self._disk_check = disk_check
         self._sleep = sleep
@@ -210,7 +207,7 @@ class FleetRunner:
     @property
     def kb(self) -> Any:
         """일괄 실행 전체가 함께 쓰는 FileKnowledgeBase 하나를 반환한다.
-        캐시가 유지되므로 프로젝트마다 KB를 다시 읽지 않는다.
+        한 번 읽은 내용을 캐시에 두므로 프로젝트마다 KB를 다시 읽지 않는다.
 
         Every write goes to files at once, so sharing is only a cache win (known record ids, parsed case
         files)."""
@@ -238,8 +235,8 @@ class FleetRunner:
                 log.warning("fleet state %s unreadable (%s); starting a new fleet", self.state_path, e)
         if state is None:
             state = FleetState(fleet_id=new_fleet_id(), manifest=str(self.manifest_path))
-        # 이름으로 연결하면 한글 폴더(slug ``project``)나 이름이 바뀐 폴더가 다른 프로젝트의 success를
-        # 물려받으므로 입력 경로를 키로 쓴다. 같은 입력이 두 번 있으면 결과를 순서대로 나눠 갖는다
+        # 이름이 아니라 입력 경로로 연결한다. 이름으로 찾으면 한글 폴더(slug ``project``)나 이름이 바뀐 폴더가
+        # 다른 프로젝트의 success를 물려받는다. 같은 입력이 두 번 있으면 결과를 순서대로 나눠 갖는다
         pool: dict[str, list[FleetProjectResult]] = {}
         for r in state.projects:
             pool.setdefault(input_key(r.input), []).append(r)
@@ -265,7 +262,7 @@ class FleetRunner:
         return state
 
     def save_state(self) -> None:
-        """도중에 죽어도 ``state.json``이 반쯤 쓰인 채 남지 않도록 상태를 원자적으로 다시 쓴다.
+        """상태를 ``state.json``에 원자적으로 다시 쓴다. 도중에 죽어도 반쯤 쓴 파일이 남지 않는다.
         일괄 실행 전체의 LLM 호출 수와 비용 합계도 여기서 다시 계산한다."""
         from sbmig.kb.store import atomic_write
 
@@ -300,7 +297,7 @@ class FleetRunner:
     def _order(self, projects: list[FleetProject], state: FleetState) -> list[FleetProject]:
         """``fleet.order``에 따라 실행 순서를 정한다. ``manifest``는 매니페스트 순서, ``simple-first``는
         쉬운 종류부터다(순수 자바, 서블릿, 스프링, 부트, MSA).
-        분석한 종류는 상태에 캐시한다. 분석이 실패해도 순서 힌트일 뿐이므로 계속 진행한다."""
+        분석한 종류는 상태에 캐시한다. 분석이 실패해도 순서 힌트일 뿐이라 그대로 넘어간다."""
         if self.cfg.fleet.order != "simple-first":
             return list(projects)
         for proj in projects:
@@ -313,9 +310,10 @@ class FleetRunner:
         return sorted(projects, key=lambda p: CASE_RANK.get(self.result_for(p).case_type, 5))
 
     def _action(self, r: FleetProjectResult) -> str:
-        """상태 행으로 이번에 할 일을 정한다.
-        ``success``는 done, ``skipped``는 skip, ``incomplete`` / ``aborted``는 ``fleet.retry_failed``면
-        retry 아니면 keep, 그 밖(``pending``, 남아 있는 ``running``)은 run이다."""
+        """상태 행을 보고 이번에 할 일을 정한다.
+        - ``success``는 done, ``skipped``는 skip이다
+        - ``incomplete`` / ``aborted``는 ``fleet.retry_failed``면 retry, 아니면 keep이다
+        - 그 밖(``pending``, 남아 있는 ``running``)은 run이다"""
         if r.status == "success":
             return "done"
         if r.status == "skipped":
@@ -326,24 +324,24 @@ class FleetRunner:
 
     # ------------------------------------------------------------------ 프로젝트별 설정
     def project_config(self, proj: FleetProject, remaining_llm: Optional[int]) -> Config:  # noqa: C901
-        """일괄 실행 설정 위에 프로젝트별 ``configs`` / ``overrides``를 덮어써서 프로젝트 하나의 설정을 만든다.
-        KB는 하나여야 하므로 ``kb.dir``은 항상 일괄 실행의 값을 쓴다.
+        """프로젝트 하나의 설정을 만든다. 일괄 실행 설정 위에 프로젝트별 ``configs`` / ``overrides``를 덮어쓴다.
+        KB는 하나여야 한다. 그래서 ``kb.dir``은 항상 일괄 실행의 값을 쓴다.
         LLM 호출 상한은 남은 예산으로 자르고, 예산을 다 썼으면 -1(LLM 호출 없음)로 둔다."""
         data = self.cfg.model_dump(mode="json")
-        # load_config와 같은 중복 키 / 모르는 키 WARNING을 내기 위해 같은 함수를 쓴다
+        # load_config와 같은 함수를 쓴다. 중복 키나 모르는 키가 있으면 같은 WARNING이 나온다
         from sbmig.core.config import _read_yaml, _warn_unknown_keys, merge_explicit
         proj_yml: dict = {}
         for c in proj.configs:
             proj_yml = deep_merge(proj_yml, _expand_env(_read_yaml(Path(c))))
-        # 환경 변수는 프로젝트의 yml보다 우선하고, 매니페스트에 적은 프로젝트별 값은 환경 변수보다 우선한다.
-        # 환경 변수는 프로젝트 yml이 정한 키에만 다시 적용해 일괄 실행 명령줄의 명시 값을 덮지 않게 한다
+        # 우선순위는 매니페스트의 프로젝트별 값 > 환경 변수 > 프로젝트 yml이다.
+        # 환경 변수는 프로젝트 yml이 정한 키에만 다시 적용한다. 일괄 실행 명령줄에서 준 값을 덮지 않는다
         if proj.configs:
             data = deep_merge(data, _env_over_yml(proj_yml))
         if proj.overrides:
             data = merge_explicit(data, _expand_env(proj.overrides), f"fleet project {proj.name}: ")
         if proj.configs or proj.overrides:
             _warn_unknown_keys(data, label=f"fleet project {proj.name}: ")
-        # 학습이 프로젝트 사이에 이어지려면 KB가 하나여야 하므로 프로젝트 설정의 kb.dir은 무시한다
+        # 프로젝트 설정의 kb.dir은 무시한다. KB가 하나여야 학습이 프로젝트 사이에 이어진다
         data["kb"]["dir"] = self.cfg.kb.dir
         data["repo_root"] = self.cfg.repo_root
         if remaining_llm is not None:
@@ -376,12 +374,12 @@ class FleetRunner:
 
         ws = Workspace.from_input(proj.input, out_dir, run_id=run_id, limits=ZipLimits.from_config(cfg.intake))
         orch = Orchestrator(cfg, ws, kb=self.kb)
-        # 풀기 한도를 넘은 zip은 아무것도 풀지 않았으므로 접수 거절로 끝낸다
+        # 풀기 한도를 넘은 zip은 아무것도 풀지 않았다. 접수 거절로 끝낸다
         return refuse_intake(orch, ws.intake_refusal) if ws.intake_refusal else orch.run()
 
     def _run_id(self, index: int, proj: FleetProject, attempt: int) -> str:
         """실행 ID ``<fleet id>-<매니페스트 순번>-<이름>``을 만든다. 재시도에는 ``-r<n>``을 붙인다.
-        앞선 시도의 실행 폴더를 덮어쓰지 않도록 폴더가 이미 있으면 ``-2`` 같은 번호를 붙인다."""
+        폴더가 이미 있으면 ``-2`` 같은 번호를 붙인다. 앞선 시도의 실행 폴더를 덮어쓰지 않는다."""
         assert self.state is not None
         base = f"{self.state.fleet_id}-{index:03d}-{proj.name}" + (f"-r{attempt}" if attempt > 1 else "")
         rid, n = base, 1
@@ -393,7 +391,8 @@ class FleetRunner:
     def fill_result(self, r: FleetProjectResult, report: RunReport, code: int) -> None:
         """끝난 실행의 보고서를 상태 행에 옮긴다.
         종료 코드 0은 success, 3은 aborted, 그 밖은 incomplete이다.
-        실행별 숫자는 이번 실행 값으로 덮어쓰고 LLM 사용량은 앞선 시도에 더하므로 시도마다 한 번만 호출해야 한다."""
+        실행별 숫자는 이번 실행 값으로 덮어쓰고, LLM 사용량은 앞선 시도에 더한다.
+        그래서 시도마다 한 번만 호출해야 한다."""
         r.exit_code = code
         r.status = _status_for(code)  # type: ignore[assignment]
         tool = unsupported_build_tool(report)
@@ -401,7 +400,7 @@ class FleetRunner:
             r.status = "skipped"
             r.error = f"unsupported build tool: {tool} (only Maven projects are migrated)"
         r.case_type = report.case_type
-        # 덮어쓰면 재시도가 앞선 시도의 호출 수를 지워 예산과 비용 합계가 줄어들므로 더한다
+        # LLM 사용량은 덮어쓰지 않고 더한다. 덮어쓰면 재시도가 앞선 호출 수를 지워 예산과 비용 합계가 줄어든다
         r.llm_calls += report.llm_usage.calls
         r.llm_input_tokens += report.llm_usage.input_tokens
         r.llm_output_tokens += report.llm_usage.output_tokens
@@ -424,9 +423,9 @@ class FleetRunner:
 
     @staticmethod
     def _reset_run_counters(r: FleetProjectResult) -> None:
-        """새 시도를 시작할 때 앞선 시도의 실행별 숫자(종료 코드, 차단, 미해결, 오류 목록, 플래그 등)를 비운다.
-        시도가 비정상 종료하면 보고서가 없으므로 이전 시도의 숫자가 새 결과처럼 보이지 않게 하기 위해서다.
-        LLM 사용량은 모든 시도의 합계이므로 그대로 둔다."""
+        """새 시도를 시작할 때 앞선 시도의 실행별 숫자를 비운다(종료 코드, 차단, 미해결, 오류 목록, 플래그 등).
+        시도가 비정상 종료하면 보고서가 없다. 그때 이전 시도의 숫자가 새 결과처럼 보이면 안 된다.
+        LLM 사용량은 모든 시도의 합계라서 그대로 둔다."""
         r.exit_code = None
         r.blocked, r.blocked_reasons = 0, []
         r.unresolved = 0
@@ -437,7 +436,7 @@ class FleetRunner:
     # ------------------------------------------------------------------ 출력
     def _say(self, msg: str) -> None:
         """운영자용 진행 줄을 화면(``echo``)과 ``fleet/sbmig.log``에 함께 기록한다.
-        화면에는 ``echo``가 이미 출력하므로 로그 줄은 ``NO_CONSOLE``로 콘솔 핸들러를 건너뛴다."""
+        화면에는 ``echo``가 이미 출력했다. 그래서 로그 줄은 ``NO_CONSOLE``로 콘솔 핸들러를 건너뛴다."""
         self.echo(msg)
         if not self._echo_logs:
             log.info("%s", msg, extra=NO_CONSOLE)
@@ -445,7 +444,7 @@ class FleetRunner:
     # ------------------------------------------------------------------ 인프라 점검
     def _preflight_checks(self) -> Optional[list]:
         """사전 점검을 실행하고 결과 줄을 출력한다.
-        ``fleet.preflight``가 꺼져 있거나 ``run_project``가 주입되었으면 점검하지 않고 None을 반환한다."""
+        ``fleet.preflight``가 꺼져 있거나 ``run_project``를 직접 넘겼으면 점검하지 않고 None을 반환한다."""
         if self._preflight is not None:
             checks = list(self._preflight() or [])
             for c in checks:
@@ -468,7 +467,8 @@ class FleetRunner:
         return check_disk(self.out_dir, self.cfg.fleet.min_free_gb)
 
     def _stop_infra(self, kind: str, since: str) -> None:
-        """인프라 문제로 일괄 실행을 중단하고 ``fleet stopped: …`` 한 줄을 상태 메모와 화면에 남긴다(종료 코드 3).
+        """인프라 문제로 일괄 실행을 중단한다(종료 코드 3).
+        ``fleet stopped: …`` 한 줄을 상태 메모와 화면에 남긴다.
         원인을 고친 뒤 같은 명령을 다시 실행하면 미뤄 둔 프로젝트부터 이어서 실행한다."""
         assert self.state is not None
         line = f"fleet stopped: infrastructure {kind} unavailable since {since} - fix it and run sbmig fleet again"
@@ -477,9 +477,10 @@ class FleetRunner:
         self._say(line)
 
     def _infra_pause(self, kind: str, since: str, *, transient: bool = True) -> bool:
-        """``infra_retry_minutes``만큼 기다린 뒤 다시 점검해서 통과하면 True를 반환한다.
-        대기 횟수가 ``infra_max_waits``를 넘었거나, 대기 시간이 0분이거나, 다시 점검했을 때 설정 오류가 나오면 False를
-        반환한다. 대기 중에 창을 닫아도 이어서 실행할 수 있도록 기다리기 전에 상태와 요약을 저장한다.
+        """``infra_retry_minutes``만큼 기다렸다가 다시 점검한다. 통과하면 True를 반환한다.
+        다음 경우에는 False를 반환한다. 대기 횟수가 ``infra_max_waits``에 이르렀거나, 대기 시간이 0분이거나,
+        다시 점검했을 때 설정 오류가 나온 경우다.
+        기다리기 전에 상태와 요약을 저장한다. 대기 중에 창을 닫아도 이어서 실행할 수 있다.
 
         On False the fleet is stopped (:meth:`_stop_infra` already wrote the one-line message)."""
         fc = self.cfg.fleet
@@ -493,7 +494,7 @@ class FleetRunner:
             self._sleep(minutes * 60.0)
             checks = self._preflight_checks()
             what = "infrastructure checks passed"
-            # 사전 점검이 꺼져 있으면 디스크만 다시 점검할 수 있으므로 나머지는 기다린 것만으로 다시 시작한다
+            # 사전 점검이 꺼져 있으면 디스크만 다시 점검한다. 나머지는 기다린 것으로 보고 다시 시작한다
             if checks is None:
                 disk = self._disk()
                 checks = [disk] if disk is not None else []
@@ -521,7 +522,7 @@ class FleetRunner:
     # ------------------------------------------------------------------ 프로젝트 하나
     def _attach_run_log(self, run_dir: Path) -> Optional[Path]:
         """이 프로젝트 전용 ``<run dir>/sbmig.log``(DEBUG) 핸들러를 붙인다.
-        일괄 실행은 엄격히 순차적이므로 스레드 필터 없이 붙여도 다른 프로젝트의 줄이 섞이지 않는다."""
+        일괄 실행은 한 번에 프로젝트 하나만 실행한다. 그래서 스레드 필터 없이 붙여도 다른 프로젝트의 줄이 섞이지 않는다."""
         try:
             from sbmig.cli import attach_file_log
 
@@ -532,7 +533,7 @@ class FleetRunner:
 
     @staticmethod
     def _detach_run_log(path: Optional[Path]) -> None:
-        """핸들러가 쌓여 파일이 열린 채 남지 않도록 프로젝트가 끝나면 실행 로그 핸들러를 뗀다."""
+        """프로젝트가 끝나면 실행 로그 핸들러를 뗀다. 핸들러가 쌓여 파일이 열린 채 남지 않게 한다."""
         if path is None:
             return
         try:
@@ -561,9 +562,12 @@ class FleetRunner:
 
     def run(self) -> FleetState:
         """일괄 실행 전체를 실행한다.
-        매니페스트 읽기 -> 상태 연결 -> 순서 정하기(``--dry-run``은 여기서 끝) -> 사전 점검 -> 프로젝트마다
-        디스크 점검, LLM 예산, 실행, 결과 기록, ``SBMIG-RESULT`` 줄, 정리, 요약 -> 인프라 대기나 중단 판단.
-        상태는 프로젝트 시작 전과 끝난 뒤에 저장하므로 도중에 죽으면 ``running``이 남아 다음에 다시 실행한다."""
+        상태는 프로젝트 시작 전과 끝난 뒤에 저장한다. 도중에 죽으면 ``running``이 남고, 다음 실행에서 다시 실행한다.
+        ``--dry-run``이면 실행 순서만 정하고 끝난다.
+
+        Order: read the manifest -> attach the state -> order (``--dry-run`` stops here) -> preflight -> per
+        project: disk check, LLM budget, run, record the result, ``SBMIG-RESULT`` line, cleanup, summaries ->
+        infra wait or stop."""
         projects = load_manifest(self.manifest_path)
         self.state = state = self.load_state(projects)
         ordered = self._order(projects, state)
@@ -575,7 +579,7 @@ class FleetRunner:
         self.save_state()
         self._write_summaries()
         fc = self.cfg.fleet
-        # 실행할 프로젝트가 있을 때만 사전 점검을 하고, 모두 끝났으면 요약만 다시 쓴다
+        # 실행할 프로젝트가 있을 때만 사전 점검을 한다. 모두 끝났으면 요약만 다시 쓴다
         if any(a not in ("done", "skip", "keep") for _i, _r, a in self.planned) and not self._initial_preflight():
             self.save_state()
             self._write_summaries()
@@ -583,7 +587,7 @@ class FleetRunner:
         ran = 0
         total = len(ordered)
         pos_of = {id(p): i for i, p in enumerate(ordered, 1)}
-        # 인프라 대기 뒤 미뤄 둔 프로젝트를 앞에 다시 넣기 위해 deque를 쓴다
+        # deque를 쓴다. 인프라 대기 뒤 미뤄 둔 프로젝트를 앞에 다시 넣는다
         queue = deque(ordered)
         streak: list[str] = []                  # 인프라 원인으로 연달아 끝난 프로젝트 이름
         deferred: list[FleetProject] = []       # 이 프로세스에서 인프라 원인으로 pending으로 되돌린 프로젝트
@@ -600,7 +604,7 @@ class FleetRunner:
                     f"max_projects={fc.max_projects} reached; {proj.name} and later projects left pending"
                 )
                 break
-            # 디스크가 부족하면 인프라 대기 후 같은 프로젝트를 큐 앞에 다시 넣는다
+            # 디스크가 부족하면 인프라 대기를 하고, 같은 프로젝트를 대기열 앞에 다시 넣는다
             disk = self._disk()
             if disk is not None and getattr(disk, "failed", False):
                 self._say(disk.line())
@@ -608,7 +612,7 @@ class FleetRunner:
                     break
                 queue.appendleft(proj)
                 continue
-            # LLM 예산을 다 써도 project_config가 LLM 없이 실행하도록 설정하므로 메모만 남기고 실행한다
+            # LLM 예산을 다 썼으면 메모만 남기고 실행한다. project_config가 LLM 없이 실행하도록 설정한다
             remaining = self._remaining_llm()
             if remaining == 0 and f"llm-budget-exhausted:{proj.name}" not in state.notes:
                 state.notes.append(f"llm-budget-exhausted:{proj.name}")
@@ -621,7 +625,7 @@ class FleetRunner:
             run_id = self._run_id(index_of[id(proj)], proj, r.attempt)
             r.run_id = run_id
             r.out_dir = str(self.out_dir / run_id)
-            # 여기서 프로세스가 죽어도 다음에 이 프로젝트를 다시 실행하도록 시작 전에 ``running``으로 저장한다
+            # 시작 전에 ``running``으로 저장한다. 여기서 프로세스가 죽어도 다음에 이 프로젝트를 다시 실행한다
             self.save_state()
             self._say(f"[{pos}/{total}] {proj.name}: running ({run_id})")
             t0 = time.monotonic()
@@ -640,7 +644,7 @@ class FleetRunner:
                 run_llm = report.llm_usage.calls
                 kind = report_infra_kind(report, code) if r.status != "skipped" else None
             except KeyboardInterrupt:
-                # Ctrl-C면 다음에 다시 실행하도록 이 프로젝트를 pending(interrupted)으로 저장하고 예외를 다시 던진다
+                # Ctrl-C면 이 프로젝트를 pending(interrupted)으로 저장하고 예외를 다시 던진다. 다음에 다시 실행한다
                 r.status, r.error = "pending", "interrupted"
                 r.duration_s = round(time.monotonic() - t0, 1)
                 self.save_state()
@@ -654,7 +658,7 @@ class FleetRunner:
                 kind = infra_kind_for_exception(e)
             finally:
                 self._detach_run_log(run_log)
-            # 인프라 원인이면 실패로 세지 않고 인프라가 돌아왔을 때 다시 실행하도록 pending으로 둔다
+            # 인프라 원인이면 실패로 세지 않고 pending으로 둔다. 인프라가 돌아오면 다시 실행한다
             if kind:
                 r.status, r.error = "pending", INFRA_PREFIX + kind
             r.finished_at = utcnow()
@@ -662,7 +666,7 @@ class FleetRunner:
             ran += 1
             self.save_state()
             o_err, r_err = counts_open_resolved(r.error_counts)
-            # SBMIG-RESULT의 llm=은 이번 실행의 호출 수이고, 상태 행은 모든 시도의 합계이다
+            # SBMIG-RESULT의 llm=은 이번 실행의 호출 수다. 상태 행은 모든 시도의 합계다
             self._say(result_line(run_id, r.exit_code, build_ok, unresolved=r.unresolved, blocked=r.blocked,
                                   llm_calls=run_llm, attention=result_attention(r),
                                   open_errors=o_err if reported else None, resolved_errors=r_err if reported else None))
@@ -673,7 +677,7 @@ class FleetRunner:
                 f"unresolved {r.unresolved})"
                 + (f" - {r.error}" if kind else "")
             )
-            # cleanup_run은 보고서와 result.zip이 다 쓰인 것을 전제로 하므로 그 뒤에 정리하고,
+            # 보고서와 result.zip을 다 쓴 뒤에 정리한다. cleanup_run은 그것을 전제로 한다.
             # ``fleet.reindex_every`` 프로젝트마다 KB를 재색인한다
             self._cleanup(r)
             if fc.reindex_every and ran % fc.reindex_every == 0:
@@ -683,8 +687,8 @@ class FleetRunner:
                 except Exception as e:  # pragma: no cover
                     log.warning("fleet: kb reindex failed: %s", e)
             self._write_summaries()
-            # 인프라 원인이 ``infra_failure_limit``개 연달아 나오면 기다렸다가 다시 점검하고, 미룬
-            # 프로젝트를 원래 순서로 큐 앞에 넣는다. 같은 프로젝트는 MAX_INFRA_REQUEUES번까지만 넣는다
+            # 인프라 원인이 ``infra_failure_limit``개 연달아 나오면 기다렸다가 다시 점검한다.
+            # 미룬 프로젝트는 원래 순서로 대기열 앞에 넣는다. 같은 프로젝트는 MAX_INFRA_REQUEUES번까지만 넣는다
             if kind:
                 streak.append(proj.name)
                 deferred.append(proj)
@@ -698,7 +702,7 @@ class FleetRunner:
                     deferred = [p for p in deferred if p not in again]
                     streak.clear()
                 continue
-            # 정상 인프라에서 프로젝트가 실행되었으므로 연속 실패 수와 대기 횟수를 0으로 되돌린다
+            # 인프라가 정상이었다. 연속 실패 수와 대기 횟수를 0으로 되돌린다
             streak.clear()
             self._waits = 0
             if r.status == "aborted" and fc.stop_on_abort:
@@ -717,7 +721,7 @@ class FleetRunner:
         return state
 
     def _write_summaries(self) -> None:
-        """요약 파일(summary.md / .csv / .json, learning.md)을 다시 기록한다. 실패해도 경고만 남기고 계속 진행한다."""
+        """요약 파일(summary.md / .csv / .json, learning.md)을 다시 기록한다. 실패해도 경고만 남긴다."""
         from .summary import write_summaries
 
         try:
@@ -726,7 +730,7 @@ class FleetRunner:
             log.warning("fleet: writing summaries failed: %s", e)
 
     def _kb_or_none(self) -> Any:
-        """learning.md에 쓸 KB를 반환한다. ``run_project``만 주입되어 KB가 없으면 None을 반환한다."""
+        """learning.md에 쓸 KB를 반환한다. ``run_project``만 넘기고 KB는 넘기지 않았으면 None이다."""
         if self._kb is not None:
             return self._kb
         if self._run_project is not None:  # 테스트나 직접 넘긴 러너는 주입된 KB만 쓴다
@@ -739,7 +743,7 @@ class FleetRunner:
     @property
     def exit_code(self) -> int:
         """일괄 실행의 종료 코드를 반환한다.
-        인프라 문제로 중단했으면 3이고, 그 밖은 :func:`fleet_exit_code`를 따른다."""
+        인프라 문제로 중단했으면 3이다. 그 밖에는 :func:`fleet_exit_code`를 따른다."""
         if self.stopped_on_infra:
             return EXIT_STOPPED_ON_INFRA
         return fleet_exit_code(self.state, self.stopped_on_abort)

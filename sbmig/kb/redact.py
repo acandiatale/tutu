@@ -1,11 +1,8 @@
-"""KB에 저장하는 모든 텍스트에서 비밀 값을 마스킹하는 모듈.
-Maven 로그 원문, 메시지, diff, 스크립트 로그와 코드, 구조 검토 결과가 대상이다.
-``sbmig.errors.common.Cleaner``와 ``CaseStore.add_script``가 사용한다.
-- 문맥상 비밀인 값만 가린다. 마지막 단어가 비밀 단어인 키의 ``key = value``, URL / JDBC 사용자 정보,
-  Authorization 헤더, PEM 개인키 등이다
-- diff와 스크립트를 읽을 수 있어야 하므로 코드와 플레이스홀더는 가리지 않는다
-- 회사 추가 규칙은 ``kb.redact_file``에서 읽어 기본 규칙에 더한다
-- 마스킹 실패로 실행이 멈추면 안 되므로 예외를 던지지 않는다
+"""KB에 저장하는 텍스트에서 비밀번호, 토큰 같은 비밀 값을 가리는 모듈. 실패해도 예외를 던지지 않는다.
+
+Covered: raw Maven log text, messages, diffs, script logs and code, structure review results. Used by
+``sbmig.errors.common.Cleaner`` and ``CaseStore.add_script``. Code is never masked, so diffs and scripts stay
+readable.
 
 Only VALUES are masked (``***``), and only where the context says they are secrets:
 
@@ -44,7 +41,7 @@ log = logging.getLogger("sbmig.kb")
 MASK = "***"
 DEFAULT_RULES_FILE = "knowledge/kb/redact.yml"
 
-# 키의 마지막 단어로 판단하므로 password.encoder, tokenCount처럼 비밀 단어가 앞에 있으면 설정 이름으로 본다
+# 키의 마지막 단어로 판단한다. password.encoder, tokenCount처럼 비밀 단어가 앞에 있으면 비밀이 아니다
 SECRET_WORDS = frozenset({
     "password", "passwd", "passphrase", "passcode", "pwd", "pw", "pass", "secret", "secrets", "token",
     "credential", "credentials", "authorization", "apikey", "privatekey", "secretkey", "accesskey", "authkey",
@@ -84,7 +81,7 @@ _XML_NV_RE = re.compile(
 _XML_PARAM_RE = re.compile(
     r"<(?P<t1>param-name|name|key)>\s*(?P<k>[\w.\-]+)\s*</(?P=t1)>[\s+\-]*?<(?P<t2>param-value|value)>"
     r"(?P<v>[^<>]*)</(?P=t2)>")
-# diff에서는 바뀐 `<param-value>`가 - 줄과 + 줄에 두 번 나오므로 바로 뒤의 값도 찾는다
+# diff에서는 바뀐 `<param-value>`가 - 줄과 + 줄에 두 번 나온다. 바로 뒤의 값도 찾는다
 _XML_PARAM_NEXT_RE = re.compile(r"[\s+\-]*?<(?P<t2>param-value|value)>(?P<v>[^<>]*)</(?P=t2)>")
 _JSON_RE = re.compile(
     r"""(?P<q>["'])(?P<k>[\w.\-]+)(?P=q)\s*:\s*(?P<q2>["'])(?P<v>(?:\\.|(?!(?P=q2))[^\\\n])*)(?P=q2)""")
@@ -128,7 +125,7 @@ class Redactor:
     # ------------------------------------------------------------------ 키 판단
     def is_secret_key(self, key: str) -> bool:
         """이 키의 값이 비밀인지 확인한다.
-        허용 키는 비밀이 아니고, 회사 키 패턴에 맞으면 비밀이며, 그 밖에는 마지막 한두 단어로 판단한다."""
+        허용 키는 비밀이 아니다. 회사 키 패턴에 맞으면 비밀이다. 그 밖에는 마지막 한두 단어로 판단한다."""
         k = (key or "").strip().strip("\"'")
         if not k or k.lower() in self.extra.allow:
             return False
@@ -152,7 +149,7 @@ class Redactor:
             self._collect(text, out)
             return _merge(out)
         except Exception as e:  # pragma: no cover - 마스킹 때문에 실행을 멈추지 않는다
-            # 비밀 값이 새는 것보다 덜 보이는 편이 나으므로, 규칙이 고장 나면 비밀 단어가 보이는 텍스트는 통째로 가린다
+            # 규칙이 고장 나면 비밀 단어가 들어 있는 텍스트를 통째로 가린다. 비밀 값이 새는 것보다 낫다
             log.debug("redaction failed: %s: %s", type(e).__name__, e)
             return [(0, len(text))] if any(w in text.lower() for w in ("password", "secret", "token")) else []
 
@@ -184,7 +181,7 @@ class Redactor:
             for m in rx.finditer(text):
                 if self.is_secret_key(m.group("k")):
                     add(m)
-                    # diff에서는 바뀐 <param-value>가 - 줄과 + 줄에 두 번 나오므로 바로 뒤의 값(최대 4개)도 가린다
+                    # diff에서는 바뀐 <param-value>가 - 줄과 + 줄에 두 번 나온다. 바로 뒤의 값도 4개까지 가린다
                     if rx is _XML_PARAM_RE:
                         pos = m.end()
                         for _ in range(4):
@@ -208,8 +205,7 @@ class Redactor:
     @staticmethod
     def _assign_value(text: str, m: re.Match) -> Optional[tuple[int, int]]:
         """따옴표 없는 ``key = value`` / ``key: value``에서 값의 구간을 찾는다.
-        코드, 빈 값, 플레이스홀더면 None을 반환한다.
-        코드까지 가리면 diff를 읽을 수 없기 때문이다."""
+        코드, 빈 값, 플레이스홀더면 None을 반환한다. 코드까지 가리면 diff를 읽을 수 없다."""
         sep, sp = m.group("sep"), m.group("sp")
         if sep == ":" and sp:
             return None                                  # `for (String t : tokens)`, `c ? token : x` 같은 코드
@@ -299,7 +295,7 @@ _DEFAULT = Redactor()
 
 def _rules_path(cfg: Any = None) -> Optional[Path]:
     """``kb.redact_file`` 경로를 반환한다.
-    빈 값이면 기능을 끈 것이므로 None을, 설정이 없으면 패키지 기본 파일을 반환한다."""
+    빈 값이면 추가 규칙을 끈 것이라 None을 반환한다. 설정이 없으면 패키지 기본 파일을 반환한다."""
     try:
         kbc = getattr(cfg, "kb", None)
         rel = getattr(kbc, "redact_file", None) if kbc is not None else None
@@ -316,7 +312,7 @@ def _rules_path(cfg: Any = None) -> Optional[Path]:
 
 def load_rules(path: Optional[Path]) -> _Extra:
     """redact yml에서 회사 추가 규칙을 읽는다.
-    파일이 없거나 읽지 못하면 빈 규칙을 반환하고, 잘못된 정규식은 경고를 남기고 건너뛴다.
+    파일이 없거나 읽지 못하면 빈 규칙을 반환한다. 잘못된 정규식은 경고를 남기고 건너뛴다.
 
     Keys: ``key_words``, ``key_patterns``, ``patterns`` (str or {name, regex}; a ``value`` group masks only
     it), ``allow_keys``."""
@@ -358,7 +354,7 @@ def load_rules(path: Optional[Path]) -> _Extra:
 
 def get_redactor(cfg: Any = None) -> Redactor:
     """``cfg``에 맞는 마스킹 객체를 반환한다.
-    규칙 파일의 수정 시각과 크기로 캐시하므로 파일을 고치면 재시작 없이 반영된다."""
+    규칙 파일의 수정 시각과 크기로 캐시한다. 파일을 고치면 재시작하지 않아도 반영된다."""
     path = _rules_path(cfg)
     if path is None:
         return _DEFAULT

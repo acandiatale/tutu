@@ -1,6 +1,5 @@
-"""호출 대상이 키워드 인자를 받는지 시그니처로 미리 판단하는 모듈.
-빌드처럼 다시 실행하면 안 되는 호출에서 TypeError가 난 뒤 키워드를 빼고 다시 호출하지 않으려고 쓴다.
-같은 대상은 한 번만 검사한다.
+"""호출 대상이 어떤 키워드 인자를 받는지 시그니처로 미리 확인하는 모듈.
+빌드처럼 다시 실행하면 안 되는 호출을 TypeError 때문에 한 번 더 실행하지 않게 한다.
 
 Call sites that pass a newer keyword to a builder (`skip_tests`, `extra_args`) ask `takes_keyword` before the
 one call, so a TypeError raised INSIDE a real build is never answered by a second Maven build. The answer is
@@ -46,7 +45,7 @@ def _overridden(fn: Any) -> Any | None:
 def _decide(fn: Callable[..., Any], name: str, depth: int = 0) -> bool:
     try:
         sig = inspect.signature(fn)
-    except Exception:  # noqa: BLE001 - 시그니처를 읽지 못하면 현재 인터페이스로 보고 받는다고 판단한다
+    except Exception:  # noqa: BLE001 - 시그니처를 읽지 못하면 지금 인터페이스라고 보고, 받는다고 판단한다
         return True
     p = sig.parameters.get(name)
     if p is not None and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
@@ -58,8 +57,8 @@ def _decide(fn: Callable[..., Any], name: str, depth: int = 0) -> bool:
 
 
 def takes_keyword(fn: Callable[..., Any], name: str) -> bool:
-    """``fn``이 ``name`` 키워드 인자를 받는지 반환한다. 시그니처를 읽지 못하면 받는다고 본다. 예외를 던지지 않는다.
-    같은 대상은 한 번만 검사하고 결과를 기억한다.
+    """``fn``이 ``name`` 키워드 인자를 받는지 반환한다. 시그니처를 읽지 못하면 받는다고 본다.
+    같은 대상은 한 번만 검사하고 결과를 기억한다. 예외를 던지지 않는다.
 
     By name, or through `**kwargs` (see the module text for a method that forwards `**kwargs` to the base
     method it overrides). Cached weakly; a callee that cannot be weakly referenced is checked every time."""

@@ -1,9 +1,9 @@
 """KB의 jsonl 파일에 레코드를 덧붙이고 읽는 모듈. 지금은 ``<kb>/errors.jsonl``에만 쓴다.
-``CaseStore.record_run`` / ``merge_from``이 덧붙이고, ``iter_errors`` / ``validate``가 읽는다.
-- 쓰는 도중 죽은 프로세스는 줄바꿈 없는 마지막 줄을 남긴다.
-  그래서 ``append_lines``는 먼저 파일 끝을 고치고(``repair_tail``) 여러 줄을 한 번에 쓴 뒤 fsync한다
-- ``parse_record`` / ``line_ids``는 깨진 줄 뒤에 붙은 온전한 레코드를 살려서 읽는다
-- 덧붙일 때는 호출하는 쪽이 KB 잠금(:mod:`sbmig.kb.lock`)을 잡는다
+
+``CaseStore.record_run`` / ``merge_from`` append; ``iter_errors`` / ``validate`` read. A process killed while
+writing leaves a last line without a newline, so ``append_lines`` repairs the end first (``repair_tail``),
+then writes all lines at once and fsyncs. ``parse_record`` / ``line_ids`` recover a whole record glued after
+a torn one. The caller holds the KB lock (:mod:`sbmig.kb.lock`) when appending.
 
 A full disk leaves a torn last line too; without the repair the next append would glue its first record onto
 it. :func:`line_ids` gives the id(s) a stored line really holds (dedupe on append / import).
@@ -27,7 +27,7 @@ _CHUNK = 1 << 16
 
 def corrupt_path(path: Path) -> Path:
     """깨진 줄을 옮겨 둘 파일 경로 ``<file>.corrupt``를 반환한다.
-    사람이 확인할 수 있도록 이 파일은 지우지 않는다."""
+    이 파일은 지우지 않는다. 사람이 나중에 확인할 수 있다."""
     return path.with_name(path.name + CORRUPT_SUFFIX)
 
 
@@ -64,7 +64,7 @@ def repair_tail(path: Path) -> bool:
             fh.seek(-1, os.SEEK_END)
             if fh.read(1) == b"\n":
                 return False
-            # 큰 errors.jsonl을 통째로 읽지 않도록 끝에서부터 64KB씩 읽으며 마지막 줄바꿈을 찾는다
+            # 끝에서부터 64KB씩 읽으면서 마지막 줄바꿈을 찾는다. 큰 errors.jsonl을 통째로 읽지 않는다
             last_nl, pos = -1, size
             while pos > 0:
                 start = max(0, pos - _CHUNK)
@@ -96,8 +96,9 @@ def repair_tail(path: Path) -> bool:
 
 
 def append_lines(path: Path, lines: Iterable[str]) -> int:
-    """레코드를 한 줄씩 파일에 덧붙인다. 파일 끝을 먼저 고친 뒤 모든 줄을 write 한 번으로 쓰고 fsync한다.
-    중간에 죽어도 망가지는 것은 마지막 줄뿐이고, 다음 덧붙이기에서 고친다. 덧붙인 줄 수를 반환한다."""
+    """레코드를 파일에 한 줄씩 덧붙이고, 덧붙인 줄 수를 반환한다.
+    파일 끝을 먼저 고친 뒤 모든 줄을 write 한 번으로 쓰고 fsync한다.
+    중간에 죽어도 망가지는 것은 마지막 줄뿐이다. 그 줄은 다음에 덧붙일 때 고친다."""
     batch = [ln.rstrip("\n") for ln in lines if ln]
     if not batch:
         return 0
@@ -113,7 +114,7 @@ def append_lines(path: Path, lines: Iterable[str]) -> int:
 
 def parse_record(line: str, model: Any) -> Optional[Any]:
     """한 줄을 ``model``로 파싱한다.
-    실패하면 깨진 레코드 뒤에 붙은 온전한 레코드를, 그것도 없으면 None을 반환한다."""
+    파싱에 실패하면 깨진 레코드 뒤에 붙은 온전한 레코드를 반환한다. 그것도 없으면 None이다."""
     line = (line or "").strip()
     if not line:
         return None
@@ -132,7 +133,7 @@ def parse_record(line: str, model: Any) -> Optional[Any]:
 
 def fast_id(line: str) -> Optional[str]:
     """온전한 레코드 한 줄에서 JSON 파싱 없이 정규식으로 ID를 뽑는다.
-    큰 파일의 중복 검사에 쓰고, 실제 파싱이 필요한 줄이면 None을 반환한다."""
+    큰 파일의 중복 검사에 쓴다. 제대로 파싱해야 하는 줄이면 None을 반환한다."""
     s = line.rstrip()
     if not s.endswith("}") or s.count(ID_HEAD) != 1:
         return None

@@ -1,10 +1,12 @@
-"""오케스트레이터가 쓰는 다른 패키지의 객체를 처음 필요할 때 불러오고, 불러올 수 없으면 대신 쓸 객체를 제공하는 모듈.
-- ``lazy_attr``: analyze, plan, rewrite, build, fix, kb 패키지를 쓰는 시점에 import하고, 실패하면
-  ``MissingComponentError``로 무엇이 빠졌는지 알려 준다
-- ``LazyFixer``: 첫 수정 스크립트를 요청할 때 fixer와 LLM 클라이언트를 만든다
-- ``LazyScriptRunner``: ``sbmig.script.ScriptRunner``를 만들 수 없으면 예외 대신 매번 ``error`` 결과를 반환한다
-- ``NullKnowledgeBase``: sbmig.kb를 import할 수 없거나 ``sbmig.api.migrate(kb=False)``로 호출했을 때 쓰는 빈 KB
-모든 오류는 수정 스크립트로 고치므로 ``propose_script``가 없는 fixer는 ``ScriptFixerMissing``으로 처리한다.
+"""오케스트레이터가 쓰는 다른 패키지의 객체를 처음 필요할 때 만드는 모듈.
+만들 수 없으면 대신 쓸 객체를 준다.
+
+``lazy_attr`` imports analyze / plan / rewrite / build / fix / kb at first use and raises
+``MissingComponentError`` naming what is missing. ``LazyFixer`` builds the fixer and the LLM client at the
+first script request. ``LazyScriptRunner`` returns an ``error`` result every time instead of raising when
+``sbmig.script.ScriptRunner`` cannot be built. ``NullKnowledgeBase`` is the empty KB used when sbmig.kb does
+not import or for ``sbmig.api.migrate(kb=False)``. Every error is fixed by a script, so a fixer without
+``propose_script`` is handled as ``ScriptFixerMissing``.
 """
 from __future__ import annotations
 
@@ -18,12 +20,13 @@ log = logging.getLogger("sbmig.loop")
 
 
 class MissingComponentError(RuntimeError):
-    """필요한 패키지가 없거나 import가 깨졌을 때 던지는 예외 클래스. 오케스트레이터는 이것을 실행 중단 사유로 기록한다."""
+    """필요한 패키지가 없거나 import가 깨졌을 때 던지는 예외 클래스. 오케스트레이터는 실행 중단 사유로 기록한다."""
 
 
 def lazy_attr(module: str, attr: str, workstream: str) -> Any:
     """``module.attr``을 지금 import해서 반환한다.
-    실패하면 무엇이 빠졌는지 담은 ``MissingComponentError``를 던진다. 모듈 import 실패와 이름 없음을 구분해서 알려 준다."""
+    실패하면 무엇이 빠졌는지 담은 ``MissingComponentError``를 던진다.
+    모듈을 import하지 못한 경우와 모듈에 그 이름이 없는 경우를 구분해서 알려 준다."""
     try:
         mod = importlib.import_module(module)
     except Exception as e:
@@ -37,16 +40,16 @@ def lazy_attr(module: str, attr: str, workstream: str) -> Any:
 
 
 class ScriptFixerMissing(RuntimeError):
-    """fixer에 ``propose_script``가 없어 수정 스크립트를 만들 수 없을 때 던지는 예외 클래스.
-    수정 루프는 ``fixer-without-scripts`` 플래그를 붙이고 그 케이스를 llm_unavailable로 차단한다.
+    """fixer에 ``propose_script``가 없어서 수정 스크립트를 만들 수 없을 때 던지는 예외 클래스.
+    수정 루프는 ``fixer-without-scripts`` 플래그를 붙이고, 그 케이스를 llm_unavailable로 차단한다.
     저장된 스크립트는 그대로 재사용한다.
 
     Typically a tier-2 `fix.plugin` written for the v1 interface."""
 
 
 class NullKnowledgeBase:
-    """아무 데이터도 없는 빈 KB 클래스. sbmig.kb를 import할 수 없거나 ``kb=False``로 호출했을 때, 테스트에서 쓴다.
-    재사용할 스크립트가 없고, LLM이 만든 스크립트는 저장하지 않고 v0로 실행한다.
+    """아무 데이터도 없는 빈 KB 클래스. sbmig.kb를 import할 수 없을 때, ``kb=False``로 호출했을 때, 테스트에서 쓴다.
+    재사용할 스크립트가 없다. LLM이 만든 스크립트는 저장하지 않고 v0로 실행한다.
     오류 목록은 실행 디렉토리의 errors.jsonl에만 남는다.
 
     The KB surface the flow calls: `match`, `cases` (None), `record_run`."""
@@ -64,7 +67,7 @@ class NullKnowledgeBase:
 
 class LazyFixer:
     """실제 fixer와 LLM 클라이언트를 첫 수정 스크립트 요청 때 만드는 프록시 클래스.
-    그래서 LLM이 필요 없는 실행은 LLM 설정이 없어도 끝까지 실행된다."""
+    LLM이 필요 없는 실행은 LLM 설정이 없어도 끝까지 실행된다."""
 
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
@@ -86,10 +89,10 @@ class LazyFixer:
                                      "a fix script; a fix.plugin must implement propose_script(ws, cluster, ctx)")
         return fn(ws, cluster, ctx)
 
-    # 만능 __getattr__를 두면 hasattr 확인만으로도 LLM 클라이언트가 생성되므로
-    # 운영자 확인 가이드 호출과 사용량 조회 메서드를 하나씩 명시해 실제 fixer에 전달한다
+    # 운영자 확인 가이드와 사용량 조회는 메서드를 하나씩 두고 실제 fixer에 넘긴다.
+    # 만능 __getattr__를 두면 hasattr 확인만으로도 LLM 클라이언트가 만들어진다
     def verify_guide(self, ws, cluster, ctx, changes, diff, **kw):
-        """메이저 업그레이드에 대한 운영자 확인 가이드를 실제 fixer에 요청한다. LLM을 한 번 호출한다.
+        """메이저 업그레이드에서 운영자가 확인할 내용을 실제 fixer에 요청한다. LLM을 한 번 호출한다.
         fixer에 그 기능이 없으면 AttributeError를 던진다."""
         fx = self._get()
         fn = getattr(fx, "verify_guide", None)
@@ -133,7 +136,7 @@ def profile_summary(profile) -> str:
 class LazyScriptRunner:
     """수정 스크립트 실행기를 처음 쓸 때 ``sbmig.script.ScriptRunner(cfg)``로 만드는 프록시 클래스.
     실행기를 만들 수 없으면 실행할 때마다 그 이유를 ``error`` 결과로 반환한다.
-    예외를 던지지 않으므로 수정 루프는 실패한 시도로 기록하고 계속 진행한다."""
+    예외는 던지지 않는다. 수정 루프는 실패한 시도로 기록하고 다음으로 넘어간다."""
 
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
@@ -144,7 +147,7 @@ class LazyScriptRunner:
         if self._runner is None and self._error is None:
             try:
                 self._runner = self._factory()
-            except Exception as e:  # noqa: BLE001 - 대신 실행할 때마다 이유를 알린다
+            except Exception as e:  # noqa: BLE001 - 예외 대신 실행할 때마다 이유를 알린다
                 self._error = f"script runner unavailable: {type(e).__name__}: {e}"
                 log.error("%s", self._error)
         return self._runner
@@ -157,7 +160,7 @@ class LazyScriptRunner:
 
     def run(self, ws, code: str, *, errors=(), timeout_s: Optional[int] = None) -> ScriptRunResult:
         """스크립트를 별도 ``python -I`` 프로세스에서 실행하고 결과를 반환한다.
-        ``errors``는 이 케이스의 오류 목록이며 스크립트에서는 ``p.errors``로 읽는다."""
+        ``errors``는 이 케이스의 오류 목록이다. 스크립트에서는 ``p.errors``로 읽는다."""
 
         r = self._get()
         if r is None:

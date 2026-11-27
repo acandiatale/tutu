@@ -1,8 +1,9 @@
 """사람이 KB를 조회하고 고칠 때 쓰는 ``sbmig kb …`` 명령 모듈.
-``sbmig/cli.py``가 ``kb_cli``를 ``sbmig kb``로 연결한다.
-- Typer가 명령 함수 docstring의 첫 줄을 명령 요약으로 쓰므로 첫 줄은 짧게 둔다
-- 데이터는 모두 ``FileKnowledgeBase``와 ``CaseStore``를 거쳐 읽고, 쓰기는 KB 잠금 안에서 한다
-- 문제 있는 스크립트는 ``cases retire``로 끄고, 사람이 처리할 케이스는 ``cases pin <id> block:<이유>``로 고정한다
+
+``sbmig/cli.py`` mounts ``kb_cli`` as ``sbmig kb``. Typer shows the first line of a command's docstring as its
+summary, so keep that line short. All data goes through ``FileKnowledgeBase`` / ``CaseStore``; writes happen
+under the KB lock. A bad script is switched off with ``cases retire``; a case left to a person is pinned with
+``cases pin <id> block:<reason>``.
 
 Commands: `errors list | show`, `cases list | show | retire | activate | pin | unpin`, and stats / validate /
 export / import / reindex of the whole KB."""
@@ -34,7 +35,7 @@ kb_cli.add_typer(cases_cli, name="cases")
 
 def _load_cfg(configs: list[Path]) -> Config:
     """KB 명령용 설정을 읽는다.
-    KB 명령에는 회사 artifacts 설정이 필요 없으므로, 없으면 플레이스홀더로 채워 검증 오류를 피한다."""
+    KB 명령에는 회사 artifacts 설정이 필요 없다. 없으면 플레이스홀더로 채워서 검증 오류를 피한다."""
     try:
         return load_config(*configs)
     except ValidationError as e:
@@ -45,7 +46,7 @@ def _load_cfg(configs: list[Path]) -> Config:
 
 def _kb(ctx: typer.Context) -> FileKnowledgeBase:
     """명령이 사용할 FileKnowledgeBase를 반환한다.
-    상위 CLI가 ``ctx.obj``에 넣은 ``cfg`` / ``kb``를 쓰고, 없으면 --config / --kb-dir로 만든다."""
+    상위 CLI가 ``ctx.obj``에 넣어 둔 ``cfg`` / ``kb``를 쓴다. 없으면 --config / --kb-dir로 만든다."""
     obj = ctx.ensure_object(dict)
     if "kb" not in obj:
         cfg: Config = obj.get("cfg") or _load_cfg(obj.get("configs") or [])
@@ -101,7 +102,7 @@ def reindex_cmd(ctx: typer.Context,
             typer.echo(ln)
     st = kb.stats()
     done = getattr(kb.cases, "last_reindex", None) or {}
-    # 변경 부분 수와 해결한 시도 수는 따로 센 값이므로 INFO 줄과 같은 표현으로 둘 다 출력한다
+    # 변경 부분 수와 해결한 시도 수는 따로 센 값이다. INFO 줄과 같은 표현으로 둘 다 출력한다
     typer.echo(f"{n} case(s), {st['script_versions']} script version(s); {done.get('runs', 0)} script run "
                f"record(s) rebuilt, {done.get('hunks', 0)} entr(ies) given as-is/to-be hunks, "
                f"{done.get('resolved_by', 0)} build-resolved entr(ies) given a probable fixer — {kb.cases.md_path}")
@@ -216,7 +217,7 @@ def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
     if not hits:
         found = _alias_target(store, key, quiet=versioned)
         if found and versioned:
-            # 병합으로 버전 번호가 바뀌었을 수 있으므로, 이전 번호로 엉뚱한 스크립트를 끄지 않도록 거부한다
+            # 병합으로 버전 번호가 바뀌었을 수 있다. 이전 번호로 엉뚱한 스크립트를 끄지 않도록 거부한다
             _fail(f"case {key} is now {found}: version numbers may have changed — look at 'sbmig kb cases show "
                   f"{found}' and use that id")
         if found:
@@ -305,7 +306,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
             for ln in (body if body is not None else "(file missing)").splitlines():
                 typer.echo(f"    | {ln}")
     entries = list(store.iter_errors(case=cid))
-    # iter_errors는 케이스 ID를 앞부분만 비교하므로 정확히 같은 케이스만 남긴다
+    # iter_errors는 케이스 ID를 앞부분으로만 비교한다. 정확히 같은 케이스만 남긴다
     entries = [e for e in entries if e.case_id == cid]
     if entries and last > 0:
         typer.echo(f"  last {min(last, len(entries))} of {len(entries)} entr(ies):")
@@ -346,7 +347,7 @@ def cases_activate_cmd(ctx: typer.Context, key: str = typer.Argument(..., metava
 
 def _pin_target(store: CaseStore, key: str, create: bool) -> str:
     """``cases pin``이 고정할 케이스 ID를 정한다. ``--create``면 KB에 아직 없는 10자리 ID도 받는다.
-    오타로 새 케이스 폴더가 생기지 않도록 모르는 ID면 exit 1로 끝난다.
+    모르는 ID면 exit 1로 끝난다. 오타로 새 케이스 폴더가 생기면 안 된다.
     알려진 케이스는 정확한 ID, 4자 이상의 유일한 앞부분, alias로 찾는다."""
     ids = store.case_ids()
     if key in ids:
@@ -378,7 +379,7 @@ def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CA
     Pin a case to `block` (never tried: no script, no LLM; Handover names the reason). An unknown id is refused
     unless --create is given."""
     store = _kb(ctx).cases
-    # 모르는 ID는 거부하고, 폴더가 아직 없는 케이스를 미리 고정할 때만 --create를 쓴다
+    # 모르는 ID는 거부한다. 폴더가 아직 없는 케이스를 미리 고정할 때만 --create를 쓴다
     cid = _pin_target(store, key, create)
     try:
         store.set_pin(cid, spec)
