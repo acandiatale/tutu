@@ -1,9 +1,10 @@
 """XML 선언과 실제 바이트의 인코딩이 다른 pom을 첫 OpenRewrite 실행 전에 맞추는 모듈.
-OpenRewrite는 그런 pom을 읽지 못해 변환 전체가 실패하고, EUC-KR 범위를 벗어난 한글은 다시 쓸 때 깨뜨린다.
-- 두 흐름 모두 ``transform.rewrite`` 단계가 레시피 실행 전에 호출한다
-- 바이트가 EUC-KR이면 선언만 ``EUC-KR``로 바꾸고, 그 밖이면 파일을 UTF-8로 다시 저장한다
-- 엄격한 XML 파서가 읽고 OpenRewrite가 손상하지 않는 pom은 건드리지 않는다
-- 선언을 뺀 한글 내용은 전후가 같아야 하고, 쓰기 전에 확인한다
+
+Such a pom makes the whole OpenRewrite run fail, and Korean text outside EUC-KR is broken when the plugin
+writes it back. Both flows call this from the ``transform.rewrite`` step before the recipes run. Bytes
+within EUC-KR get only their declaration set to ``EUC-KR``; other Korean bytes are saved again as UTF-8. A
+pom that a strict XML parser reads and OpenRewrite writes back intact is left alone. The content without the
+declaration must be the same before and after; this is checked before writing.
 
 Contract: docs/INTERFACES.md "v2.1z-ay". Measured with rewrite-maven-plugin 6.46.1 (table in
 tests/restructure/test_pom_charset.py):
@@ -126,11 +127,11 @@ def diagnose(data: bytes) -> PomCharsetFix | None:
     declared = enc.group(3).decode("ascii", "replace") if enc else None
     codec = xml_codec(declared) if declared else "utf-8"
     ok = _strict_ok(data)
-    # 한글 계열 선언이라도 EUC-KR 범위 밖 바이트는 OpenRewrite가 다시 쓸 때 깨뜨리므로 고친다
+    # 한글 계열 선언이라도 EUC-KR 범위 밖 바이트가 있으면 고친다. OpenRewrite가 다시 쓸 때 그 글자를 깨뜨린다
     if ok and not (codec == "cp949" and not _decodes(data, "euc_kr")):
         return None
     actual = pom_encoding(data)
-    # 한글 계열과 UTF-8만 고친다. latin-1 같은 후보는 무엇이든 디코딩하므로 원래 글자인지 알 수 없다
+    # 한글 계열과 UTF-8만 고친다. latin-1 같은 후보는 어떤 바이트든 디코딩해서 원래 글자인지 알 수 없다
     if actual not in ("utf-8", "cp949") or not _decodes(data, actual):
         return None
     text = data.decode(actual)
@@ -159,7 +160,7 @@ def project_poms(ws: Any) -> list[str]:
 
 
 def correct_pom_encodings(ws: Any, *, write: bool = True) -> PomCharsetResult:
-    """프로젝트 pom마다 ``diagnose``를 실행하고 고친 바이트를 쓴다. 읽지 못한 파일은 건너뛴다.
+    """프로젝트 pom마다 ``diagnose``로 확인하고, 고칠 것이 있으면 고친 바이트를 쓴다. 읽지 못한 파일은 건너뛴다.
     ``write``가 False면 쓰지 않고 결과만 반환한다."""
     out = PomCharsetResult()
     for rel in project_poms(ws):

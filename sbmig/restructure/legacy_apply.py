@@ -1,11 +1,13 @@
-"""재구성에서 legacy Spring 컨텍스트(XML 설정, web.xml)를 Boot에 맞게 처리하는 믹스인 모듈.
-``Restructurer``가 상속한다.
-Spring Framework나 servlet 프로젝트를 Boot 앱으로 바꾸면 빌드는 되어도 기동할 때 깨지는 곳이 있다.
-빈 덮어쓰기 금지, JNDI 없음, WEB-INF 위치, CommonsMultipartResolver, 기본 서블릿, @EnableWebMvc 같은 것이다.
-- ``_generate_application``, ``_write_boot``, ``_web_xml_registrations``, ``apply`` 끝에서 호출된다
-- 결과는 ``RestructureResult``의 ``xml_imports``, ``conversion_facts`` 등에 남기고 수정 루프와 인수인계가 읽는다
-- 스위치는 ``layout.legacy_context.*``이며, 끄면 인수인계 문장만 남긴다
-- as-is 파일은 고치지 않고 ``legacy-config/``에 복사한 파일만 고친다
+"""재구성 단계에서 legacy Spring 설정(XML 설정, web.xml)을 Boot 앱에 맞게 고치는 모듈.
+``Restructurer``가 이 믹스인을 상속한다.
+
+A Spring Framework or servlet project turned into a Boot app can build and still fail at startup: bean
+overriding is off, there is no JNDI, WEB-INF is not on the classpath, CommonsMultipartResolver is gone, the
+default servlet and @EnableWebMvc behave differently. This mixin handles those places. Called from
+``_generate_application``, ``_write_boot``, ``_web_xml_registrations`` and the end of ``apply``. Results go
+to ``RestructureResult`` (``xml_imports``, ``conversion_facts`` and others), read by the fix loop and the
+Handover. Switches are ``layout.legacy_context.*``; a switch that is off leaves only the Handover sentence.
+As-is files are never edited; only the copies under ``legacy-config/`` are.
 
 Contract: docs/INTERFACES.md "v2.1x". Pure text helpers live in `legacy_context`; the class / property tables
 in `knowledge/config/legacy_context_rules.yml`.
@@ -66,12 +68,13 @@ class LegacyContextMixin:
 
     @staticmethod
     def _lc_legacy_case(c: "_Ctx") -> bool:
-        """Boot로 바뀌는 legacy 프로젝트(spring_legacy, servlet_tomcat, pure_java)인지 반환한다.
-        as-is가 Boot이거나 MSA면 False다."""
+        """Boot 앱으로 바뀌는 legacy 프로젝트인지 반환한다.
+        as-is가 Boot이거나 MSA면 False다. spring_legacy, servlet_tomcat, pure_java는 True다."""
         return c.profile.case_type not in NON_LEGACY_CASES
 
     def _lc_prop_configured(self, c: "_Ctx", boot: str, key: str) -> bool:
-        """boot 모듈의 ``application*.properties``나 이번 실행에서 그 키를 이미 정했는지 반환한다."""
+        """이 키가 이미 정해져 있으면 True를 반환한다.
+        boot 모듈의 ``application*.properties``와 이번 실행에서 쓴 속성을 모두 본다."""
         if key in c.props_written:
             return True
         res = f"{boot}/src/main/resources"
@@ -84,8 +87,8 @@ class LegacyContextMixin:
 
     def _lc_write_props(self, c: "_Ctx", boot: str, header: str, rows: list[tuple[str, str, str]]) -> list[str]:
         """boot 모듈의 ``application.properties`` 끝에 ``# sbmig: <header>`` 블록을 덧붙인다.
-        ``rows``는 (키, 값, 이유)이고, 이미 정해진 키는 건너뛴다.
-        쓴 ``키=값`` 목록을 반환한다. ``legacy_properties_written``에도 이유와 함께 남긴다."""
+        ``rows``는 (키, 값, 이유) 목록이다. 이미 정해진 키는 건너뛴다.
+        덧붙인 ``키=값`` 목록을 반환한다. ``legacy_properties_written``에도 이유와 함께 남긴다."""
         new = [(k, v, why) for k, v, why in rows if not self._lc_prop_configured(c, boot, k)]
         seen: set[str] = set()
         new = [r for r in new if not (r[0] in seen or seen.add(r[0]))]
@@ -125,9 +128,9 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ 소스 모듈 검사
     def _lc_sources(self, c: "_Ctx", comp_dirs: list[str]) -> dict[str, list[str]]:
-        """소스 모듈의 ``src/main/java``를 한 번 검사해 Boot 기동에 걸리는 코드를 찾는다.
-        @EnableWebMvc, WebApplicationInitializer, 기본 서블릿 처리, ``/WEB-INF/``를 가리키는
-        ``@PropertySource``, CommonsMultipartResolver 생성이다. 결과는 캐시한다.
+        """소스 모듈의 ``src/main/java``에서 Boot로 기동할 때 문제가 되는 코드를 찾는다.
+        찾는 것은 @EnableWebMvc, WebApplicationInitializer, 기본 서블릿 처리, CommonsMultipartResolver 생성,
+        ``/WEB-INF/``를 가리키는 ``@PropertySource``다. 한 번만 검사하고 결과를 재사용한다.
 
         Values are FQCNs, except `webinf_property_sources` (`file:line: value`)."""
         if c.lc_sources is not None:
@@ -154,7 +157,7 @@ class LegacyContextMixin:
                 for key, rxs in pats.items():
                     if any(rx.search(body) for rx in rxs) and fqcn not in out[key]:
                         out[key].append(fqcn)
-                # Java의 CommonsMultipartResolver 생성은 수정 루프 노트가 다루므로 인수인계에만 남긴다
+                # Java 코드의 CommonsMultipartResolver 생성은 고치지 않고 인수인계에만 남긴다. 수정 루프 노트가 다룬다
                 if any(re.search(rf"\bnew\s+(?:[\w.]+\.)?{re.escape(n)}\s*\(", body) for n in mp_simple):
                     out["multipart_resolver"].append(fqcn)
                 for m in re.finditer(r"@PropertySource\s*\(([^)]*)\)", body):
@@ -167,8 +170,8 @@ class LegacyContextMixin:
     # ------------------------------------------------------------------ starter 선택
     def _lc_web_evidence(self, c: "_Ctx", asis_deps: Optional[list[Any]] = None) -> list[str]:
         """웹 앱이라는 근거 목록을 반환한다.
-        web.xml, spring-webmvc, servlet-api, @Controller, JSP, 서블릿 클래스를 본다.
-        분석기가 찾은 라이브러리와 as-is 의존성을 모두 확인한다."""
+        web.xml, spring-webmvc, servlet-api, @Controller, JSP, 서블릿 클래스가 근거다.
+        분석기가 찾은 라이브러리와 as-is 의존성을 모두 본다."""
         src = c.profile.source
         rules = self._lc_rules(c)
         ev: list[str] = []
@@ -193,8 +196,8 @@ class LegacyContextMixin:
 
     def _lc_starter(self, c: "_Ctx", starter: Optional[str], asis_deps: Optional[list[Any]] = None) -> Optional[str]:
         """spring_legacy 프로젝트에 쓸 starter를 고른다. 웹 starter는 웹 앱 근거가 있을 때만 쓴다.
-        근거가 없으면 ``starter_by_case['pure_java']``의 starter를 쓰고 메모와 인수인계를 남긴다.
-        ``web_evidence``와 ``starter``를 채운다.
+        근거가 없으면 ``starter_by_case['pure_java']``의 starter를 쓴다. 메모와 인수인계도 남긴다.
+        고른 결과는 ``web_evidence``와 ``starter``에 기록한다.
 
         Switch: `layout.legacy_context.web_starter_by_evidence` (off = keep the web starter + a follow-up)."""
         L = c.cfg.layout
@@ -354,8 +357,8 @@ class LegacyContextMixin:
                            reached_by: dict[str, str]) -> None:
         """복사한 XML의 ``<import resource>``를 따라가며 연결된 파일도 그 옆에 복사한다.
         - 상대 경로는 복사한 위치 기준으로 같은 상대 경로에 둔다. 앞의 ``/``는 Spring이 무시한다
-        - ``classpath:`` 파일 하나나 ``legacy-config/`` 밖을 가리키는 경로는 복사본을 가리키게 고친다
-        - 와일드카드 import는 as-is 파일을 읽으므로 그대로 두고 메모를 남긴다"""
+        - ``classpath:`` 파일 하나를 가리키거나 ``legacy-config/`` 밖을 가리키는 경로는 복사본을 가리키게 고친다
+        - 여러 파일에 맞거나 ``classpath:``인 와일드카드 import는 그대로 두고 메모를 남긴다. Spring이 as-is 파일을 읽는다"""
         queue = [asis]
         while queue:
             imp = queue.pop(0)
@@ -461,7 +464,7 @@ class LegacyContextMixin:
                 jndi.append(f"{bid} ({cp})")
                 if LC.handover_sentences:
                     text, _ = lc.insert_comment_above(text, el, rules.jndi_todo)
-            # /WEB-INF는 Boot classpath에 없으므로 classpath:asis-webinf/로 바꾼다. 파일이 없으면 복사해 둔다
+            # /WEB-INF는 Boot classpath에 없다. 위치를 classpath:asis-webinf/로 바꾸고, 파일이 없으면 복사해 둔다
             if LC.rewrite_webinf_locations:
                 text, done = lc.rewrite_webinf_locations(text, rules, lambda sub: self._lc_stash(c, boot, sub))
                 for old, new in done:
@@ -472,7 +475,7 @@ class LegacyContextMixin:
                 line, text = self._lc_profile_location(c, boot, cp, loc, text)
                 if line:
                     profile_lines.append(line)
-            # CommonsMultipartResolver는 Spring 6에서 삭제됐으므로 빈을 지우고 업로드 한도는 Boot 속성으로 옮긴다
+            # CommonsMultipartResolver는 Spring 6에서 삭제됐다. 빈을 지우고 업로드 한도는 Boot 속성으로 옮긴다
             for el in reversed(lc.beans_of_class(text, rules.multipart_classes)):
                 bid = el.attrs.get("id") or "multipartResolver"
                 limits = lc.multipart_limits(text, el, rules)
@@ -488,7 +491,7 @@ class LegacyContextMixin:
                     c.followup(f"{cp}: bean {bid} is a {el.attrs.get('class')} — Spring 6 deleted the class, startup "
                                "fails: remove the bean and set spring.servlet.multipart.max-file-size / max-request-size "
                                "(layout.legacy_context.multipart_resolver: false)")
-            # JSP를 WEB-INF/jsp 아래로 옮겼으므로 view prefix도 spring.mvc.view.prefix와 같게 바꾼다
+            # JSP를 WEB-INF/jsp 아래로 옮긴 경우다. view prefix도 spring.mvc.view.prefix와 같게 바꾼다
             if c.jsp_moved:
                 edits = []
                 for a, b, pre in lc.view_prefixes(text, rules):
@@ -497,7 +500,7 @@ class LegacyContextMixin:
                         edits.append((a, b, new_pre))
                         prefix_done.append(f"{cp}: {pre} → {new_pre}")
                 text = lc.rewrite_spans(text, edits)
-            # <mvc:resources>의 파일은 front 모듈 static/으로 옮겨졌으므로 그 위치를 덧붙인다
+            # <mvc:resources>의 파일은 front 모듈 static/으로 옮겨졌다. 그 위치를 덧붙인다
             for el in lc.resource_handlers(text, rules):
                 line, text = self._lc_resources(c, cp, el, text)
                 if line:
@@ -553,8 +556,8 @@ class LegacyContextMixin:
                        "default)")
 
     def _lc_stash(self, c: "_Ctx", boot: str, sub: str) -> Optional[str]:
-        """``WEB-INF/<sub>``를 boot 모듈에 보관한 위치 ``classpath:asis-webinf/<sub>``를 반환한다.
-        front 이동이 그곳에 두지 않았으면 as-is 파일을 찾아 복사한다.
+        """``WEB-INF/<sub>`` 파일이 boot 모듈에 놓인 위치 ``classpath:asis-webinf/<sub>``를 반환한다.
+        front 모듈로 옮길 때 그곳에 두지 않았으면 as-is 파일을 찾아 복사한다.
         파일을 찾지 못하거나 와일드카드면 None을 반환한다. 이때 위치는 고치지 않는다."""
         if "*" in sub or "?" in sub:
             return None
@@ -590,10 +593,10 @@ class LegacyContextMixin:
         return False
 
     def _lc_profile_location(self, c: "_Ctx", boot: str, cp: str, loc: str, text: str) -> tuple[str, str]:
-        """``${…}``가 들어간 classpath 위치 하나를 처리해 (인수인계 문장, 새 텍스트)를 반환한다.
+        """``${…}``가 들어간 classpath 위치 하나를 처리하고 (인수인계 문장, 새 텍스트)를 반환한다.
         - 플레이스홀더가 Boot에서도 해석되면 그대로 둔다
         - 패키지에 들어가는 파일 하나만 맞으면 ``classpath*:`` glob으로 바꾼다
-        - 여러 파일이 맞으면 glob이 모두 읽어 값이 섞이므로 고치지 않고 설정할 키를 알린다"""
+        - 여러 파일이 맞으면 고치지 않고 설정할 키를 알린다. glob으로 모두 읽으면 값이 섞인다"""
         LC = self._lc_switches(c)
         rules = self._lc_rules(c)
         keys = lc.placeholder_keys(loc)
@@ -631,7 +634,7 @@ class LegacyContextMixin:
     def _lc_resources(self, c: "_Ctx", cp: str, el: Any, text: str) -> tuple[str, str]:
         """``<mvc:resources>`` 하나를 처리해 (인수인계 문장, 새 텍스트)를 반환한다.
         웹 루트 파일은 front 모듈의 ``static/``으로 옮겨졌다.
-        그 디렉토리가 있으면 복사한 XML의 location에 ``classpath:/static/<loc>``를 덧붙인다.
+        front 모듈에 그 디렉토리가 있으면 복사한 XML의 location에 ``classpath:/static/<loc>``를 덧붙인다.
 
         `rewrite_webinf_locations: false` leaves the text; the sentence then asks for the same edit."""
         LC = self._lc_switches(c)
@@ -689,7 +692,7 @@ class LegacyContextMixin:
 
     def _lc_legacy_properties(self, c: "_Ctx", boot: str, copies: dict[str, str]) -> None:
         """빈 덮어쓰기와 순환 참조를 허용하는 속성을 boot ``application.properties``에 쓴다.
-        as-is Spring Framework처럼 기동하게 하려는 것이다. 중복 빈 id는 인수인계에 남긴다.
+        as-is Spring Framework와 같은 조건으로 기동하게 한다. 중복 빈 id는 인수인계에 남긴다.
         as-is가 Boot이거나 MSA인 프로젝트에는 쓰지 않는다.
 
         Keys: `spring.main.allow-bean-definition-overriding` / `allow-circular-references`, from the rules'
@@ -823,7 +826,7 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ 모든 모드 공통 마무리
     def _lc_after_mode(self, c: "_Ctx", mode: str) -> None:
-        """모드 작업이 끝난 뒤 ``apply`` 끝에서 실행한다. 바뀐 것이 있으면 커밋한다.
+        """모드별 작업이 끝난 뒤 ``apply`` 끝에서 마무리 작업을 한다. 바뀐 것이 있으면 커밋한다.
         - as-is ``provided`` scope를 되돌린다
         - 소스 인코딩을 pom에 기록한다
         - as-is가 Boot인 모드면 starter 문구를 채운다
@@ -855,8 +858,8 @@ class LegacyContextMixin:
 
     def _lc_restore_scopes(self, c: "_Ctx") -> None:
         """as-is에서 ``provided``였던 의존성이 지금 compile이나 runtime이면 ``provided``로 되돌린다.
-        jakarta 후속 좌표도 ``scope_successors`` 표로 찾는다.
-        OpenRewrite가 javax.servlet-api provided를 jakarta.servlet-api compile로 바꾸기 때문이다."""
+        OpenRewrite는 javax.servlet-api provided를 jakarta.servlet-api compile로 바꾼다.
+        jakarta로 바뀐 좌표는 ``scope_successors`` 표로 찾는다."""
         from .scope_restore import restore_asis_scopes, scope_note
         on = self._lc_switches(c).restore_asis_scopes
         rules = self._lc_rules(c)

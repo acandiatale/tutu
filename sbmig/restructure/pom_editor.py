@@ -1,9 +1,4 @@
 """서식, 주석, 줄 끝, 인코딩을 그대로 두고 pom.xml을 고치는 모듈.
-재구성의 pom 수정, 수정 스크립트 API의 ``p.pom(path)``, pom 변경 비교에서 이 편집기를 쓴다.
-``PomEditor(path)``로 읽고, 조회나 수정 메서드를 호출한 뒤 ``save()``로 저장한다.
-- 수정 메서드는 문서가 실제로 바뀐 경우에만 True를 반환한다
-- XML 선언, 루트 앞 주석, 파일 끝부분은 바이트 그대로 둔다
-- 새 요소는 파일의 들여쓰기 단위로, Maven 관례 순서에 맞춰 넣는다
 
 lxml based, implements ``PomEditorLike``; also used by sbmig/build/depchanges.py.
 * Parsed keeping comments, CDATA and whitespace. Prolog (declaration, comments / doctype before the root) and
@@ -13,6 +8,9 @@ lxml based, implements ``PomEditorLike``; also used by sbmig/build/depchanges.py
   ``PROJECT_ORDER`` and the other ``*_ORDER`` lists.
 * Every ``@_mutator`` returns True iff the serialised document changed (a repeated call returns False).
 * Works with and without the default POM namespace.
+
+Used by the restructure's pom edits, the fix-script API's ``p.pom(path)`` and the pom change comparison.
+Usage: ``PomEditor(path)``, then query or edit methods, then ``save()``.
 """
 from __future__ import annotations
 
@@ -128,14 +126,14 @@ class PomEditor:
         읽지 못하면 PomEditError를 던진다."""
         self.path = Path(path)
         if text is not None:
-            # 파일에서 읽은 pom과 같은 경로로 파싱하려고 선언된 encoding으로 다시 바이트를 만든다
+            # 파일에서 읽을 때와 같은 방식으로 파싱하도록 선언된 encoding으로 바이트를 다시 만든다
             m = _ENC_RE.match(text.encode("ascii", "replace"))
             # x-windows-949, MS949 같은 Java 이름도 파이썬 코덱 이름으로 바꾼다
             declared = (xml_codec(m.group(1).decode()) if m else None) or "utf-8"
             try:
                 raw = text.encode(declared)
             except (UnicodeEncodeError, LookupError):
-                # 문자 참조로 바꾸면 주석과 CDATA 내용이 바뀌므로 UTF-8로 인코딩한다
+                # 문자 참조로 바꾸면 주석과 CDATA 내용이 바뀐다. 그래서 UTF-8로 인코딩한다
                 raw = text.encode("utf-8")
         else:
             try:
@@ -152,8 +150,8 @@ class PomEditor:
 
     # ------------------------------------------------------------------ 읽기 / 직렬화
     def _load(self, raw: bytes) -> None:
-        """바이트를 lxml 트리로 읽는다.
-        BOM, 선언된 encoding, 줄 끝, 루트 앞뒤 텍스트, 루트 시작 태그를 기억해 두고 저장할 때 그대로 쓴다."""
+        """바이트를 읽어 lxml 문서로 만든다.
+        BOM, 선언된 encoding, 줄 끝, 루트 앞뒤 텍스트, 루트 시작 태그는 기억해 두었다가 저장할 때 그대로 쓴다."""
         # Windows 편집기로 저장한 pom을 그대로 두려고 BOM을 떼어 두었다가 저장할 때 다시 붙인다
         self._bom = raw.startswith(b"\xef\xbb\xbf")
         if self._bom:
@@ -177,7 +175,7 @@ class PomEditor:
         parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False, resolve_entities=False,
                                  remove_comments=False, remove_pis=False, huge_tree=True, no_network=True)
         try:
-            # 선언을 떼고 파싱하므로 lxml이 모르는 encoding 이름이어도 된다. 선언 줄은 앞부분 텍스트로 남는다
+            # 선언을 떼고 파싱해서 lxml이 모르는 encoding 이름이어도 읽힌다. 선언 줄은 앞부분 텍스트로 남는다
             root = etree.fromstring(xml_without_declaration(text).encode("utf-8"), parser)
         except etree.XMLSyntaxError as e:
             raise PomEditError(f"{self.path}: malformed XML: {e}") from e
@@ -185,7 +183,7 @@ class PomEditor:
             raise PomEditError(f"{self.path}: root element is not <project>")
         self._root = root
         self._ns = etree.QName(root).namespace
-        # lxml이 루트 시작 태그의 줄바꿈을 정규화하므로 원래 문자열을 보관했다가 to_string에서 되돌린다
+        # lxml은 루트 시작 태그 안의 줄바꿈을 정규화한다. 원래 문자열을 보관했다가 to_string에서 되돌린다
         pm = _PROLOG_RE.match(text)
         pos = pm.end() if pm else 0
         sm = _START_TAG_RE.match(text, pos)
@@ -329,7 +327,7 @@ class PomEditor:
         return _local(el)
 
     def find(self, path: str) -> Any:
-        """``<project>`` 아래 ``build/pluginManagement/plugins`` 같은 경로의 요소를 반환한다.
+        """``build/pluginManagement/plugins`` 같은 경로로 ``<project>`` 아래 요소를 찾아 반환한다.
         없으면 None을 반환한다."""
         el = self._root
         for part in [p for p in path.split("/") if p]:
@@ -357,7 +355,7 @@ class PomEditor:
         tail = ref.tail or ""
         n = tail.count("\n") if not tail.strip() else 1
         n = max(1, min(2, n))
-        # 마지막 자식의 tail은 닫는 태그의 들여쓰기이므로 앞 형제의 구분을 본다
+        # 마지막 자식의 tail은 닫는 태그의 들여쓰기다. 그래서 앞 형제 사이의 간격을 따른다
         if ref.getnext() is None:
             prev = ref.getprevious()
             pt = (prev.tail or "") if prev is not None else ""
@@ -601,7 +599,7 @@ class PomEditor:
     def set_parent(self, gav: GAV, relative_path: str | None = None) -> None:
         """``<parent>``를 ``gav``로 설정한다. 없으면 새로 만든다.
         ``relative_path``가 None이나 빈 문자열이면 빈 ``<relativePath/>``를 쓴다.
-        사내 부모 pom은 Nexus에서 받으므로 Maven이 ``../pom.xml``을 먼저 찾지 않게 하려는 것이다."""
+        사내 부모 pom은 Nexus에서 받는다. 그래서 Maven이 ``../pom.xml``을 먼저 찾지 않게 한다."""
         p = self.child(self._root, "parent")
         if p is None:
             p = self._insert_ordered(self._root, "parent")
@@ -844,7 +842,7 @@ class PomEditor:
     def add_managed_dependency(self, gav: GAV, if_absent: bool = True, first: bool = False) -> None:
         """dependencyManagement에 의존성을 추가한다. ``first``면 맨 위에 넣는다.
         BOM import는 ``GAV(type='pom', scope='import')``로 넘긴다.
-        여러 BOM이 같은 g:a를 관리하면 먼저 선언된 BOM이 이기므로 순서가 중요하다."""
+        여러 BOM이 같은 g:a를 관리하면 먼저 선언된 BOM이 이긴다. 그래서 순서가 중요하다."""
         self._add_dep(gav, managed=True, if_absent=if_absent, first=first)
 
     @_mutator
@@ -888,7 +886,7 @@ class PomEditor:
     @_mutator
     def set_dependency_version(self, group_id: str, artifact_id: str, version: str | None) -> None:
         """직접 의존성과 관리 의존성에서 이 g:a의 버전을 바꾼다.
-        None이면 직접 의존성의 ``<version>``과 이 pom의 관리 항목을 지워 부모가 버전을 관리하게 한다."""
+        None이면 직접 의존성의 ``<version>``과 이 pom의 관리 항목을 지운다. 그러면 부모가 버전을 정한다."""
         for e in self._find_deps(group_id, artifact_id, False):
             self._set_version_el(e, version)
         if version is None:
@@ -913,7 +911,7 @@ class PomEditor:
                 continue
             if (old_group, old_artifact) != (new.group_id, new.artifact_id) and \
                     self._find_deps(new.group_id, new.artifact_id, managed):
-                # 이름만 바꾸면 같은 g:a가 두 번 선언되어 버전 충돌이 생기므로 기존 선언을 지운다
+                # 새 좌표가 이미 선언돼 있으면 기존 선언을 지운다. 이름만 바꾸면 같은 g:a가 두 번 선언된다
                 for e in olds:
                     self.remove_node(e)
                 continue
@@ -990,7 +988,7 @@ class PomEditor:
 
     @_mutator
     def remove_version(self, el: Any) -> None:
-        """의존성 같은 요소의 ``<version>``만 지워 부모 체인이나 dependencyManagement가 버전을 정하게 한다.
+        """의존성 같은 요소의 ``<version>``만 지운다. 그러면 부모 체인이나 dependencyManagement가 버전을 정한다.
         그 버전이 가리키던 속성은 그대로 둔다."""
         self._set_child_text(el, "version", None)
 
@@ -1003,7 +1001,7 @@ class PomEditor:
     # ------------------------------------------------------------------ 플러그인
     def plugin_elements(self, where: str = "build") -> list[Any]:
         """``<plugin>`` 요소 목록을 반환한다.
-        ``where``가 ``build``면 ``<build><plugins>``, ``management``면 pluginManagement, ``all``이면 둘 다 본다."""
+        ``where``가 ``build``면 ``<build><plugins>``, ``management``면 pluginManagement를 본다. ``all``이면 둘 다 본다."""
         out: list[Any] = []
         if where in ("build", "all"):
             out += self.children(self.find("build/plugins"), "plugin")
@@ -1048,7 +1046,7 @@ class PomEditor:
                    executions: list[dict[str, Any]] | None = None) -> None:
         """``<build><plugins>``에 플러그인을 추가한다.
         이미 있으면 ``if_absent``일 때 그대로 두고, 아니면 버전과 configuration을 바꾼다.
-        설정이 같으면 손대지 않으므로 두 번 호출해도 문서가 바뀌지 않는다.
+        설정이 같으면 손대지 않는다. 그래서 두 번 호출해도 문서가 바뀌지 않는다.
 
         `configuration` dict becomes nested elements; `executions` e.g. [{"goals": ["repackage"]}] becomes
         <executions><execution><goals><goal>repackage</goal>…"""

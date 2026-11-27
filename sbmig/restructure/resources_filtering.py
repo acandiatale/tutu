@@ -1,10 +1,4 @@
 """리소스 필터링 대상 폴더의 바이너리 파일을 필터링에서 빼는 모듈.
-maven-resources-plugin은 웹폰트, 압축 파일, ``.dmdb`` 같은 파일을 텍스트로 읽다가
-``MalformedInputException: Input length = 1``로 실패한다. 이를 LLM 없이 막는다.
-재구성이 첫 빌드 전에 제외 확장자를 pom에 기록하고, 빌드가 실패하면 수정 루프의 사전 시도가 다시 기록한다.
-- 필터링 자체는 끄지 않는다. ``@project.version@`` 같은 값은 계속 치환되어야 한다
-- 파일은 지우지 않는다. 플러그인 기본값과 텍스트 확장자는 기록하지 않는다
-- 예외를 던지지 않고, 여러 번 실행해도 결과가 같다
 
 Contract: docs/INTERFACES.md "v2.1m". maven-resources-plugin >= 3.2 reads every file of a filtered resource as
 text (`filtering <f> to <t> failed with …`).
@@ -15,7 +9,14 @@ text (`filtering <f> to <t> failed with …`).
 * `apply_non_filtered_extensions(ws, plan)`: writes `<configuration><nonFilteredFileExtensions>` (plugin level
   only) on maven-resources-plugin, and on maven-war-plugin for filtered `<webResources>`. Idempotent.
 * `reactive_targets(ws, errors)`: the poms to edit for a resources / war plugin filtering failure.
-Pure functions; they never raise (DEBUG log, empty result)."""
+Pure functions; they never raise (DEBUG log, empty result).
+
+Read as text, web fonts, archives and files such as ``.dmdb`` fail the build with
+``MalformedInputException: Input length = 1``; this module prevents that without the LLM. The restructure
+writes the extensions before the first build; when a build still fails, the fix loop's pre-try writes them
+again. Filtering itself stays on (``@project.version@`` and the like must still be replaced). No file is
+deleted; plugin defaults and text extensions are never written.
+"""
 from __future__ import annotations
 
 import logging
@@ -99,7 +100,7 @@ class _Facts:
     """제외 확장자 계획에 필요한 pom 하나의 정보를 담는 클래스. pom 파싱은 한 번만 한다."""
     path: str
     ed: PomEditor
-    tree_parent: str | None          # 트리 안 부모 pom 경로. relativePath와 artifactId가 맞아야 한다
+    tree_parent: str | None          # 프로젝트 안 부모 pom 경로. relativePath와 artifactId가 맞아야 한다
     has_parent: bool
     filters_resources: bool             # resources / testResources 아래에 <filtering>true가 있다
     filters_web: bool                   # maven-war-plugin <webResources> 아래에 <filtering>true가 있다
@@ -152,7 +153,7 @@ def _norm(path: str) -> str:
 
 
 def _ext(name: str) -> str:
-    """Maven과 같은 방식으로 파일 확장자를 반환한다. 마지막 점 뒤를 소문자로 반환하고, 점이 없으면 빈 문자열이다."""
+    """Maven과 같은 방식으로 파일 확장자를 반환한다. 마지막 점 뒤를 소문자로 바꾼 값이다. 점이 없으면 빈 문자열이다."""
     base = posixpath.basename(str(name).replace("\\", "/"))
     return base.rsplit(".", 1)[1].lower() if "." in base else ""
 
@@ -194,8 +195,8 @@ def _pom_paths(ws: Any, poms: Iterable[Any] | None) -> list[str]:
 
 
 def _tree_parent(ws: Any, path: str, ed: PomEditor) -> str | None:
-    """``<parent>``가 트리 안에 있으면 그 pom 경로를 반환한다. 없으면 None을 반환한다.
-    빈 relativePath는 트리 밖 부모로 본다. artifactId가 맞아야 같은 부모로 인정한다."""
+    """``<parent>``가 프로젝트 안에 있으면 그 pom 경로를 반환한다. 없으면 None을 반환한다.
+    빈 relativePath는 프로젝트 밖 부모로 본다. artifactId가 맞아야 같은 부모로 인정한다."""
     parent = ed.get_parent()
     if parent is None:
         return None
@@ -218,7 +219,7 @@ def _tree_parent(ws: Any, path: str, ed: PomEditor) -> str | None:
 
 
 def _filter_kinds(ed: PomEditor) -> tuple[bool, bool]:
-    """(resources 필터링 여부, webResources 필터링 여부)를 반환한다. 주석 처리된 설정은 세지 않는다."""
+    """(resources를 필터링하는지, webResources를 필터링하는지)를 반환한다. 주석 처리된 설정은 세지 않는다."""
     res = web = False
     for el in ed.root.iter():
         if not isinstance(el.tag, str) or PomEditor.local_name(el) != "filtering":
@@ -252,7 +253,7 @@ def _load_facts(ws: Any, paths: list[str]) -> dict[str, _Facts]:
 # ---------------------------------------------------------------------------------------------- 플러그인 요소
 def _chosen_plugin(ed: PomEditor, artifact: str, in_tree_parent: bool) -> Any:
     """확장자를 기록할 플러그인 요소를 반환한다. 없으면 None을 반환하고 호출하는 쪽이 새로 만든다.
-    ``<build><plugins>`` 선언을 먼저 쓴다. 부모가 없거나 트리 안에 있을 때만 pluginManagement 선언도 쓴다.
+    ``<build><plugins>`` 선언을 먼저 쓴다. 부모가 없거나 프로젝트 안에 있을 때만 pluginManagement 선언도 쓴다.
 
     On a parent outside the tree (a role parent) an inherited `<build><plugins>` declaration would win over
     this pom's management entry, so the management entry is not used there."""
@@ -277,7 +278,7 @@ def _entries(el: Any) -> list[str]:
 
 def _has_own_list(ed: PomEditor, artifact: str) -> bool:
     """이 pom이 플러그인 수준의 제외 확장자 목록을 직접 갖고 있는지 반환한다.
-    있으면 combine.children이 없는 한 부모 목록을 덮어쓰므로 이 pom을 고쳐야 한다."""
+    이 목록은 combine.children이 없으면 부모 목록을 덮어쓴다. 그래서 목록이 있으면 이 pom을 고쳐야 한다."""
     return any(PomEditor.child(PomEditor.child(el, "configuration"), "nonFilteredFileExtensions") is not None
                for el in ed.find_plugins(DEFAULT_PLUGIN_GROUP, artifact, "all"))
 
@@ -289,7 +290,7 @@ def _not_inherited(ed: PomEditor, artifact: str) -> bool:
 
 def _target(facts: dict[str, _Facts], path: str, artifact: str) -> str:
     """``path`` 모듈의 빌드에 적용되는 플러그인 설정을 가진 pom을 반환한다.
-    트리 안 부모의 필터링 설정을 상속하면 부모를, 역할 부모를 상속하면 자기 pom을 반환한다.
+    프로젝트 안 부모의 필터링 설정을 상속하면 부모를 반환한다. 역할 부모를 상속하면 자기 pom을 반환한다.
 
     Walk up in-tree parents while the parent itself
     declares filtering, the child has no plugin-level list of its own (it would replace the parent's) and the
@@ -310,8 +311,8 @@ def _target(facts: dict[str, _Facts], path: str, artifact: str) -> str:
 
 
 def _resources_owner(facts: dict[str, _Facts], path: str) -> str | None:
-    """``path`` 모듈이 ``<resources>``를 상속받는 트리 안 조상 pom을 반환한다.
-    그 조상이 필터링을 켰을 때만 반환하고, 아니면 None을 반환한다."""
+    """``path`` 모듈에 ``<resources>``를 물려주는 프로젝트 안 조상 pom을 반환한다.
+    그 조상이 필터링을 켰을 때만 반환한다. 아니면 None을 반환한다."""
     cur, seen = path, {path}
     while True:
         f = facts[cur]
@@ -326,7 +327,7 @@ def _resources_owner(facts: dict[str, _Facts], path: str) -> str | None:
 
 def _scan(view: _View, pom: str) -> list[str]:
     try:
-        # 확장자는 찾은 파일 전체에서 모아야 하므로 보고용 개수 제한 없이 받는다
+        # 확장자는 찾은 파일 전체에서 모아야 한다. 보고용 개수 제한 없이 받는다
         return filtered_binary_resources(view, [SimpleNamespace(path=pom)], limit=None)
     except Exception as e:  # noqa: BLE001 - 검사 함수는 예외를 던지지 않지만 혹시 몰라 막아 둔다
         log.debug("resources filtering: scan of %s failed: %s", pom, e)
@@ -390,7 +391,7 @@ def _reactive(ws: Any, facts: dict[str, _Facts], errors: Iterable[Any]) -> dict[
         efile_rel = _rel(ws, efile) if efile else None
         if efile_rel and posixpath.basename(efile_rel) != "pom.xml" and efile_rel not in named:
             named.append(efile_rel)
-        # 재구성이 만든 모듈은 as-is 정보로 찾을 수 없으므로 오류에 나온 파일의 모듈을 먼저 쓴다.
+        # 재구성이 만든 모듈은 as-is 정보로 찾을 수 없다. 그래서 오류에 나온 파일의 모듈을 먼저 쓴다.
         # 루트 pom은 마지막에 쓴다
         by_file = [p for p in dict.fromkeys(_nearest_pom(facts, n) for n in named) if p]
         aids = {m.group("aid") for m in _PROJECT_RE.finditer(text)}
@@ -429,8 +430,8 @@ def reactive_targets(ws: Any, errors: Iterable[Any], poms: Iterable[Any] | None 
 def binary_resource_plan(ws: Any, cfg: Any, poms: Iterable[Any] | None = None, *,
                          errors: Iterable[Any] | None = None) -> ResourcePlan:
     """pom별로 기록할 제외 확장자를 계획한다.
-    필터링 폴더의 바이너리 파일 확장자와 ``build.non_filtered_extensions``에서 이미 기록된 것을 뺀다.
-    ``errors``를 주면 ``reactive_targets``가 찾은 pom만 다루고, 오류에 나온 파일의 확장자도 넣는다.
+    필터링 폴더에 있는 바이너리 파일의 확장자와 ``build.non_filtered_extensions``를 모은다. 이미 기록된 확장자는 뺀다.
+    ``errors``를 주면 ``reactive_targets``가 찾은 pom만 다룬다. 오류에 나온 파일의 확장자도 넣는다.
     실패하면 빈 계획을 반환한다. 예외를 던지지 않는다.
 
     `poms` = pom paths or objects with `.path`; None = every pom outside `src/`. The scan honours includes /
@@ -441,7 +442,7 @@ def binary_resource_plan(ws: Any, cfg: Any, poms: Iterable[Any] | None = None, *
     `src/main/resources` is scanned as filtered. With `errors` only the plugin that failed is extended."""
     try:
         return _plan(ws, cfg, poms, errors)
-    except Exception as e:  # 계획이 실패하면 기록할 것이 없을 뿐 재구성은 실패시키지 않는다
+    except Exception as e:  # 계획이 실패하면 기록할 것이 없을 뿐이다. 재구성은 실패시키지 않는다
         log.debug("resources filtering plan failed: %s: %s", type(e).__name__, e, exc_info=True)
         return ResourcePlan()
 
@@ -459,7 +460,7 @@ def _plan(ws: Any, cfg: Any, poms: Iterable[Any] | None, errors: Iterable[Any] |
             continue
         files = _scan(view, p) if f.filters else []
         if owner is not None:
-            # 부모의 <resources>는 자식 basedir 기준으로 상속되므로 부모 텍스트로 자식 폴더를 검사한다
+            # 부모의 <resources>는 자식 basedir 기준으로 상속된다. 그래서 부모 pom 텍스트로 자식 폴더를 검사한다
             files += _scan(view.with_text(p, facts[owner].ed.to_string()), p)
         plugins = ([RESOURCES_PLUGIN] if (f.filters_resources or owner) else []) + \
                   ([WAR_PLUGIN] if f.filters_web else [])
@@ -472,7 +473,7 @@ def _plan(ws: Any, cfg: Any, poms: Iterable[Any] | None, errors: Iterable[Any] |
         for t, rw in reactive.items():
             w = want.setdefault(t, _Want())
             if t not in facts or not (facts[t].filters or w.files):
-                # 트리 밖 부모가 필터링을 켠 모듈은 기본 src/main/resources가 필터링된다고 보고 검사한다
+                # 프로젝트 밖 부모가 필터링을 켠 모듈은 기본 src/main/resources가 필터링된다고 보고 검사한다
                 _add_files(w, _scan(view.with_text(t, _DEFAULT_FILTERED_POM), t))
             # 실패한 플러그인만 고친다. war 플러그인 실패에 resources 플러그인까지 건드리지 않는다
             w.plugins = set(rw.plugins)
@@ -493,7 +494,7 @@ def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: 
             continue
         wanted = {e for e in w.files.values() if _usable(e)} | set(company)
         for rel, e in w.files.items():
-            # nonFilteredFileExtensions는 확장자로만 고르므로 확장자 없는 파일은 사람이 처리해야 한다
+            # nonFilteredFileExtensions는 확장자로만 고른다. 확장자 없는 파일은 사람이 처리해야 한다
             if (not e or not _EXT_RE.fullmatch(e)) and rel not in noext:
                 noext.append(rel)
         in_tree = f.tree_parent is not None or not f.has_parent
@@ -528,7 +529,7 @@ def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: 
 def _add_entries(ed: PomEditor, artifact: str, exts: list[str], in_tree_parent: bool) -> None:
     """플러그인 하나에 빠진 ``<nonFilteredFileExtension>`` 항목을 추가한다.
     플러그인 선언이 없으면 버전 없이 ``<build><plugins>``에 만든다.
-    새 목록에는 ``combine.children="append"``를 단다. 트리 밖 부모의 목록이 병합 때 지워지지 않게 하려는 것이다."""
+    새 목록에는 ``combine.children="append"``를 단다. 프로젝트 밖 부모의 목록이 병합 때 지워지지 않게 한다."""
     el = _chosen_plugin(ed, artifact, in_tree_parent)
     if el is None:
         ed.add_plugin(PluginInfo(group_id=DEFAULT_PLUGIN_GROUP, artifact_id=artifact,

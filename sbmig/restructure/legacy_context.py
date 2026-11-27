@@ -1,15 +1,16 @@
-"""legacy Spring 컨텍스트(XML 설정, web.xml)를 읽고 고치는 순수 함수 모듈. 파일 입출력은 restructurer가 한다.
-Spring Framework나 servlet 프로젝트를 Boot로 바꾸면 빌드는 되어도 기동할 때 깨지는 것이 있다.
-Boot의 기본값이 as-is와 달라서다. 빈 덮어쓰기 금지, JNDI 없음, WEB-INF가 classpath가 아님 같은 것이다.
-빌드도 LLM도 기동은 확인하지 못하므로 재구성이 직접 처리한다.
-- 진입 XML은 web.xml ``contextConfigLocation``으로 고른다(:func:`entry_locations`, :func:`resolve_location`)
-- ``legacy-config/``에 복사한 파일만 고치고 as-is 원본은 고치지 않는다
-- 클래스, 요소, Boot 속성 이름은 ``knowledge/config/legacy_context_rules.yml``에 있다
-- 스위치는 ``layout.legacy_context.*``다
+"""legacy Spring 설정(XML 설정, web.xml)의 텍스트를 읽고 고치는 함수 모듈.
+파일을 읽고 쓰는 일은 하지 않는다. 그 일은 restructurer가 한다.
 
 Contract: docs/INTERFACES.md "v2.1x". Callers: `legacy_apply.LegacyContextMixin`
 (`Restructurer._generate_application` and friends). Text edits work on the raw text (regex tag scanner, no
 parser) so bytes, comments and indentation of the copies stay as they were.
+
+A Spring Framework or servlet project turned into Boot can build and still fail at startup, because Boot's
+defaults differ from the as-is ones (bean overriding off, no JNDI, WEB-INF not on the classpath). Neither
+the build nor the LLM checks the startup, so the restructure handles these itself. The entry XML is chosen
+by the web.xml ``contextConfigLocation`` (:func:`entry_locations`, :func:`resolve_location`). Only the
+copies under ``legacy-config/`` are edited, never the as-is files. Class, element and Boot property names
+live in ``knowledge/config/legacy_context_rules.yml``; the switches are ``layout.legacy_context.*``.
 """
 from __future__ import annotations
 
@@ -164,7 +165,7 @@ def classpath_rel(path: str) -> Optional[str]:
 
 def web_rel(path: str, web_dirs: Iterable[str] = ()) -> Optional[str]:
     """as-is 파일의 웹 루트 기준 경로(``WEB-INF/spring/x.xml`` 같은 형태)를 반환한다.
-    ``web_dirs``에 맞는 것이 없으면 ``/WEB-INF/``부터 자르고, 그것도 없으면 None을 반환한다."""
+    ``web_dirs`` 중 맞는 폴더가 없으면 ``/WEB-INF/``부터 자른다. ``/WEB-INF/``도 없으면 None을 반환한다."""
     p = path.replace("\\", "/")
     for d in sorted({d.strip("/") for d in web_dirs if d}, key=len, reverse=True):
         if d and p.startswith(d + "/"):
@@ -207,7 +208,7 @@ def entry_locations(model: Any, rules: LegacyContextRules) -> list[tuple[str, li
     """web.xml이 선언한 컨텍스트마다 (역할, 위치 목록)을 반환한다.
     - 루트 컨텍스트: context-param ``contextConfigLocation``, 없으면 ContextLoaderListener 기본값
     - DispatcherServlet: init-param, 없으면 ``/WEB-INF/<name>-servlet.xml``
-    - ``contextClass``가 어노테이션 컨텍스트면 값이 Java 클래스라 뺀다"""
+    - ``contextClass``가 어노테이션 컨텍스트면 뺀다. 값이 XML이 아니라 Java 클래스다"""
     out: list[tuple[str, list[str]]] = []
 
     def annotation(cls: Optional[str]) -> bool:
