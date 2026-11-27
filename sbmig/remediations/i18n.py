@@ -1,20 +1,16 @@
-"""취약점 조치 결과를 사람이 읽기 쉬운 한국어로 바꿔 주는 모듈.
-코드별 한국어 이름과, 조치 코드가 만든 영어 문장을 한국어 문장으로 바꾸는 규칙 목록이 있다.
-``report.build_report_md``(report.md)와 ``service.proposals``(화면의 ``*_ko`` 필드)가 호출한다. state.json,
-plan.json, report.json, HTTP API에는 영어 문장과 코드를 그대로 저장하고 화면과 보고서에 보여 줄 때만 바꾼다.
-- 문체는 합니다체로, 한 문장에 내용 하나씩, 국내 개발 조직이 실제로 쓰는 말로 쓴다.
-  pom, BOM, classifier, dependencyManagement, property, scope, jar는 영어 그대로 쓴다.
-  용어표는 ``agent-doc/12-remediation-report.md``에 있다
-- ``ko_text``는 규칙에 없는 문장을 그대로 반환한다. 정보를 버리거나 추측하지 않는다
-- ``ko_display``는 규칙에 없는 조각을 "원문: `…`"으로 감싸서 깨진 한국어처럼 보이지 않게 한다
-- g:a, 버전, 모듈 이름, 파일 경로, 제안 ID는 그대로 두고 pom의 줄 번호는 "41행"처럼 쓴다.
-  Maven 출력은 번역하지 않는다
-- "; "나 " | "로 이어진 문장은 조각마다 바꾸되, "; "를 포함한 문장 전체에 맞는 규칙이 있으면 그 규칙을 쓴다
+"""취약점 조치 결과의 코드와 영어 문장을 보고서와 화면에 보여 줄 한국어로 바꾸는 모듈.
 
 Korean presentation for the remediation: labels for the codes and pattern rules that turn the English sentences the
 remediation code produces into Korean. Stored data keeps its English text and codes (the contract); `ko_text` returns a
 sentence no rule knows unchanged, `ko_display` (the report) shows such a piece as "원문: `…`"; identifiers (g:a, versions,
 modules, paths, proposal ids) are kept verbatim.
+
+Called by `report.build_report_md` (report.md) and by the service's run status (`message_ko`,
+`status_ko`). The Korean is 합니다체, one fact per sentence, in the words a Korean development team uses; pom,
+BOM, classifier, dependencyManagement, property, scope and jar stay English (glossary:
+`agent-doc/12-remediation-report.md`). A pom line number is written as "41행". Maven output is never
+translated. A sentence joined by "; " or " | " is translated piece by piece, unless one rule matches a run
+that spans "; ".
 """
 from __future__ import annotations
 
@@ -100,8 +96,8 @@ BOUNDARY_KO: dict[str, str] = {
 }
 
 
-# 위험도 표시. (표시, 이름)을 빨강, 주황, 노랑 순으로 둔다.
-# Markdown에는 색이 없으므로 편집기 미리보기에서도 보이는 이모지를 쓴다
+# 위험도 표시. (키, 표시, 이름)을 빨강, 주황, 노랑 순으로 둔다.
+# Markdown에는 색이 없다. 편집기 미리보기에서도 보이는 이모지를 쓴다
 SEVERITY_LEVELS: tuple[tuple[str, str, str], ...] = (("red", "🔴", "심각"), ("orange", "🟠", "높음"), ("yellow", "🟡", "보통"))
 SEVERITY_NONE_KO = "낮음·점수 없음"
 
@@ -125,7 +121,7 @@ def severity_thresholds(value: Any = None) -> tuple[float, float, float]:
 
 def severity_of(score: float | None, thresholds: tuple[float, float, float]) -> tuple[str, str, str]:
     """점수를 (수준 키, 표시, 이름)으로 바꾼다.
-    점수가 경계값 이상이면 그 수준이고, 노랑 경계보다 낮거나 점수가 없으면 ``("none", "", "")``를 반환한다."""
+    점수가 경계값 이상이면 그 수준을 반환한다. 노랑 경계보다 낮거나 점수가 없으면 ``("none", "", "")``이다."""
     if score is not None:
         try:
             sc = round(float(score), 1)      # 보고서에 보이는 소수 한 자리로 정한다. 8.96은 9.0이라 빨강이다
@@ -274,7 +270,8 @@ def _raw(x: str | None) -> str:
 
 
 def _build_why(x: str | None) -> str:
-    """두 빌드를 비교하지 못한 이유(``maven.compare_with_baseline``의 why)를 한국어로 바꾼다. 모르는 문장은 원문으로 둔다."""
+    """두 빌드를 비교하지 못한 이유(``maven.compare_with_baseline``의 why)를 한국어로 바꾼다.
+    모르는 문장은 원문으로 둔다."""
     s = str(x or "")
     m = re.fullmatch(r"the candidate build stopped in module (\S+), the baseline build in (\S+)", s)
     if m:
@@ -305,14 +302,14 @@ def _scan_reasons(x: str) -> str:
 
 
 # ---------------------------------------------------------------------------- 번역 규칙
-# 변수 부분이 "; "를 포함하지 않게 한다. ``.+``를 쓰면 뒤에 이어 붙은 다른 문장까지 잡히기 때문이다
+# 변수 부분이 "; "를 포함하지 않게 한다. ``.+``를 쓰면 뒤에 이어 붙은 다른 문장까지 잡힌다
 _A = r"(?:(?!; ).)+?"
 
 
 @dataclass(frozen=True)
 class _Group:
-    """조치하지 못한 항목의 설명 묶음 하나를 담는 클래스. 짧은 제목, 행마다 반복하지 않고 한 번만 쓰는
-    한국어 설명, 행마다 내용이 달라 메모 칸이 필요한지를 담는다."""
+    """조치하지 못한 항목의 설명 묶음 하나를 담는 클래스.
+    짧은 제목, 행마다 반복하지 않고 한 번만 쓰는 한국어 설명, 메모 칸이 필요한지(행마다 내용이 다를 때)를 담는다."""
     title: str
     text: str
     memo: bool = True
@@ -493,8 +490,9 @@ def _why(x: str | None) -> str:
     return out
 
 
-# 빌드 오류 자동 수정(fixer.FixResult.reason)이 실패한 이유. (정규식, 괄호 안에 넣을 짧은 한국어, 원문을 붙일 그룹 이름) 순이다
-# 앞의 것부터 맞춰 보므로 "error: confirming build failed"가 "error: …"보다 앞에 있어야 한다
+# 빌드 오류 자동 수정이 실패한 이유(fixer.FixResult.reason)의 규칙.
+# 항목은 (정규식, 괄호 안에 넣을 짧은 한국어, 원문을 붙일 그룹 이름)이다. 앞의 것부터 맞춰 본다.
+# 그래서 "error: confirming build failed"가 "error: …"보다 앞에 있어야 한다
 _FIX_REASONS: tuple[tuple[re.Pattern[str], Callable[[dict[str, str]], str], str], ...] = (
     (re.compile(r"not fixed: (?P<n>\d+) error\(s\) left"), lambda g: f"남은 오류 {g['n']}건", ""),
     (re.compile(r"llm unavailable"), lambda g: "LLM을 사용할 수 없음", ""),
@@ -512,7 +510,7 @@ _FIX_REASONS: tuple[tuple[re.Pattern[str], Callable[[dict[str, str]], str], str]
     (re.compile(r"error: confirming build failed"), lambda g: "고친 뒤 다시 한 빌드가 실패함", ""),
     (re.compile(r"discarded: the candidate was remade"), lambda g: "수정본을 다시 만들어 이전 수정은 버림", ""),
     (re.compile(r"discarded: the stored fix is not usable"), lambda g: "저장해 둔 수정을 쓸 수 없어 버림", ""),
-    # 수정 루프 도중에 실행이 끝난 경우다. LLM 호출 수를 알 수 없는 형태는 보고서가 따로 적는다
+    # 수정 루프 도중에 실행이 끝난 경우다. LLM 호출 수를 알 수 없는 형태는 보고서가 따로 알린다
     (re.compile(r"interrupted: the run ended during the loop(?: \(usage unknown\))?"),
      lambda g: "실행이 수정 도중에 끝남", ""),
     (re.compile(r"error: (?P<e>.+)"), lambda g: "내부 오류", "e"),
@@ -552,7 +550,7 @@ def fix_no_attempt_ko(reason: str | None) -> str:
     return f"빌드 오류 자동 수정을 하지 못했습니다({why})." + (f" {raw}" if ko and raw else "")
 
 
-# 빌드 오류 자동 수정을 시작하지 않은 이유(fixer.FixResult.reason, attempted가 false일 때)
+# 빌드 오류 자동 수정을 시작하지 않은 이유(fixer.FixResult.reason). attempted가 false일 때 쓴다
 _NOT_STARTED_REASONS: dict[str, str] = {"stop requested": "중지 요청", "time budget used up": "남은 시간 부족"}
 
 
@@ -572,8 +570,8 @@ def fix_not_started_ko(reason: str | None) -> str:
     return f"빌드 오류 자동 수정은 시작하지 않았습니다({fix_not_started_reason_ko(reason)})."
 
 
-# 같은 문장에 규칙 두 개가 맞으면 앞의 것을 쓰므로 순서가 중요하다.
-# 예: root_unreadable이 cannot_place보다 앞
+# 같은 문장에 규칙 두 개가 맞으면 앞의 것을 쓴다. 그래서 순서가 중요하다.
+# 예: root_unreadable이 cannot_place보다 앞에 있어야 한다
 RULES: list[_Rule] = [
     # ---- planner: 조치하지 못한 항목 설명
     _r("not_changed_auto", r"(?P<origin>[a-z_]+): not changed automatically",
@@ -714,7 +712,7 @@ RULES: list[_Rule] = [
        lambda g: f"{_PLACE} {loc_ko(g['loc'])}: project 닫는 태그가 한 줄에 따로 있지 않습니다.", "cannot_place"),
     _r("root_unreadable", r"cannot place an override entry safely: the root pom\.xml is not readable",
        lambda g: "루트 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.", "root_unreadable"),
-    # 내부 오류(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
+    # 내부 오류(apply.EditError)는 도구 내부 문장이라서 원문으로 둔다
     _r("cannot_place", r"cannot place an override entry safely: (?P<e>.+)",
        lambda g: f"dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다. {_raw(g['e'])}", "cannot_place"),
     _r("not_inheriting_root",
@@ -750,7 +748,7 @@ RULES: list[_Rule] = [
     _r("inhouse_via", r"brought in by the in-house artifact\(s\) (?P<gas>{A}): only their owner can change it",
        lambda g: f"사내 라이브러리({g['gas']})에서 가져오는 의존성입니다. 버전은 그 라이브러리 담당자만 변경할 수 있습니다.",
        "inhouse_via"),
-    # 내부 이유(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
+    # 내부 이유(apply.EditError)는 도구 내부 문장이라서 원문으로 둔다
     _r("not_applied", r"proposal (?P<pid>\S+) not applied: (?P<why>.+)",
        lambda g: f"제안({g['pid']})을 적용하지 못했습니다. {_raw(g['why'])}", "not_applied"),
     # ---- planner: 제안 메모
@@ -1218,8 +1216,8 @@ RULES: list[_Rule] = [
 ]
 
 
-# 테스트와 보고서 점검용.
-# 규칙마다 영어 원문에서 변수가 없는 고정 구절을 뽑아, 번역되지 않은 원문이 보고서에 남았는지 찾는다
+# 테스트와 보고서 점검에 쓴다.
+# 규칙마다 영어 원문에서 변수가 없는 고정 구절을 뽑는다. 번역되지 않은 원문이 보고서에 남았는지 찾을 때 쓴다
 def _literal_runs(pattern: str) -> list[str]:
     """정규식의 맨 바깥 단계에서 이어진 문자(LITERAL) 덩어리들을 목록으로 반환한다."""
     try:
@@ -1313,7 +1311,7 @@ def ko_display(text: Any) -> str:
 
 
 def split_known(text: Any) -> tuple[list[str], list[str]]:
-    """문장을 " | "와 "; "로 나눠 (규칙에 있는 조각의 한국어 목록, 규칙에 없는 조각의 원문 목록)을 반환한다."""
+    """문장을 " | "와 "; "로 나눈다. (규칙에 있는 조각의 한국어 목록, 규칙에 없는 조각의 원문 목록)을 반환한다."""
     ko: list[str] = []
     raw: list[str] = []
     if not isinstance(text, str):
@@ -1336,7 +1334,7 @@ def rule_keys(text: Any) -> list[str]:
 
 def detail_group(text: str) -> tuple[str, str]:
     """조치하지 못한 항목의 설명 한 줄을 (묶음 키, 묶음 설명)으로 바꾼다.
-    모든 조각이 묶음이 있는 규칙에 맞으면 키는 묶음 이름을 "+"로 이은 것이고 설명은 ``GROUPS``의 문장이다.
+    모든 조각이 묶음이 있는 규칙에 맞으면 키는 묶음 이름을 "+"로 이은 것이다. 설명은 ``GROUPS``의 문장이다.
     하나라도 모르는 조각이 있으면 원문이 키가 되고 설명은 ``ko_display(원문)``이다."""
     text = str(text or "")
     if not text:
@@ -1349,7 +1347,7 @@ def detail_group(text: str) -> tuple[str, str]:
 
 
 def group_meta(key: str) -> tuple[str, bool]:
-    """묶음 키의 (짧은 제목, 메모 칸 필요 여부)를 반환한다.
+    """묶음 키의 (짧은 제목, 메모 칸이 필요한지)를 반환한다.
     ``GROUPS``에 없는 이름이 하나라도 섞인 키면 ("", False)를 반환한다."""
     keys = [k for k in (key or "").split("+") if k in GROUPS]
     if not keys or len(keys) != len((key or "").split("+")):

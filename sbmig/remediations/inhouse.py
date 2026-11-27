@@ -1,10 +1,4 @@
 """취약한 라이브러리가 사내 아티팩트에서 온 것인지 판단하는 모듈.
-회사 artifacts yml(``cfg.artifacts``)로 사내 아티팩트 g:a 목록을 만들고, 의존 경로에 그 아티팩트가 있는지 본다.
-그래프의 ``inventory`` 노드가 ``inhouse_keys``로 목록을 만들어 넘기며, 이 목록은 정책 해시에도 들어간다.
-- 사내 아티팩트 자체이거나 그것을 거쳐 들어온 라이브러리는 프로젝트에서 고치지 않는다.
-  그 아티팩트 담당자가 새 버전을 내야 반영되기 때문이다
-- 사내로 볼 그룹은 ``remediation.inhouse_groups``로 정한다. 비어 있으면 이 판단을 하지 않는다
-- ``framework`` 그룹은 g:a 대신 ``framework.artifacts``의 패턴으로 판단한다
 
 In-house artifacts for the remediation: the g:a table from the company artifacts yml (groups named by
 `remediation.inhouse_groups`, aliases included) and the check whether a dependency path goes through one of
@@ -13,6 +7,11 @@ artifacts of `framework.artifacts`: patterns (artifactId, groupId:artifactId, `*
 `inhouse_keys` returns an `InhouseKeys` mapping: the exact keys of the yml groups as dict entries plus the
 framework patterns, which its `in` / `get` / `group_of` understand; iterating it yields only the exact keys,
 so callers that list or hash the keys see what they saw before (the policy hash adds the patterns separately).
+
+The graph's `inventory` node builds the table with `inhouse_keys` and passes it on; the keys are part of the
+policy hash. A library that is an in-house artifact, or came in through one, is never fixed in the project:
+only the artifact's owner can publish the fixed version. An empty `remediation.inhouse_groups` switches the
+check off.
 """
 from __future__ import annotations
 
@@ -134,7 +133,7 @@ def framework_patterns(cfg: Any) -> list[str]:
 def inhouse_keys(cfg: Any) -> InhouseKeys:
     """사내 아티팩트 목록 ``{"g:a": 그룹 이름}``을 만든다. ``remediation.inhouse_groups``의 그룹만 담고 별칭도 넣는다.
     같은 g:a가 두 그룹에 있으면 먼저 나온 그룹을 쓴다. 모르는 그룹 이름은 경고를 남기고 건너뛴다.
-    설정이 없거나 잘못되면 빈 목록을 반환한다. 이 판단 때문에 조치가 멈추면 안 되므로 예외를 던지지 않는다.
+    설정이 없거나 잘못되면 빈 목록을 반환한다. 이 판단 때문에 조치가 멈추면 안 되므로 예외는 던지지 않는다.
 
     "g:a" → group label for the groups named in `remediation.inhouse_groups` (aliases included; first group wins).
     Group `framework` adds the `framework.artifacts` patterns instead of keys (an exact key of another group wins over
@@ -168,7 +167,7 @@ def inhouse_keys(cfg: Any) -> InhouseKeys:
 
 
 def inhouse_on_path(dep_ga: str, path: Iterable[str] | None, keys: Mapping[str, str] | None) -> list[str]:
-    """의존성 ``dep_ga``와 그것을 끌어온 경로(``ResolvedDep.path``)에서 사내 아티팩트인 g:a 목록을 반환한다.
+    """의존성 ``dep_ga``와 그것을 끌어온 경로(``ResolvedDep.path``)에서 사내 아티팩트 g:a를 골라 반환한다.
     모듈 쪽부터 경로 순서대로 중복 없이 담고, 의존성 자신은 맨 끝에 둔다.
 
     The in-house g:a's among the elements of `path` and `dep_ga` itself (first two colon parts compared), in path

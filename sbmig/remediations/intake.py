@@ -1,10 +1,5 @@
 """취약점 조치의 접수 단계를 처리하는 모듈.
-ZIP 검사, 원본 보관, manifest와 작업 트리(``accepted/``) 생성, 서버 Maven 환경 검사, 결과 ZIP 확정을 맡는다.
-- ZIP은 풀기 전에 모든 항목을 검사하고, 푸는 동안에도 실제 바이트로 크기를 다시 확인한다
-- 원본 ZIP은 ``original/source.zip``에 읽기 전용으로 두고 다시 쓰지 않는다
-- 이후의 해시, 복사, 결과 ZIP은 모두 manifest의 ``paths``를 기준으로 한다
-- pom.xml 옆의 ``target/``은 manifest와 ``accepted/``에서 뺀다
-- 프로젝트 안의 어떤 것도 실행하지 않는다
+업로드한 ZIP 검사, 원본 보관, ``accepted/`` 생성, 서버 Maven 환경 점검, 결과 ZIP 생성을 맡는다.
 
 Intake of the remediation feature: validates an uploaded ZIP before extracting anything, preserves the original read-only,
 writes the manifest and the working tree, checks the server's Maven boundary and freezes the deterministic delivery ZIP.
@@ -15,6 +10,10 @@ normalized collisions, entry count, sizes, ratio; a violation during extraction 
 Empty directories are not in the manifest, so not in the delivery ZIP. Build output carried by the upload
 (`target/` beside a `pom.xml`) is validated like every entry but left out of `accepted/` and the manifest;
 `original/source.zip` keeps it (v2.1z-bh).
+
+During extraction the sizes are checked again on the real bytes. The original ZIP is never written again.
+Every later hash, copy and the delivery ZIP follow the manifest paths. Nothing of the project is ever run
+here.
 """
 from __future__ import annotations
 
@@ -64,12 +63,12 @@ def _reject(message: str, code: str, **details: Any) -> IntakeRejected:
 
 
 def _safe_display(name: str) -> str:
-    # 로그 위조를 막기 위해 오류 메시지에 제어 문자를 그대로 넣지 않는다
+    # 오류 메시지에 제어 문자를 그대로 넣지 않는다(로그 위조 방지)
     return name.encode("unicode_escape", "backslashreplace").decode("ascii", "replace")[:300]
 
 
 def _check_name(raw: str) -> tuple[str, bool]:
-    """ZIP 항목 이름 하나를 검사하고 (슬래시로 구분한 경로, 폴더 여부)를 반환한다.
+    """ZIP 항목 이름 하나를 검사하고 (슬래시로 구분한 경로, 폴더인지)를 반환한다.
     규칙을 어기면 IntakeRejected를 던진다."""
     shown = _safe_display(raw)
     if not raw:
@@ -79,7 +78,7 @@ def _check_name(raw: str) -> tuple[str, bool]:
     if raw.startswith(("/", "\\")) or _DRIVE.match(raw):
         raise _reject(f"absolute path in ZIP: {shown}", "absolute_path", entry=shown)
     if "\\" in raw:
-        # 백슬래시는 Windows에서 폴더 구분자이므로 "a\..\x" 같은 경로 탈출을 막기 위해 거부한다
+        # 백슬래시는 Windows에서 폴더 구분자다. "a\..\x" 같은 경로 탈출을 막으려고 거부한다
         raise _reject(f"backslash in entry name: {shown}", "path_traversal", entry=shown)
     is_dir = raw.endswith("/")
     path = raw[:-1] if is_dir else raw
@@ -198,7 +197,7 @@ def _check_collisions(files: list[str], dirs: list[str]) -> None:
 def _project_root(files: list[str], dirs: list[str], build_targets: list[str] | None = None) -> str:
     if "pom.xml" in files:
         return "."
-    # 루트 aggregator 없이 서비스별로 빌드한 이관 트리는 빌드 대상마다 pom.xml이 있으면 ZIP 최상위를 루트로 본다
+    # 루트 aggregator 없이 서비스별로 빌드한 이관 결과다. 빌드 대상마다 pom.xml이 있으면 ZIP 최상위를 루트로 본다
     targets = [t.strip("/") for t in (build_targets or []) if t.strip("/") not in ("", ".")]
     if targets and all(f"{t}/pom.xml" in files for t in targets):
         return "."
@@ -252,7 +251,7 @@ def _build_output_note(left_out: list[str], files: list[str]) -> str:
 def _extract(zf: zipfile.ZipFile, files: list[tuple[zipfile.ZipInfo, str]], dirs: list[str], dest: Path,
              limits: IntakeLimits) -> list[ManifestEntry]:
     """검사를 통과한 항목을 ``dest``에 일반 파일로만 푼다.
-    선언된 크기는 거짓일 수 있으므로 실제 바이트로 한도를 다시 확인한다."""
+    선언된 크기는 거짓일 수 있다. 그래서 실제 바이트로 한도를 다시 확인한다."""
     dest.mkdir(parents=True, exist_ok=False)
     root = dest.resolve()
     for d in dirs:
@@ -263,10 +262,10 @@ def _extract(zf: zipfile.ZipFile, files: list[tuple[zipfile.ZipInfo, str]], dirs
     for info, path in files:
         target = dest / path
         target.parent.mkdir(parents=True, exist_ok=True)
-        # 이름 검사를 통과했어도 실제 경로가 트리 밖으로 나가지 않는지 한 번 더 확인한다
+        # 이름 검사를 통과했어도 실제 경로가 폴더 밖으로 나가지 않는지 한 번 더 확인한다
         if not target.parent.resolve().is_relative_to(root):
             raise _reject(f"entry escapes the tree: {_safe_display(path)}", "path_traversal")
-        # 실행 비트만 반영하고 setuid / setgid / sticky / 쓰기 권한 같은 ZIP의 다른 비트는 무시한다
+        # 실행 비트만 반영한다. setuid / setgid / sticky / 쓰기 권한 같은 ZIP의 다른 비트는 무시한다
         mode = 0o755 if _entry_mode(info) & 0o111 else 0o644
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
         h = hashlib.sha256()
@@ -303,7 +302,7 @@ def _make_writable_and_remove(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
     elif path.exists() or path.is_symlink():
         try:
-            os.chmod(path, 0o644)          # Windows는 읽기 전용 파일을 지우지 못하므로 권한을 먼저 바꾼다
+            os.chmod(path, 0o644)          # Windows는 읽기 전용 파일을 지우지 못한다. 그래서 권한을 먼저 바꾼다
         except OSError:
             pass
         try:
@@ -314,9 +313,9 @@ def _make_writable_and_remove(path: Path) -> None:
 
 def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
                build_targets: list[str] | None = None) -> IntakeResult:
-    """업로드된 ZIP을 검사하고 실행 폴더에 원본(읽기 전용), manifest, ``accepted/`` 트리를 만든다.
+    """업로드된 ZIP을 검사하고 실행 폴더에 원본(읽기 전용), manifest, ``accepted/``를 만든다.
     규칙을 어기면 ``IntakeRejected``를 던지고 이 함수가 만든 것은 모두 지운다.
-    ``zip_path``가 이미 ``original/source.zip``이면 그대로 쓰고, 거부돼도 지우지 않는다.
+    ``zip_path``가 이미 ``original/source.zip``이면 그대로 쓴다. 이때는 거부돼도 지우지 않는다.
     업로드된 임시 파일은 호출한 쪽이 지운다.
 
     `build_targets` (the migration's per-service build targets) lets a tree without a root pom in."""
@@ -357,7 +356,7 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
             all_paths = [p for _, p in files]
             left_out = build_output_paths(all_paths)
             if left_out:
-                # 업로드에 들어 있던 빌드 산출물은 mvn clean이 지우므로 manifest와 accepted/에 넣지 않는다
+                # 업로드에 들어 있던 빌드 산출물은 mvn clean이 지운다. 그래서 manifest와 accepted/에 넣지 않는다
                 skip = set(left_out)
                 fileset = set(all_paths)
                 files = [(i, p) for i, p in files if p not in skip]
@@ -418,7 +417,7 @@ def _file_sha(path: Path) -> str:
 
 
 def tree_hash(tree: Path, paths: list[str]) -> str:
-    """``paths``에 있는 파일만으로 트리 해시를 계산한다.
+    """``paths``에 있는 파일만으로 폴더 전체의 해시를 계산한다.
     정렬한 ``[경로, 파일 sha256]`` 쌍을 정규 JSON으로 만들어 sha256을 구한다.
     없는 파일은 ``"MISSING"``, 일반 파일이 아니면 ``"NOT_REGULAR"``로 넣는다.
     목록 밖의 파일(``target/`` 등)은 해시에 영향을 주지 않는다."""
@@ -463,7 +462,7 @@ def _real_dirs_to(base: Path, rel: str) -> Path:
 
 
 def _same_bytes(a: Path, b: Path, size_a: int) -> bool:
-    """두 파일의 크기를 먼저 비교하고, 같을 때만 바이트를 조금씩 읽어 비교한다."""
+    """두 파일의 크기를 먼저 비교한다. 같을 때만 바이트를 조금씩 읽어 비교한다."""
     if os.lstat(b).st_size != size_a:
         return False
     with open(a, "rb") as fa, open(b, "rb") as fb:
@@ -563,7 +562,7 @@ def _write_back(tree: Path, rel: str, src: Path, mode: int, want_sha: str | None
 
 
 def _target_stat(tree: Path, rel: str) -> os.stat_result | None:
-    """``tree/rel``의 lstat 결과를 반환한다. 없으면 None이고, 링크나 일반 파일이 아닌 것이면 예외를 던진다."""
+    """``tree/rel``의 lstat 결과를 반환한다. 없으면 None이다. 링크이거나 일반 파일이 아니면 예외를 던진다."""
     try:
         st = os.lstat(tree / rel)
     except FileNotFoundError:
@@ -578,7 +577,7 @@ def _target_stat(tree: Path, rel: str) -> os.stat_result | None:
 
 
 def _source_stat(src: Path, rel: str) -> os.stat_result | None:
-    """기대하는 파일의 lstat 결과를 반환한다. 없으면 None이고, 링크나 일반 파일이 아닌 것이면 예외를 던진다."""
+    """기대하는 파일의 lstat 결과를 반환한다. 없으면 None이다. 링크이거나 일반 파일이 아니면 예외를 던진다."""
     try:
         st = os.lstat(src)
     except FileNotFoundError:
@@ -636,7 +635,7 @@ NOT_REGULAR = "NOT_REGULAR"
 
 def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str, bool]]:
     """``paths``의 파일마다 (크기, sha256, 실행 비트)를 담은 표를 반환한다. 없는 파일은 넣지 않는다.
-    일반 파일이 아니면 ``tree_hash``와 같게 sha256 값으로 ``"NOT_REGULAR"``를 넣는다.
+    일반 파일이 아니면 sha256 자리에 ``"NOT_REGULAR"``를 넣는다. ``tree_hash``와 같은 규칙이다.
 
     `{path: (size, sha256, exec)}` of `paths` in `tree` (one full read); a missing path is left out; a path that is
     not a regular file (a folder, a link) is `(0, "NOT_REGULAR", False)`, so `table_hash` of the table equals
@@ -656,7 +655,7 @@ def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str, bool]]
 
 
 def table_hash(table: dict[str, tuple], paths: list[str]) -> str:
-    """표에서 ``tree_hash``와 같은 규칙의 트리 해시를 계산한다. 표에 없는 경로는 ``"MISSING"``이다.
+    """파일을 읽지 않고 표만으로 ``tree_hash``와 같은 해시를 계산한다. 표에 없는 경로는 ``"MISSING"``이다.
 
     The `tree_hash` of the tree the table describes, without reading any file (only the sha256 column counts)."""
     pairs = [[p, table[p][1] if p in table else "MISSING"] for p in sorted(set(paths))]
@@ -666,8 +665,8 @@ def table_hash(table: dict[str, tuple], paths: list[str]) -> str:
 def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
                     paths: list[str]) -> tuple[list[str], list[str]]:
     """``tree``의 파일을 기록된 표와 비교해서 없거나 다른 파일만 기대한 바이트로 되돌린다.
-    트리의 파일은 많아야 한 번 읽는다. 같은 파일이면 기대한 쪽 파일은 열지 않는다.
-    (없던 경로, 바뀐 경로)를 반환하고, 하나라도 되돌리지 못하면 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
+    ``tree``의 파일은 많아야 한 번 읽는다. 같은 파일이면 기대한 쪽 파일은 열지 않는다.
+    (없던 경로, 바뀐 경로)를 반환한다. 하나라도 되돌리지 못하면 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
 
     Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
     `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`), against a recorded table (`rounds/<r>/expected.json`,
@@ -686,7 +685,7 @@ def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
     missing: list[str] = []
     changed: list[str] = []
     failed: list[tuple[str, str, str]] = []
-    # 붙잡힌 파일이 여럿이어도 끝까지 기다리는 것은 처음 한 번뿐이다
+    # 다른 프로세스가 잡고 있는 파일이 여럿이어도 끝까지 기다리는 것은 처음 한 번뿐이다
     with fsops.one_wait():
         for raw in sorted(set(paths)):
             rel = raw
@@ -757,7 +756,7 @@ def copy_tree(src: Path, dst: Path, paths: list[str]) -> None:
 def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo:
     """``paths``의 파일만 담은 ZIP을 원자적으로 쓴다.
     경로를 정렬하고 시각(1980-01-01), 권한(0644, 실행 파일은 0755), 압축 방식(deflate)을 고정한다.
-    같은 트리면 항상 같은 바이트가 나온다. 재검사 때 이 바이트를 그대로 IVAS에 올린다.
+    파일 내용이 같으면 항상 같은 바이트가 나온다. 재검사 때 이 바이트를 그대로 IVAS에 올린다.
 
     The `tree_hash` of the
     result is computed from the bytes written into the ZIP (each file is read once; the same rows as `tree_hash`,
@@ -780,7 +779,7 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
                 info.file_size = st.st_size
                 h = hashlib.sha256()
                 with open(source, "rb") as f, zf.open(info, "w", force_zip64=st.st_size > 0x7FFFFFFF) as out:
-                    # copyfileobj와 같은 크기로 읽고 쓰면서 해시도 함께 계산한다. 트리를 다시 읽지 않기 위해서다
+                    # copyfileobj와 같은 크기로 읽고 쓰면서 해시도 함께 계산한다. 파일을 다시 읽지 않기 위해서다
                     while True:
                         buf = f.read(_CHUNK)
                         if not buf:
@@ -788,7 +787,7 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
                         h.update(buf)
                         out.write(buf)
                 shas[rel] = h.hexdigest()
-        # Windows의 fsync는 읽기 전용 핸들을 EBADF로 거부하므로 쓰기 가능한 핸들로 연다. r+b는 내용을 지우지 않는다
+        # Windows의 fsync는 읽기 전용 핸들을 EBADF로 거부한다. 그래서 쓰기 가능한 핸들로 연다. r+b는 내용을 지우지 않는다
         with open(tmp, "r+b") as f:
             os.fsync(f.fileno())
         fsops.replace(tmp, out_zip)
@@ -883,10 +882,10 @@ def _check_pom(pom: Path, rel: str, allowed: set[str], action: str) -> list[Boun
 
     from .apply import PomReadError, read_pom_xml, xml_reason
 
-    # XXE를 막기 위해 외부 엔티티, DTD, 네트워크를 읽지 않는 파서를 쓴다
+    # 외부 엔티티, DTD, 네트워크를 읽지 않는 파서를 쓴다(XXE 방지)
     parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False, recover=False)
     try:
-        # Maven은 선언과 다른 인코딩(UTF-8 선언의 MS949 등)도 받으므로 이관 쪽 규칙으로 읽은 내용을 검사한다
+        # Maven은 선언과 다른 인코딩(UTF-8 선언의 MS949 등)도 받는다. 그래서 이관 쪽 규칙으로 읽은 내용을 검사한다
         root = etree.fromstring(read_pom_xml(pom), parser)
     except PomReadError as e:
         return [BoundaryFinding(code="unparsable_pom", path=rel, action="refuse", detail=str(e))]
@@ -991,7 +990,7 @@ def check_boundary(project: Path, cfg: Any, allowed_hosts: list[str]) -> list[Bo
     - ``.mvn/maven.config``, ``jvm.config``, ``extensions.xml``: ``remediation.project_maven_config``
     - ``mvnw``, ``mvnw.cmd``, ``.mvn/wrapper/*``: ``remediation.maven_wrapper``
     - 승인되지 않은 호스트의 ``<repository>``, ``<pluginRepository>``: ``remediation.foreign_repository``
-    - 심볼릭 링크와 읽을 수 없는 pom은 항상 refuse, 프로젝트 안의 settings.xml은 ignore로 기록만 한다
+    - 심볼릭 링크와 읽을 수 없는 pom은 항상 refuse다. 프로젝트 안의 settings.xml은 ignore로 기록만 한다
 
     Codes: `project_maven_config` (maven.config / jvm.config), `maven_extensions`, `maven_wrapper`,
     `symlink`, `unparsable_pom`, `settings_in_project`, `foreign_repository` / `foreign_plugin_repository`.

@@ -1,6 +1,7 @@
-"""취약점 조치에서 바꿔 넣을 수 있는 구성 요소의 Protocol과 그것을 모은 ``Components``를 정의하는 모듈.
-그래프(graph.py)는 실제 구현을 직접 import하지 않고 ``Components``로 받은 구성 요소만 호출한다.
-테스트는 IVAS, Nexus, Maven을 호출하지 않는 가짜 구현을 넣는다.
+"""취약점 조치 그래프가 쓰는 구성 요소의 인터페이스(Protocol)와 그 묶음 ``Components``를 정의하는 모듈.
+
+The graph (graph.py) never imports the real implementations: it calls only what it gets in `Components`.
+Tests pass fakes that call no IVAS, Nexus or Maven.
 
 Real implementations: `ivas.IvasHttpClient` / `ivas.run_scan`, `maven.ServerMaven`,
 `planner.RepositoryVersionSource` and the functions of `intake` / `inventory` / `planner` / `apply`, wired by
@@ -42,8 +43,8 @@ class Page:
 
 @runtime_checkable
 class IvasClient(Protocol):
-    """IVAS HTTP API 클라이언트의 인터페이스. 로그인과 토큰은 구현 안에서 처리한다.
-    실패하면 ``IvasError``를 던지고, 업로드 결과를 모를 때만 ``IvasUploadUncertain``을 던진다."""
+    """IVAS HTTP API 클라이언트의 인터페이스. 로그인과 토큰은 구현이 알아서 관리한다.
+    실패하면 ``IvasError``를 던진다. 업로드 결과를 모를 때만 ``IvasUploadUncertain``을 던진다."""
 
     def upload(self, zip_path: Path, project_name: str) -> UploadReceipt:
         """ZIP을 올리고 접수 정보를 반환한다. 보낸 뒤 결과를 모르면 ``IvasUploadUncertain``을 던진다."""
@@ -69,8 +70,8 @@ class IvasClient(Protocol):
 class Scanner(Protocol):
     """IVAS 검사 절차 전체를 실행하는 인터페이스. 실제 구현은 ``ivas.run_scan``이다.
     ``receipt``를 주면 다시 올리지 않고 그 분석을 이어서 조회한다.
-    ``on_receipt``는 업로드가 접수되는 즉시 호출되므로 호출한 쪽이 상태를 저장할 수 있다.
-    ``IvasUploadUncertain``만 던지고 다른 실패는 ``complete=False`` 결과로 반환한다."""
+    ``on_receipt``는 업로드가 접수되는 즉시 호출된다. 호출한 쪽은 여기서 상태를 저장할 수 있다.
+    ``IvasUploadUncertain``만 던진다. 다른 실패는 ``complete=False`` 결과로 반환한다."""
 
     def __call__(self, client: IvasClient, zip_path: Path, zip_sha256: str, label: str, project_name: str, *,
                  receipt: UploadReceipt | None = None, on_receipt: Callable[[UploadReceipt], None] | None = None,
@@ -123,7 +124,7 @@ class VersionSource(Protocol):
 
 class IntakeFns(Protocol):
     """그래프가 쓰는 ``intake.py`` 함수 묶음의 인터페이스.
-    ``tree``는 ``accepted/``나 수정본 트리이고, ``paths``는 원본 manifest의 경로 목록이다.
+    ``tree``는 ``accepted/``나 수정본 폴더다. ``paths``는 원본 manifest의 경로 목록이다.
     빌드가 만든 ``target/`` 같은 파일은 해시, 복사, 결과 ZIP에 들어가지 않는다."""
 
     def manifest_paths(self, manifest: Path) -> list[str]: ...
@@ -131,15 +132,15 @@ class IntakeFns(Protocol):
     def check_boundary(self, project: Path, cfg: Any, allowed_hosts: list[str]) -> list[BoundaryFinding]: ...
     def copy_tree(self, src: Path, dst: Path, paths: list[str]) -> None: ...
     def freeze_delivery(self, tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo: ...
-    # 수정본을 빌드할 때마다 호출해서 빌드가 바꾼 파일을 기록된 표대로 되돌린다
-    # (없던 경로, 바뀐 경로)를 반환하고, 되돌리지 못한 경로가 있으면 ``intake.SyncFailed``를 던진다
+    # 수정본을 빌드할 때마다 호출해서 빌드가 바꾼 파일을 기록된 표대로 되돌린다.
+    # (없던 경로, 바뀐 경로)를 반환한다. 되돌리지 못한 경로가 있으면 ``intake.SyncFailed``를 던진다
     def sync_tree_table(self, tree: Path, expected: Callable[[str], Path], table: dict[str, tuple],
                         paths: list[str]) -> tuple[list[str], list[str]]: ...
 
 
 class InventoryFn(Protocol):
     """``inventory.build_inventory``의 인터페이스. IVAS가 찾은 취약점을 Maven 의존성과 pom 선언 위치에 연결한다.
-    ``inhouse``는 사내 아티팩트 목록(``inhouse.inhouse_keys``)이고 그래프가 항상 키워드 인자로 넘긴다."""
+    ``inhouse``는 사내 아티팩트 목록(``inhouse.inhouse_keys``)이다. 그래프는 항상 키워드 인자로 넘긴다."""
 
     def __call__(self, project: Path, findings: list[Finding], resolved: ResolvedModel, *,
                  inhouse: Mapping[str, str] | None = None) -> Inventory: ...
@@ -166,7 +167,8 @@ class ApplyFns(Protocol):
 
 
 class Fixer(Protocol):
-    """수정본 빌드가 실패했을 때 빌드 오류 수정 루프로 소스를 고치는 인터페이스. 실제 구현은 ``fixer.RemediationFixer``다.
+    """수정본 빌드가 실패했을 때 빌드 오류 수정 루프로 소스를 고치는 인터페이스.
+    실제 구현은 ``fixer.RemediationFixer``다.
     ``tree``는 읽기만 하고 고친 파일은 ``work_dir/fixed/``에 둔다. 덮어쓰기는 그래프가 한다.
     ``deadline``이 None이면 시간 한도가 없다. 예외를 던지지 않는다.
 
@@ -184,7 +186,7 @@ class Fixer(Protocol):
 @dataclass
 class Components:
     """그래프가 쓰는 구성 요소를 모두 담는 데이터 클래스.
-    테스트는 가짜 구현을 넣고, 운영에서는 ``graph.default_components(cfg)``가 실제 구현을 넣는다.
+    테스트는 가짜 구현을 넣는다. 운영에서는 ``graph.default_components(cfg)``가 실제 구현을 넣는다.
     ``fixer``가 None이면 수정본 빌드가 실패해도 빌드 오류 수정 루프를 실행하지 않는다."""
     ivas: IvasClient
     scan: Scanner
