@@ -1,12 +1,4 @@
 """취약점 조치 기능이 함께 쓰는 상태 값, 데이터 클래스, 예외, 해시 규칙, 실행 폴더 구조를 정의하는 모듈.
-다른 파일들은 서로 직접 참조하지 않고 이 모듈과 ``interfaces.py``만 참조한다.
-데이터는 ``to_dict`` / ``from_dict``로 JSON에 저장하고, 비밀 값은 넣지 않는다.
-실행 폴더(``RunPaths``)의 구성은 아래와 같다.
-- ``original/``: 업로드한 ZIP 원본과 파일 목록(manifest)
-- ``accepted/``: 작업 트리. 빌드와 검증을 통과한 변경만 들어간다
-- ``rounds/<n>/``: 라운드별 수정본과 계획, 빌드 로그
-- ``scans/``, ``delivery/``: 검사 결과와 결과 ZIP
-- ``state.json``, ``journal.jsonl``, ``remediation.log``, ``report.md``: 상태, 저널, 로그, 보고서
 
 Run folder `<out>/_remediations/<id>/`. `rounds/<n>/` holds `candidate/`, plan.json, candidate.patch,
 build.log, resolved.json. `delivery/result.zip` + delivery.json; when a later round delivers a failed
@@ -15,6 +7,10 @@ candidate, the earlier verified delivery is kept as `result-r<k>-verified.zip`.
 
 Shared contract of the remediation feature: statuses, dataclasses, errors, hash rules and the run directory layout.
 Everything is a plain dataclass with `to_dict` / `from_dict`; no secret value is ever stored in these types.
+
+Run folder (`RunPaths`): `original/` = the uploaded ZIP and its manifest; `accepted/` = the working tree, only
+changes that passed the build and the verification; `scans/` = the scan results; `state.json`,
+`journal.jsonl`, `remediation.log`, `report.md` = state, journal, log and report.
 """
 from __future__ import annotations
 
@@ -41,7 +37,7 @@ FAILED = "FAILED"                        # 조치 전 빌드 실패, 수정본 �
 TERMINAL = (SUCCEEDED, INCOMPLETE, FAILED)                       # 더 이상 진행하지 않는 상태
 RESUMABLE = (AWAITING_CONFIRMATION, STOPPED, INTERRUPTED)
 ACTIVE = (QUEUED, RUNNING)
-# 승인 단계가 있던 버전이 저장한 상태다. 읽기만 하며 재개하지 않고 끝난 작업으로 보여 준다
+# 승인 단계가 있던 버전이 저장한 상태다. 읽기만 한다. 재개하지 않고 끝난 작업으로 보여 준다
 LEGACY_AWAITING_APPROVAL = "AWAITING_APPROVAL"
 # 그런 작업의 재개를 거절할 때 쓰는 문장이다
 LEGACY_APPROVAL_MESSAGE = ("the approval step of the remediation was removed: this remediation waited for an approval "
@@ -73,7 +69,7 @@ R_POLICY_DENIED = "policy_denied"                        # 서버 정책의 deny
 R_UNKNOWN_PROVENANCE = "unknown_provenance"            # 어느 parent / BOM이 버전을 관리하는지 분명하지 않다
 R_STALE_LOCATION = "stale_location"                    # 인벤토리 이후 파일이 바뀌어 그 위치에 버전 문자열이 없다
 R_INVENTORY_INCOMPLETE = "inventory_incomplete"
-# 사내 아티팩트 자체이거나 그것을 거쳐 들어온 라이브러리다. 담당자가 고쳐야 하므로 조치하지 못한 항목으로 남긴다
+# 사내 아티팩트 자체이거나 그것을 거쳐 들어온 라이브러리다. 담당자가 고쳐야 해서 조치하지 못한 항목으로 남긴다
 R_INHOUSE_ARTIFACT = "inhouse_artifact"
 
 T = TypeVar("T")
@@ -81,7 +77,7 @@ T = TypeVar("T")
 
 def canonical_json(value: Any) -> str:
     """해시 계산에 쓸 정규화된 JSON 문자열을 만든다.
-    키를 정렬하고 공백을 넣지 않으므로 같은 값이면 항상 같은 문자열이 나온다."""
+    키를 정렬하고 공백을 넣지 않는다. 그래서 같은 값이면 항상 같은 문자열이 나온다."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -125,7 +121,7 @@ def _plain(v: Any) -> Any:
 
 class Record:
     """데이터 클래스에 ``to_dict``와 ``from_dict``를 붙이는 믹스인 클래스.
-    ``from_dict``는 모르는 키를 버리므로 새 버전이 저장한 파일도 읽을 수 있다.
+    ``from_dict``는 모르는 키를 버린다. 그래서 새 버전이 저장한 파일도 읽을 수 있다.
     중첩된 데이터 클래스는 ``_nested``에 지정한다."""
     _nested: dict[str, Any] = {}
 
@@ -177,7 +173,7 @@ class NotReady(RemediationError):
 
 
 class IvasError(RemediationError):
-    """IVAS 호출이 실패했을 때 던지는 예외 클래스. 이때 검사는 0건이 아니라 미완료로 처리한다."""
+    """IVAS 호출이 실패했을 때 던지는 예외 클래스. 이때 검사는 0건이 아니라 미완료다."""
     code = "ivas_error"
 
 
@@ -221,7 +217,7 @@ class IntakeResult(Record):
     manifest: str                     # original/manifest.json
     accepted_dir: str                 # accepted
     project_root: str                 # accepted 기준 상대 경로
-    tree_hash: str                    # accepted 트리의 해시(tree_hash 규칙)
+    tree_hash: str                    # accepted 폴더 내용의 해시(tree_hash 규칙)
     files: int = 0
     unpacked_bytes: int = 0
     notes: list[str] = field(default_factory=list)
@@ -255,19 +251,19 @@ class DeliveryInfo(Record):
     sha256: str
     size: int
     files: int
-    tree_hash: str                    # ZIP에 담은 트리의 해시
+    tree_hash: str                    # ZIP에 담은 파일 전체의 해시
     round: int = 0
-    # False면 빌드가 실패한 수정본이다. 재검사하지 않았으므로 성공 여부를 판단할 때 쓰지 않는다
+    # False면 빌드가 실패한 수정본이다. 재검사하지 않았으니 성공을 판단할 때 쓰지 않는다
     build_ok: bool = True
-    scanned: bool = False             # sha256이 같은 ZIP을 IVAS가 끝까지 검사했는지 여부
-    # True면 조치 전 빌드에 있던 오류로만 실패한 트리다. 재검사는 했지만 빌드로 확인한 변경은 아니다
+    scanned: bool = False             # sha256이 같은 ZIP을 IVAS가 끝까지 검사했으면 True
+    # True면 조치 전 빌드에 있던 오류로만 실패한 수정본이다. 재검사는 했지만 빌드로 확인한 변경은 아니다
     build_tolerated: bool = False
 
 
 # ---------------------------------------------------------------------------- IVAS 검사
 @dataclass
 class UploadReceipt(Record):
-    """IVAS가 업로드를 접수한 정보(프로젝트 ID, 분석 ID, 업로드한 ZIP의 sha256)를 담는 데이터 클래스."""
+    """IVAS가 업로드를 접수한 정보를 담는 데이터 클래스. 프로젝트 ID, 분석 ID, 업로드한 ZIP의 sha256이다."""
     project_id: str
     analysis_id: str
     zip_sha256: str
@@ -279,7 +275,7 @@ class Finding(Record):
     """IVAS 검사 결과 항목 하나를 정규화해서 담는 데이터 클래스.
     ``identifier``는 IVAS 값 그대로이고 ``locations``는 ZIP 안 경로다.
     ``kind``는 library, file_component, file_component_potential, sw 중 하나다.
-    sw는 지원하지 않으므로 하나라도 있으면 검사를 미완료로 본다."""
+    sw는 지원하지 않는다. 하나라도 있으면 검사를 미완료로 본다."""
     id: str                           # CVE-…
     kind: str
     identifier: str
@@ -315,7 +311,7 @@ class ScanResult(Record):
     counts: dict[str, int] = field(default_factory=dict)      # 요약의 범주별 total
     incomplete_reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    # False면 파일 컴포넌트를 끝까지 읽지 못했다. report 모드에서만 생기고 ``complete``는 라이브러리만 보고 정한다
+    # False면 파일 컴포넌트를 끝까지 읽지 못했다. report 모드에서만 생긴다. ``complete``는 라이브러리만 보고 정한다
     file_complete: bool = True
     _nested = {"receipt": UploadReceipt, "findings": Finding}
 
@@ -324,7 +320,7 @@ class ScanResult(Record):
 @dataclass
 class ResolvedDep(Record):
     """Maven이 실제로 고른 의존성 하나를 담는 데이터 클래스.
-    ``path``는 모듈에서 이 의존성까지 거치는 g:a:v 경로이고, 직접 의존성이면 빈 목록이다."""
+    ``path``는 모듈에서 이 의존성까지 거치는 g:a:v 경로다. 직접 의존성이면 빈 목록이다."""
     group_id: str
     artifact_id: str
     version: str
@@ -342,7 +338,7 @@ class ResolvedDep(Record):
 @dataclass
 class ModuleResolution(Record):
     """모듈 하나의 의존성 해석 결과를 담는 데이터 클래스.
-    ``dir``은 프로젝트 루트 기준 경로이고, ``plugins``는 자동으로 바꾸지 않는 빌드 플러그인과 그 의존성이다."""
+    ``dir``은 프로젝트 루트 기준 경로다. ``plugins``는 자동으로 바꾸지 않는 빌드 플러그인과 그 의존성이다."""
     dir: str
     group_id: str
     artifact_id: str
@@ -356,11 +352,11 @@ class ModuleResolution(Record):
 @dataclass
 class ResolvedModel(Record):
     """프로젝트 전체의 의존성 해석 결과를 담는 데이터 클래스.
-    ``complete``가 False면 일부 모듈을 읽지 못한 것이므로 계획과 검증에 쓸 수 없다."""
+    ``complete``가 False면 일부 모듈을 읽지 못했다. 이 결과는 계획과 검증에 쓸 수 없다."""
     modules: list[ModuleResolution] = field(default_factory=list)
     complete: bool = True
     notes: list[str] = field(default_factory=list)
-    # reactor 루트 폴더 목록. 보통은 비어 있고, 서비스별로 따로 빌드한 이관 프로젝트만 여러 개다
+    # reactor 루트 폴더 목록. 보통은 비어 있다. 서비스별로 따로 빌드한 이관 프로젝트만 여러 개다
     roots: list[str] = field(default_factory=list)
     _nested = {"modules": ModuleResolution}
 
@@ -396,7 +392,7 @@ O_PARENT_MANAGED = "parent_managed"           # 외부 부모 pom이 관리한�
 O_BOM_MANAGED = "bom_managed"                 # import한 BOM이 관리한다
 O_TRANSITIVE = "transitive"                   # 프로젝트에 선언 없이 다른 의존성이 끌고 온다
 O_PLUGIN = "plugin"                           # 빌드 플러그인이나 그 의존성이라 자동으로 바꾸지 않는다
-O_VENDORED = "vendored"                       # 트리에 들어 있는 파일(jar, js 등)이라 자동으로 바꾸지 않는다
+O_VENDORED = "vendored"                       # 프로젝트에 들어 있는 파일(jar, js 등)이라 자동으로 바꾸지 않는다
 O_UNMAPPED = "unmapped"                       # Maven 해석 결과와 연결하지 못해 자동으로 바꾸지 않는다
 MANUAL_ORIGINS = (O_PLUGIN, O_VENDORED, O_UNMAPPED)
 
@@ -405,7 +401,7 @@ MANUAL_ORIGINS = (O_PLUGIN, O_VENDORED, O_UNMAPPED)
 class PomLocation(Record):
     """버전 문자열이 기록된 위치를 담는 데이터 클래스.
     ``line``은 1부터 세고, ``text``는 버전 문자열 그대로다.
-    버전을 속성으로 정하면 ``property``에 속성 이름을 담고, line과 text는 그 속성의 정의 위치를 가리킨다."""
+    버전을 속성으로 정하면 ``property``에 속성 이름을 담는다. 이때 line과 text는 그 속성을 정의한 위치다."""
     pom: str
     line: int
     text: str
@@ -449,7 +445,7 @@ class InventoryItem(Record):
     patched_versions: list[str] = field(default_factory=list)
     modules: list[str] = field(default_factory=list)
     # ``location``이 버전을 정한다는 근거가 없는 모듈. 같은 버전이 다른 경로로 해석된 곳이다
-    # 검증에서 실패로 치지 않고, 남아 있으면 다음 라운드에서 따로 계획한다
+    # 검증에서 실패로 치지 않는다. 남아 있으면 다음 라운드에서 따로 계획한다
     also_modules: list[str] = field(default_factory=list)
     # 이 라이브러리를 끌고 온 사내 아티팩트의 g:a 목록. 자신이 사내 아티팩트면 자기 g:a를 담는다
     # ``inhouse_modules``는 그렇게 들어온 모듈 목록이다
@@ -516,14 +512,14 @@ class TextEdit(Record):
     new: str
     op: str = E_REPLACE
     anchor: str = ""
-    # insert일 때 {"groupId", "artifactId", "version"}이고, 필요하면 "type" / "classifier"도 담는다
+    # insert일 때 {"groupId", "artifactId", "version"}을 담는다. 필요하면 "type" / "classifier"도 담는다
     override: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class Proposal(Record):
     """변경 제안 하나를 담는 데이터 클래스.
-    ``evidence``는 새 버전의 근거이고 계정 정보는 넣지 않는다.
+    ``evidence``는 새 버전의 근거다. 계정 정보는 넣지 않는다.
 
     `diff` = this proposal alone; `source_tree_hash` = the accepted tree it was made from; `policy_hash` = the
     server policy's hash."""
@@ -544,7 +540,7 @@ class Proposal(Record):
     policy_hash: str = ""
     note: str = ""
     # 이 제안이 버전을 정하는 모듈. 검증은 이 모듈에서 버전이 바뀌었는지 본다. 비어 있으면 모든 모듈을 본다
-    # ``also_modules``는 다른 경로로 해석된 모듈이라 그대로 남아도 실패가 아니다. 둘 다 해시에 넣지 않는다
+    # ``also_modules``는 다른 경로로 해석된 모듈이다. 그대로 남아도 실패가 아니다. 둘 다 해시에 넣지 않는다
     modules: list[str] = field(default_factory=list)
     also_modules: list[str] = field(default_factory=list)
     # 모듈마다 라이브러리가 들어온 경로. 보고서에 쓰며 ``proposal_hash``에 넣지 않는다
@@ -633,7 +629,7 @@ class FixUsage(Record):
 @dataclass
 class FixResult(Record):
     """수정본 빌드가 실패해서 실행한 빌드 오류 수정 루프의 결과를 담는 데이터 클래스.
-    ``changed``는 고쳤을 때만 채운다. ``reason``은 영어 문장이고 고쳤으면 빈 문자열이다.
+    ``changed``는 고쳤을 때만 채운다. ``reason``은 영어 문장이다. 고쳤으면 빈 문자열이다.
 
     Result of the build fix loop on a failed candidate (`sbmig/remediations/fixer.py`). `changed`: sorted paths
     relative to the project root (the loop's repository root), empty unless fixed; `patch`: run-relative path of
@@ -676,7 +672,7 @@ class FixResult(Record):
     currency: str = ""
     # 고친 파일을 둔 폴더(``rounds/<r>/fixloop/fixed``). 고친 파일이 없으면 빈 문자열이다
     fixed_dir: str = ""
-    # 고친 파일을 덮어쓴 뒤의 수정본 트리 해시. 재개할 때 같은 수정본에 덮어썼는지 확인한다
+    # 고친 파일을 덮어쓴 뒤 수정본의 해시. 재개할 때 같은 수정본에 덮어썼는지 확인한다
     tree_hash: str = ""
     # 소스를 바꾸지 않았는데 루프의 첫 빌드가 통과했다. 처음 빌드 실패가 일시적이었다는 뜻이다
     retry_passed: bool = False
@@ -703,7 +699,7 @@ class RoundState(Record):
     build: BuildOutcome | None = None
     verify_problems: list[str] = field(default_factory=list)
     scan_label: str = ""
-    committed: bool = False           # 수정본을 accepted로 확정했는지 여부
+    committed: bool = False           # 수정본을 accepted로 확정했으면 True
     # 조치 전 빌드가 실패한 실행에서 수정본 빌드와 비교한 결과(maven.compare_with_baseline)
     build_compare: dict[str, Any] = field(default_factory=dict)
     # True면 수정본 빌드가 조치 전 빌드에 있던 오류로만 실패해서 라운드를 이어 갔다
@@ -725,7 +721,7 @@ class RoundState(Record):
 class RemediationState(Record):
     """작업 하나의 상태 전체(``state.json``)를 담는 데이터 클래스.
     - ``next_node``: 재개할 때 처음부터 다시 실행할 노드
-    - ``pending_upload``, ``pending_receipt``가 있으면 검사 노드는 다시 올리지 않고 결과를 이어서 조회한다
+    - ``pending_upload``나 ``pending_receipt``가 있으면 검사 노드는 다시 올리지 않는다. 결과를 이어서 조회한다
     - ``owner``: 실행 중인 프로세스의 토큰. 서버가 재시작되면 RUNNING, QUEUED 작업은 INTERRUPTED가 된다"""
     id: str
     name: str = ""                    # 업로드한 파일 이름
@@ -761,7 +757,7 @@ class RemediationState(Record):
     # True면 조치 전 빌드가 실패해도 검사와 조치를 이어 간다. 사내 프레임워크 프로젝트의 실행이다
     baseline_tolerated: bool = False
     # 빌드 산출물을 뺐을 때 조치 전 검사에 올린 original/scan-source.zip의 sha256. 처음 만들 때 기록한다
-    # 비어 있으면 JSON에 넣지 않으므로 이전 버전이 쓴 state도 그대로 읽는다
+    # 비어 있으면 JSON에 넣지 않는다. 그래서 이전 버전이 쓴 state와 모양이 같다
     scan_source_sha256: str = ""
     schema: int = SCHEMA
     _nested = {"intake": IntakeResult, "boundary": BoundaryFinding, "baseline_build": BuildOutcome,

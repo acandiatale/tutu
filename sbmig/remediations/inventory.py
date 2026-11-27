@@ -1,17 +1,5 @@
-"""IVAS가 찾은 취약점을 Maven이 실제로 고른 의존성(``ResolvedModel``)과 pom의 버전 문자열 위치에 연결하는 모듈.
-그래프의 ``inventory`` 노드가 호출하고, planner가 결과 ``Inventory``로 변경을 제안한다.
-- 모듈마다 버전의 출처를 정한다. 직접 쓴 버전은 ``direct_literal``, 프로젝트 property면 ``direct_property``다
-- 외부 부모의 property면 ``parent_managed``다. ``direct_property``의 위치는 property를 정의한 줄이다
-- 선언에 버전이 없고 프로젝트 pom의 dependencyManagement에 있으면 ``own_management``다(import 제외)
-- 선언도 관리 항목도 없이 다른 의존성을 거쳐 들어왔으면 ``transitive``이고, ``via``에 그 경로를 둔다
-- 프로젝트에 버전이 없으면 BOM 하나뿐일 때 ``bom_managed``, 외부 부모뿐일 때 ``parent_managed``다. 둘 다면 출처 불명이다
-- 선언한 버전이 Maven이 고른 버전과 다르면 고쳐도 소용없으므로 ``unmapped``다
-- ``PomLocation``은 pom을 다시 읽어 그 줄에 그 문자열이 있는지 확인한 뒤에만 만든다
-- 고칠 수 있는 항목은 (g:a, 버전)의 위치마다 하나다. ``unmapped``는 문제를 숨기지 않도록 합치지 않는다
-- 나머지 모듈은 가장 많은 모듈을 다루는 항목의 ``also_modules``에 넣는다. 검증에서 실패로 치지 않고 다음 라운드에서 계획한다
-- 사내 아티팩트를 거쳐 들어온 모듈은 묶기 전에 따로 나눈다
-- IVAS와 Maven 표기는 ``matching``으로 비교한다. 버전의 대소문자만 다르면 같은 라이브러리다
-- 의존성 결과에 없는 라이브러리는 ``plugin`` -> ``vendored`` -> ``unmapped`` 순으로 분류한다. 파일 컴포넌트는 항상 ``vendored``다
+"""IVAS가 찾은 취약점을 Maven이 실제로 쓰는 의존성과 pom의 버전 위치에 연결하는 모듈.
+취약점마다 어느 pom의 어느 버전을 고치면 되는지 정리해서 planner에 넘긴다.
 
 Origin per module, in this order: 1. a version on the declaration in the module's or an in-project parent's
 `<dependencies>`: `direct_literal`; a
@@ -27,6 +15,13 @@ Folding: one item per distinct editable location; non-editable module results fo
 most modules and are listed in its `also_modules` (the edit is not known to govern them; verification does not
 fail for them, the next round plans them); `unmapped` results never fold. File-component findings are always
 `vendored`. Also holds the small lxml pom model `ProjectPoms` that `maven.py` reuses for module discovery.
+
+Called by the graph's `inventory` node; the planner proposes changes from the returned `Inventory`. A
+`PomLocation` is built only after the pom was read again and that line holds that text. `unmapped` results
+never fold so that no problem is hidden. Modules that get the library through an in-house artifact are split
+off before folding. IVAS and Maven spellings are compared through `matching`: versions that differ only in
+case are the same library. A library missing from the resolved model is sorted in the order `plugin` ->
+`vendored` -> `unmapped`.
 """
 from __future__ import annotations
 
@@ -63,7 +58,7 @@ from .models import (
 
 log = logging.getLogger("sbmig.remediations.inventory")
 
-# ${a} -> ${b}로 이어지는 단계는 이 정도면 충분하고, 순환 참조도 여기서 끊긴다
+# ${a} -> ${b}처럼 이어지는 property는 다섯 단계까지만 따라간다. 순환 참조도 여기서 끊긴다
 MAX_PROPERTY_DEPTH = 5
 EDITABLE = (O_DIRECT_LITERAL, O_DIRECT_PROPERTY, O_OWN_MANAGEMENT)
 _FULL_PROP = re.compile(r"^\$\{([^}]+)\}$")
@@ -89,7 +84,7 @@ VARIANT_MARK = "type/classifier variant"
 # ---------------------------------------------------------------------------- lxml 도우미
 def _local(el: Any) -> str:
     tag = getattr(el, "tag", None)
-    if not isinstance(tag, str):          # 주석과 처리 명령은 tag가 함수이므로 건너뛴다
+    if not isinstance(tag, str):          # 주석과 처리 명령은 tag가 문자열이 아니다. 건너뛴다
         return ""
     return tag.rsplit("}", 1)[-1]
 
@@ -114,7 +109,7 @@ def _text(el: Any) -> str:
 
 
 def _parser() -> Any:
-    # 업로드된 ZIP의 pom은 믿을 수 없는 입력이므로 외부 엔티티, DTD, 네트워크를 끈다
+    # 업로드된 ZIP의 pom은 믿을 수 없는 입력이다. 외부 엔티티, DTD, 네트워크를 끈다
     return etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
 
 
@@ -165,7 +160,7 @@ def _norm_dir(base: str, rel: str) -> str | None:
 
 def normalize_roots(roots: list[str] | None) -> list[str]:
     """reactor 루트 목록을 프로젝트 기준 폴더로 정리한다.
-    프로젝트 밖(``..``)과 절대 경로는 버리고, 순서를 유지하며 중복을 뺀다.
+    프로젝트 밖(``..``)과 절대 경로는 버린다. 순서는 유지하고 중복은 뺀다.
     목록이 비었거나 남는 것이 없으면 ``["."]``을 반환한다."""
     out: list[str] = []
     for r in roots or []:
@@ -183,7 +178,7 @@ def parse_pom_file(project: Path, d: str) -> PomFile:
     pf = PomFile(dir=d, rel=rel, path=path)
     from .apply import PomReadError, read_pom_xml, xml_reason
     try:
-        # Maven이 받는 pom(UTF-8 선언의 MS949 등)을 읽도록 apply와 같은 규칙으로 UTF-8로 바꾼다
+        # UTF-8로 선언하고 MS949로 저장한 pom도 Maven처럼 읽는다. apply와 같은 규칙으로 UTF-8로 바꾼다
         data = read_pom_xml(path)
     except PomReadError as exc:
         pf.error = f"cannot read {rel}: {exc}"
@@ -219,8 +214,9 @@ def parse_pom_file(project: Path, d: str) -> PomFile:
 
 class ProjectPoms:
     """프로젝트의 pom 목록을 담는 클래스.
-    루트의 ``<modules>``(프로필 포함)를 따라간 reactor 모듈과, ``relativePath``나 좌표로 찾은 프로젝트 안 부모를 담는다.
-    네트워크를 쓰지 않으므로 외부 부모와 BOM은 읽지 않는다. 읽지 못한 pom이 있으면 ``complete``가 False다."""
+    루트의 ``<modules>``(프로필 포함)를 따라간 reactor 모듈과 프로젝트 안의 부모 pom을 담는다.
+    부모는 ``relativePath``나 좌표로 찾는다. 외부 부모와 BOM은 네트워크가 필요해서 읽지 않는다.
+    읽지 못한 pom이 있으면 ``complete``가 False다."""
 
     def __init__(self, project: Path, roots: list[str] | None = None):
         self.project = Path(project)
@@ -229,8 +225,8 @@ class ProjectPoms:
         self.notes: list[str] = []
         self.complete = True
         self._linked: set[str] = set()
-        # reactor 루트 목록. 기본은 루트 pom 하나이고, 루트 aggregator 없이 서비스마다 빌드한 프로젝트는
-        # 그 서비스 폴더들이다
+        # reactor 루트 목록. 기본은 루트 pom 하나다.
+        # 루트 aggregator 없이 서비스마다 빌드한 프로젝트는 서비스 폴더들이다
         self.roots: list[str] = normalize_roots(roots)
         self._discover()
 
@@ -327,8 +323,8 @@ class ProjectPoms:
         return out
 
     def external_parent(self, pf: PomFile) -> tuple[str, PomFile, Any] | None:
-        """부모 체인 맨 위 pom의 외부 부모를 (g:a:v, 그 ``<parent>``가 있는 pom, ``<version>`` 요소)로 반환한다.
-        외부 부모가 없으면 None을 반환한다."""
+        """부모 체인 맨 위 pom의 외부 부모를 반환한다. 외부 부모가 없으면 None이다.
+        값은 (g:a:v, 그 ``<parent>``가 있는 pom, ``<version>`` 요소)이다."""
         top = self.chain(pf)[-1]
         if top.parent_gav is None or top.parent is not None:
             return None
@@ -337,7 +333,7 @@ class ProjectPoms:
 
     def boms(self, pf: PomFile) -> list[tuple[str, PomFile, Any]]:
         """부모 체인의 ``<dependencyManagement>``가 import하는 BOM 목록을 반환한다.
-        항목은 (g:a:v, 선언한 pom, ``<version>`` 요소)이고, 같은 g:a는 자식 쪽 하나만 남긴다."""
+        항목은 (g:a:v, 선언한 pom, ``<version>`` 요소)이다. 같은 g:a가 여러 번 나오면 자식 쪽 것만 남긴다."""
         out: list[tuple[str, PomFile, Any]] = []
         seen: set[str] = set()
         for p in self.chain(pf):
@@ -378,7 +374,7 @@ class ProjectPoms:
 
     def interp(self, pf: PomFile, raw: str) -> str:
         """좌표 문자열의 ``${…}``를 바꿀 수 있는 만큼 값으로 바꾼다.
-        비교용이며 고칠 위치는 ``resolve_version``이 정한다."""
+        비교할 때만 쓴다. 고칠 위치는 ``resolve_version``이 정한다."""
         out = raw
         for _ in range(MAX_PROPERTY_DEPTH):
             m = re.search(r"\$\{([^}]+)\}", out)
@@ -455,7 +451,7 @@ def _deps(pf: PomFile, *, management: bool) -> list[tuple[Any, str]]:
 
 def location_of(pf: PomFile, el: Any, element: str, prop: str = "") -> PomLocation | None:
     """요소 ``el``의 값이 그 줄에 그대로 있으면 ``PomLocation``을 반환한다.
-    apply가 줄 단위로 고치므로 확인하지 못하면 None을 반환한다.
+    apply는 줄 단위로 고친다. 그래서 그 줄에서 값을 찾지 못하면 None을 반환한다.
 
     The element's start line plus the newlines before its text is tried first, then the next lines up to five
     below the start line."""
@@ -521,10 +517,10 @@ def _decl_key(pp: ProjectPoms, mod: PomFile, dep: Any) -> tuple[str, str]:
 
 
 def _decl_problem(pp: ProjectPoms, mod: PomFile, ga: str, *, management: bool) -> str:
-    """``_find_decl``이 고르는 pom의 선언을 고쳐도 되는지 확인한다. 안 되면 이유 한 줄을, 괜찮으면 빈 문자열을 반환한다.
-    - 기본으로 켜지지 않는 프로필에만 있는 선언은 Maven이 쓰지 않을 수 있으므로 고치지 않는다
-    - 한 ``<dependencies>`` 안에 같은 관리 키로 두 번 있는 선언은 Maven이 그중 하나만 쓰므로 고치지 않는다
-    부모 체인에서 ``ga``를 처음 선언한 pom만 본다."""
+    """``_find_decl``이 고르는 선언을 고쳐도 되는지 확인한다. 안 되면 이유 한 줄을, 괜찮으면 빈 문자열을 반환한다.
+    부모 체인에서 ``ga``를 처음 선언한 pom만 본다. 다음 선언은 고치지 않는다.
+    - 기본으로 켜지지 않는 프로필에만 있는 선언. Maven이 쓰지 않을 수 있다
+    - 한 ``<dependencies>`` 안에 같은 관리 키로 두 번 있는 선언. Maven은 그중 하나만 쓴다"""
     for p in pp.chain(mod):
         if not p.ok:
             continue
@@ -545,7 +541,7 @@ def _decl_problem(pp: ProjectPoms, mod: PomFile, ga: str, *, management: bool) -
             continue
         for _pid, active, hits in blocks:
             if not active:
-                continue                     # 꺼진 프로필 안의 중복은 Maven이 쓰지 않으므로 보지 않는다
+                continue                     # 꺼진 프로필 안의 중복은 Maven이 쓰지 않는다. 보지 않는다
             keys = [_decl_key(pp, mod, d) for d in hits]
             dup = max(keys.count(k) for k in keys)
             if dup > 1:
@@ -667,8 +663,8 @@ def _merge_modules(item: InventoryItem, extra: list[tuple[str, _Res]], *, also: 
         if mdir not in item.modules:
             item.modules.append(mdir)
     if also:
-        # 합쳐 들어온 모듈은 다른 경로로 같은 버전이 된 곳이라 이 항목의 버전 문자열이 적용되는지 알 수 없다.
-        # 검증에서 실패로 치지 않고, 남으면 다음 라운드에서 따로 계획한다
+        # 합쳐 들어온 모듈은 다른 경로로 같은 버전이 된 곳이다. 이 항목의 버전 문자열이 적용되는지는 모른다.
+        # 그래서 검증에서 실패로 치지 않는다. 남으면 다음 라운드에서 따로 계획한다
         item.also_modules = sorted(({m for m, _ in extra} | set(item.also_modules)) - governed)
     shapes: dict[tuple, list[str]] = {}
     for mdir, res in extra:
@@ -699,7 +695,7 @@ def _group(ga: str, version: str, results: list[tuple[str, _Res]]) -> list[Inven
         items.append(_item_from(ga, version, v[0][1], [m for m, _ in v]))
     if others:
         if items:
-            # 고칠 수 있는 항목 중 가장 많은 모듈을 관리하는 것에 합치고, 같으면 정렬 순서상 첫 번째에 합친다
+            # 고칠 수 있는 항목 중 가장 많은 모듈을 관리하는 것에 합친다. 모듈 수가 같으면 정렬 순서상 첫 번째다
             target = sorted(items, key=lambda it: (-len(it.modules), it.location.pom if it.location else "",
                                                    it.location.line if it.location else 0))[0]
             _merge_modules(target, [x for v in others.values() for x in v], also=True)
@@ -726,10 +722,10 @@ PARENTS_GROUP = "parents"
 
 
 def _parent_inhouse(pp: ProjectPoms, mod: PomFile, dep: ResolvedDep, res: _Res, parents: set[str]) -> list[str]:
-    """결과가 회사 부모(``inhouse_groups``의 ``parents``)에서 온 것이면 ``[그 부모 g:a]``를, 아니면 빈 목록을 반환한다.
-    부모 g:a는 의존 경로에 나오지 않으므로 모듈의 외부 부모로 판단한다.
-    - 출처가 분명한 ``parent_managed``면 부모에서 온 것이다
-    - 간접 의존성인데 경로의 첫 의존성을 프로젝트 pom이 선언하지 않았으면 부모에서 온 것이다
+    """결과가 회사 부모(``inhouse_groups``의 ``parents``)에서 왔으면 ``[그 부모 g:a]``를 반환한다. 아니면 빈 목록이다.
+    부모 g:a는 의존 경로에 나오지 않는다. 그래서 모듈의 외부 부모를 보고 판단한다.
+    - 출처가 분명한 ``parent_managed``면 부모에서 왔다고 본다
+    - 간접 의존성이고 경로의 첫 의존성을 프로젝트 pom이 선언하지 않았으면 부모에서 왔다고 본다
     - 고칠 수 있는 출처, unmapped, 프로젝트가 import한 BOM의 관리는 부모에서 온 것으로 보지 않는다"""
     if not parents or res.editable or res.origin == O_UNMAPPED:
         return []
@@ -767,8 +763,8 @@ def _safe_rel(loc: str) -> str | None:
 
 
 def _vendored_paths(project: Path, locations: list[str]) -> list[str]:
-    """IVAS가 알려 준 위치 중 트리에 실제로 있는 pom이 아닌 파일을 IVAS 표기 그대로 반환한다.
-    ZIP이 최상위 폴더로 감싸였으면 위치 앞에 그 폴더 이름이 붙어 오므로 앞부분을 세 단계까지 떼어 보며 찾는다."""
+    """IVAS가 알려 준 위치 중 프로젝트에 실제로 있는 파일을 IVAS 표기 그대로 반환한다. pom은 뺀다.
+    ZIP이 최상위 폴더로 감싸여 있으면 위치 앞에 그 폴더 이름이 붙어 온다. 그래서 앞부분을 세 단계까지 떼어 보며 찾는다."""
     out: list[str] = []
     for loc in locations:
         rel = _safe_rel(loc)
@@ -797,9 +793,9 @@ def _plugin_hits(resolved: ResolvedModel, gas: list[str]) -> list[tuple[str, Res
 
 def split_patched_versions(text: str) -> list[str]:
     """IVAS 패치 버전 문자열("2.12.7.1, 2.13.4.2")을 개별 버전 목록으로 나눈다.
-    쉼표, 세미콜론, 공백으로 나누되 ``[`` ``(`` … ``]`` ``)`` 범위 안의 쉼표에서는 나누지 않는다.
-    범위는 한 덩어리로 남겨 planner가 버전이 아닌 힌트로 처리한다.
-    빈 조각은 버리고 순서를 유지하며 중복을 뺀다.
+    쉼표, 세미콜론, 공백으로 나눈다. ``[`` ``(`` … ``]`` ``)`` 범위 안에서는 나누지 않는다.
+    범위는 한 덩어리로 남긴다. planner는 범위를 버전이 아닌 힌트로 다룬다.
+    빈 조각은 버린다. 순서는 유지하고 중복은 뺀다.
 
     Whether IVAS ever sends several versions in one text is not confirmed; this is how such a text is read."""
     out: list[str] = []
@@ -830,7 +826,7 @@ def _split_ga(identifier: str) -> str | None:
 # ---------------------------------------------------------------------------- 진입점
 def _matching_gas(reported: list[str], available: set[str]) -> set[str]:
     """IVAS의 g:a 표기에 맞는 Maven g:a 집합을 반환한다.
-    Maven의 g:a는 대소문자를 구분하므로 똑같은 표기가 있으면 그것만 쓰고, 없을 때만 대소문자를 무시해 찾는다."""
+    Maven의 g:a는 대소문자를 구분한다. 그래서 똑같은 표기가 있으면 그것만 쓰고, 없을 때만 대소문자를 무시하고 찾는다."""
     exact = set(reported) & available
     if exact:
         return exact
@@ -869,16 +865,16 @@ class _Mod:
     plain: bool = False                          # 같은 버전을 일반 jar로도 해석했으면 True
 
     def source(self, mdir: str) -> ModuleSource:
-        # 변종이 있을 때만 일반 jar를 "jar/"로 앞에 적는다. 일반 jar만이면 빈 문자열이다
+        # 변종이 있을 때만 일반 jar를 "jar/"로 앞에 붙인다. 일반 jar만 있으면 빈 문자열이다
         shown = (["jar/"] if self.plain and self.variants else []) + self.variants
         return ModuleSource(module=mdir, how=self.res.origin, via=list(self.dep.path), declared=self.declared,
                             manager=self.res.manager, inhouse=list(self.res.inhouse), variant=", ".join(shown))
 
 
 def _split_inhouse(ga: str, results: list[tuple[str, _Res]]) -> tuple[list[tuple[str, _Res]], list[tuple[str, _Res]]]:
-    """모듈 결과를 (사내 아티팩트가 없는 쪽, 있는 쪽)으로 나눈다. 묶기 전에 나누므로 한 항목에 섞이지 않는다.
-    고칠 수 있는 버전 문자열 위치는 프로젝트의 것이므로 나누지 않는다.
-    라이브러리 자체가 사내 아티팩트일 때만 그 위치의 모듈을 모두 사내 쪽에 둔다."""
+    """모듈 결과를 (사내 아티팩트가 없는 쪽, 있는 쪽)으로 나눈다. 묶기 전에 나눠서 한 항목에 섞이지 않게 한다.
+    고칠 수 있는 버전 문자열 위치는 프로젝트의 것이라 나누지 않는다.
+    다만 라이브러리 자체가 사내 아티팩트면 그 위치의 모듈을 모두 사내 쪽에 둔다."""
     inh_keys: set[tuple] = set()
     by_key: dict[tuple, list[_Res]] = {}
     for _m, r in results:
@@ -899,8 +895,8 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
                     managed_by: Callable[[str], str | None] | None = None,
                     inhouse: Mapping[str, str] | None = None) -> Inventory:
     """IVAS가 찾은 취약점으로 ``Inventory``를 만든다(``interfaces.InventoryFn``).
-    의존성 결과와 g:a, 버전이 맞는 라이브러리만 출처를 정하고, 나머지는 plugin / vendored / unmapped로 분류한다.
-    - 항목은 Maven 표기를 쓰고, IVAS 표기가 다르면 ``reported_ga`` / ``reported_version``에 남긴다
+    의존성 결과와 g:a, 버전이 맞는 라이브러리는 모듈마다 출처를 정한다. 나머지는 plugin / vendored / unmapped로 분류한다.
+    - 항목에는 Maven 표기를 쓴다. IVAS 표기가 다르면 ``reported_ga`` / ``reported_version``에 남긴다
     - 의존성 결과가 불완전하거나 프로젝트 pom을 못 읽으면 ``complete``가 False다
     - ``inhouse``를 주면 사내 아티팩트를 거쳐 들어온 모듈과 아닌 모듈을 다른 항목으로 나눈다
     항목은 (ga, 버전, 출처, pom, 줄) 순으로 정렬한다.
@@ -915,7 +911,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
     only the plain jar; else its "<type>/<classifier>" values joined with ", ", led by "jar/" when the module
     resolves the plain jar too ("jar/, jar/jakarta")."""
     project = Path(project)
-    # 루트 aggregator 없이 서비스마다의 reactor로 의존성을 구했으면 같은 루트 목록으로 pom을 읽는다
+    # 루트 aggregator 없이 서비스마다 reactor로 의존성을 구했으면 pom도 같은 루트 목록으로 읽는다
     pp = ProjectPoms(project, roots=list(getattr(resolved, "roots", None) or []) or None)
     inv = Inventory(complete=bool(resolved.complete) and pp.complete)
     inv.notes += list(resolved.notes) + list(pp.notes)
@@ -923,7 +919,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
         inv.notes.append("Maven resolution is incomplete")
 
     items: list[InventoryItem] = []
-    # 회사 부모(parents 그룹)는 의존 경로에 나오지 않으므로 모듈의 외부 부모로 따로 판단한다(_parent_inhouse)
+    # 회사 부모(parents 그룹)는 의존 경로에 나오지 않는다. 모듈의 외부 부모를 보고 따로 판단한다(_parent_inhouse)
     parent_keys = {k for k, grp in (inhouse or {}).items() if grp == PARENTS_GROUP}
     resolved_gas = {d.ga for m in resolved.modules for d in m.dependencies}
 
@@ -945,8 +941,8 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
 
     def decorate(it: InventoryItem, fs: list[Finding]) -> InventoryItem:
         it.finding_ids = sorted({f.id for f in fs if f.id})
-        # 원소 하나가 취약점 하나의 힌트다. 원소끼리는 AND, 원소 안의 여러 버전은 대안(OR)이므로
-        # 하나의 목록으로 펼치지 않고 묶어 둔다
+        # 원소 하나가 취약점 하나의 힌트다. 원소끼리는 AND, 원소 안의 여러 버전은 대안(OR)이다.
+        # 그래서 하나의 목록으로 펼치지 않고 원소별로 묶어 둔다
         it.patched_versions = sorted({", ".join(alts) for f in fs if (alts := split_patched_versions(f.patched_version))})
         return it
 
@@ -999,7 +995,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
                 if not part:
                     continue
                 for it in _group(ga, version, part):
-                    # 합쳐진 모듈의 reason은 사라지므로 override를 막도록 변종 표시를 항목에 남긴다
+                    # 합쳐진 모듈의 reason은 사라진다. override 항목을 막도록 변종 표시를 항목에 남긴다
                     if it.origin not in EDITABLE and VARIANT_MARK not in it.reason and set(marked) & set(it.modules):
                         it.reason = "; ".join(x for x in [it.reason, f"{VARIANT_MARK} in {', '.join(marked)}"] if x)
                     if in_house:
@@ -1040,7 +1036,7 @@ def _unresolved(project: Path, resolved: ResolvedModel, ivas_gas: list[str], iva
                 fs: list[Finding], gas: set[str]) -> InventoryItem:
     """의존성 결과에 그 버전으로 없는 라이브러리의 항목을 만든다.
     plugin -> vendored -> unmapped 순으로 분류하고 근거를 reason에 기록한다.
-    ``gas``는 이 발견 항목에 맞는 Maven g:a 집합이다. 대소문자만 다른 버전은 다른 버전으로 보지 않는다."""
+    ``gas``는 이 발견 항목에 맞는 Maven g:a 집합이다. 대소문자만 다른 버전은 같은 버전으로 본다."""
     ga, version = ivas_gas[0], ivas_versions[0]
     hits = _plugin_hits(resolved, ivas_gas)
     if hits:
@@ -1060,7 +1056,7 @@ def _unresolved(project: Path, resolved: ResolvedModel, ivas_gas: list[str], iva
     if paths:
         return InventoryItem(ga=ga, version=version, origin=O_VENDORED, paths=paths,
                              reason="file in the tree (not resolved by Maven); not changed automatically")
-    # Maven이 고른 버전을 대소문자 무시로 하나씩만 보여 주고, 보고된 버전과 같은 것은 빼고 보여 준다
+    # Maven이 고른 버전을 보여 준다. 대소문자만 다른 버전은 하나만 보이고, 보고된 버전과 같은 것은 뺀다
     seen_by_key: dict[str, str] = {}
     for v in sorted({d.version for m in resolved.modules for d in m.dependencies if d.ga in gas}):
         if version and same_version(v, version):
